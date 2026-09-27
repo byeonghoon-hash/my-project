@@ -32,10 +32,34 @@ const SETTING_LABEL = {
   maxCallSec: '통화 상한 (초)'
 };
 
+// 차트 색 (색각 이상 구분 검사를 통과한 조합)
+const C = { green: '#00754A', blue: '#2F6FDE', orange: '#C4691E', gray: '#8B908D', grid: '#EEEAE3' };
+
+// 아이콘 (선 그림)
+const PATHS = {
+  phone: '<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/>',
+  heart: '<path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7z"/>',
+  chart: '<path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/>',
+  chev: '<path d="m9 18 6-6-6-6"/>',
+  back: '<path d="m15 18-6-6 6-6"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  alert: '<path d="M12 8v5"/><path d="M12 17h.01"/><circle cx="12" cy="12" r="9"/>',
+  next: '<path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>',
+  play: '<path d="M7 4v16l13-8z"/>',
+  trash: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/>'
+};
+const icon = name => `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${PATHS[name]}</svg>`;
+
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const mmss = sec => `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(Math.round(sec % 60)).padStart(2, '0')}`;
 const pctText = v => (v == null ? '—' : `${v.toFixed(1)}%`);
+const slopeText = v => (v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%p/일`);
 const stamp = s => (s ? s.replace('T', ' ') : '—');
+const initial = name => esc((name || '?').slice(0, 1));
+const longDate = s => {
+  const d = new Date(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10));
+  return `${d.getFullYear()}년 ${d.getMonth() + 1}월 ${d.getDate()}일 ${'일월화수목금토'[d.getDay()]}요일`;
+};
 
 let actions = {};   // 지금 화면의 버튼 동작 (data-act / data-change)
 let cleanup = null; // 화면을 떠날 때 멈출 것 (벨소리·통화)
@@ -51,6 +75,13 @@ app.addEventListener('change', e => {
   const el = e.target.closest('[data-change]');
   if (el && actions[el.dataset.change]) actions[el.dataset.change](el);
 });
+
+if (window.Chart) {
+  Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
+  Chart.defaults.color = '#5A5F5C';
+  Chart.defaults.plugins.legend.labels.usePointStyle = true;
+  Chart.defaults.plugins.legend.labels.boxHeight = 8;
+}
 
 // 판정 규칙으로 알림을 만들거나 단계를 올린다 (통화 저장·점수 수정·설정 변경 뒤에 부른다)
 function evaluate(ids) {
@@ -79,7 +110,16 @@ function render() {
   if (h === '#/user') userSelect();
   else if (h === '#/admin') adminHome();
   else if (h.startsWith('#/admin/p/')) adminPerson(decodeURIComponent(h.slice(10)));
-  else app.innerHTML = `<a class="btn" href="#/user">대상자 화면</a><a class="btn" href="#/admin">관리자 화면</a>`;
+  else home();
+}
+
+function home() {
+  app.innerHTML = `
+    <div class="brand"><div class="brand-mark">${icon('heart')}</div><div class="brand-name">안부 전화</div></div>
+    <div class="stack">
+      <a class="btn tile" href="#/user"><span class="ic">${icon('phone')}</span>대상자 화면<span class="chev">${icon('chev')}</span></a>
+      <a class="btn tile dark" href="#/admin"><span class="ic">${icon('chart')}</span>관리자 화면<span class="chev">${icon('chev')}</span></a>
+    </div>`;
 }
 
 // ---------- 대상자 화면 ----------
@@ -87,18 +127,22 @@ function userSelect() {
   const people = getData().people.filter(p => p.active);
   app.innerHTML = `
     <h1>누구세요?</h1>
-    <div class="stack">${people.map(p => `<button data-act="pick" data-id="${p.id}">${esc(p.name)}</button>`).join('')}</div>
+    <div class="stack">${people.map(p => `
+      <button class="tile" data-act="pick" data-id="${p.id}"><span class="avatar">${initial(p.name)}</span>${esc(p.name)}<span class="chev">${icon('chev')}</span></button>`).join('')}
+    </div>
     <a class="btn ghost" href="#/">처음으로</a>`;
   actions.pick = el => ringing(people.find(p => p.id === el.dataset.id));
 }
 
 function ringing(p) {
   app.innerHTML = `
-    <div class="phone ringing">
+    <div class="phone">
+      <p class="caller-label">보건소 안부전화</p>
+      <div class="pulse"><div class="avatar">${icon('heart')}</div></div>
       <h1>안부 전화가 왔습니다</h1>
       <div class="answer">
-        <button class="green" data-act="accept">받기</button>
-        <button class="red" data-act="reject">거절</button>
+        <label><button class="round green" data-act="accept">${icon('phone')}</button>받기</label>
+        <label><button class="round red" data-act="reject">${icon('phone')}</button>거절</label>
       </div>
     </div>`;
   const stopRing = startRing();
@@ -123,16 +167,20 @@ function ringing(p) {
 async function inCall(p) {
   app.innerHTML = `
     <div class="phone">
-      <p class="timer" id="time">00:00</p>
-      <p class="question" id="q">연결 중…</p>
-      <div class="meter"><div id="lv"></div></div>
-      <button class="ghost btn" data-act="next">다음</button>
+      <div class="call-top"><span class="live">통화 중</span><span class="timer" id="time">00:00</span></div>
+      <div class="question" id="q">연결 중…</div>
+      <div class="voice" id="lv">${'<span></span>'.repeat(7)}</div>
+      <button class="ghost" data-act="next">다음 ${icon('next')}</button>
     </div>`;
-  const $ = id => document.getElementById(id) || {}; // 화면을 떠난 뒤에도 오류가 나지 않게
+  const $ = id => document.getElementById(id); // 화면을 떠난 뒤에는 null
+  const weights = [0.45, 0.7, 0.9, 1, 0.9, 0.7, 0.45];
   const ui = {
-    time: s => { $('time').textContent = mmss(s); },
-    question: t => { $('q').textContent = t; },
-    level: v => { ($('lv').style || {}).width = Math.min(100, v * 600) + '%'; }
+    time: s => { const el = $('time'); if (el) el.textContent = mmss(s); },
+    question: t => { const el = $('q'); if (el) el.textContent = t; },
+    level: v => {
+      const bars = $('lv')?.children || [];
+      [...bars].forEach((b, i) => { b.style.height = 12 + Math.min(60, v * 900 * weights[i] * (0.7 + Math.random() * 0.6)) + 'px'; });
+    }
   };
   actions.next = nextItem;
   cleanup = stopCall;
@@ -157,21 +205,34 @@ async function inCall(p) {
   d.calls.push({ id: 'c' + id, personId: p.id, ...res.call, audioId });
   evaluate([p.id]);
   // 점수나 위험도는 대상자에게 보여주지 않는다
-  app.innerHTML = `<h1>오늘도 통화해 주셔서 감사합니다.</h1><a class="btn" href="#/">처음으로</a>`;
+  app.innerHTML = `
+    <div class="done-mark">${icon('check')}</div>
+    <h1>오늘도 통화해 주셔서 감사합니다.</h1>
+    <a class="btn" href="#/">처음으로</a>`;
 }
+
+// ---------- 관리자 화면 공통 ----------
+const appbar = (right = `<a class="btn" href="#/">처음으로</a>`) => `
+  <header class="appbar">
+    <a class="logo" href="#/admin"><i>${icon('heart')}</i>안부 관리자</a>
+    ${right}
+  </header>`;
+
+const levelBadge = a => `<span class="badge lv-${a.level}">${LEVEL[a.level]} · ${TYPE_SHORT[a.type]}</span>`;
 
 // ---------- 관리자 화면 ----------
 function adminHome() {
   const d = getData(), s = d.settings, today = todayStr();
   const m = dashboard(d, period, today, getNightVitals);
   const goal = (v, ok) => (v == null ? null : ok(v));
+  // [이름, 값 글자, 목표 글자, 달성 여부, 막대 채움(%)]
   const cards = [
-    ['통화 완료율', pctText(m.completionRate), '목표 ≥ 80%', goal(m.completionRate, v => v >= 80)],
+    ['통화 완료율', pctText(m.completionRate), '목표 80% 이상', goal(m.completionRate, v => v >= 80), m.completionRate],
     ['무응답률', pctText(m.missedRate)],
-    ['평균 통화 시간', m.avgDurationSec == null ? '—' : mmss(m.avgDurationSec), '목표 ≤ 3분', goal(m.avgDurationSec, v => v <= 180)],
-    ['유효 측정일 비율', pctText(m.validDayRate), '목표 ≥ 70%', goal(m.validDayRate, v => v >= 70)],
-    ['웨어러블 착용 순응도', pctText(m.wearRate), '목표 ≥ 75%', goal(m.wearRate, v => v >= 75)],
-    ['8주 유지율', pctText(m.retention8w), '목표 ≥ 70%', goal(m.retention8w, v => v >= 70)],
+    ['평균 통화 시간', m.avgDurationSec == null ? '—' : mmss(m.avgDurationSec), '목표 3분 이하', goal(m.avgDurationSec, v => v <= 180), m.avgDurationSec == null ? null : (m.avgDurationSec / 180) * 100],
+    ['유효 측정일 비율', pctText(m.validDayRate), '목표 70% 이상', goal(m.validDayRate, v => v >= 70), m.validDayRate],
+    ['웨어러블 착용 순응도', pctText(m.wearRate), '목표 75% 이상', goal(m.wearRate, v => v >= 75), m.wearRate],
+    ['8주 유지율', pctText(m.retention8w), '목표 70% 이상', goal(m.retention8w, v => v >= 70), m.retention8w],
     ['기저선 이탈 탐지율', pctText(m.detectionRate)],
     ['의뢰 연계율', pctText(m.referralRate)],
     ['연계 후 확진율 (PPV)', pctText(m.ppv)],
@@ -182,7 +243,8 @@ function adminHome() {
   // 케이스 큐: 알림 단계(의뢰 > 주의 > 관찰 > 없음) → 최근 z 낮은 순
   const rows = d.people.filter(p => p.active).map(p => {
     const st = personStatus(p, d.calls, s, today, getNightVitals);
-    const open = d.alerts.filter(a => a.personId === p.id && a.status !== 'closed');
+    const open = d.alerts.filter(a => a.personId === p.id && a.status !== 'closed')
+      .sort((a, b) => LEVEL_RANK[b.level] - LEVEL_RANK[a.level]);
     let spo2 = null;
     for (let k = 0; k < 14 && spo2 == null; k++) {
       const v = getNightVitals(p.id, addDays(today, -k));
@@ -191,98 +253,132 @@ function adminHome() {
     return { p, st, open, spo2, rank: Math.max(0, ...open.map(a => LEVEL_RANK[a.level])) };
   }).sort((a, b) => b.rank - a.rank || (a.st.lastZ ?? Infinity) - (b.st.lastZ ?? Infinity));
 
-  app.innerHTML = `
-    <div class="top"><h1>관리자 화면</h1><a href="#/">처음으로</a></div>
+  const countRank = r => rows.filter(x => x.rank === r).length;
+  const needCheck = rows.filter(x => x.rank >= LEVEL_RANK.caution);
+  const forming = rows.filter(x => !x.st.base.ready).length;
 
-    <section>
-      <div class="top"><h2>지표</h2>
-        <div class="row">${[[7, '최근 7일'], [30, '30일'], [null, '전체']].map(([v, t]) =>
+  app.innerHTML = `
+    ${appbar()}
+    <nav class="tabs">${[['sec-kpi', '지표'], ['sec-calls', '통화 현황'], ['sec-queue', '케이스 큐'], ['sec-people', '대상자 관리'], ['sec-settings', '설정']]
+      .map(([id, t]) => `<button data-act="jump" data-to="${id}">${t}</button>`).join('')}</nav>
+
+    <div class="page-title"><h1>오늘의 안부 현황</h1><p>${longDate(today)}</p></div>
+
+    <div class="hero">
+      <div class="eyebrow">주의 이상 알림이 열린 대상자</div>
+      <div class="big-num">${needCheck.length}명</div>
+      <div>${needCheck.map(x => esc(x.p.name)).join(' · ') || '지금은 없습니다'}</div>
+      <div class="hero-stats">
+        <span>의뢰 ${countRank(3)}명</span><span>주의 ${countRank(2)}명</span><span>관찰 ${countRank(1)}명</span>
+        <span>기저선 형성 중 ${forming}명</span>
+      </div>
+    </div>
+
+    <section id="sec-kpi">
+      <div class="sec-head"><h2>지표</h2>
+        <div class="seg">${[[7, '최근 7일'], [30, '30일'], [null, '전체']].map(([v, t]) =>
           `<button data-act="period" data-v="${v}" class="${period === v ? 'on' : ''}">${t}</button>`).join('')}</div>
       </div>
-      <div class="cards">${cards.map(([label, v, g, ok]) => `
+      <div class="cards">${cards.map(([label, v, g, ok, fill]) => `
         <div class="card ${ok == null ? '' : ok ? 'ok' : 'bad'}">
-          <div class="muted">${label}</div><div class="v">${v}</div>
-          ${g ? `<div class="goal">${g} · ${ok == null ? '—' : ok ? '달성' : '미달'}</div>` : ''}
+          <div class="label">${label}</div>
+          <div class="v">${v}</div>
+          ${g ? `
+            <div class="bar"><i style="width:${Math.max(0, Math.min(100, fill ?? 0))}%"></i></div>
+            <div class="goal"><span>${g}</span>${ok == null ? '' : ok
+              ? `<span class="pill ok">${icon('check')}달성</span>`
+              : `<span class="pill bad">${icon('alert')}미달</span>`}</div>` : ''}
         </div>`).join('')}</div>
-      <p class="muted">알림 관련 지표(탐지율·연계율·PPV·오경보율·알림 수)는 기간과 관계없이 전체 기록으로 계산합니다.</p>
+      <p class="muted small">알림 관련 지표(탐지율·연계율·PPV·오경보율·알림 수)는 기간과 관계없이 전체 기록으로 계산합니다.</p>
     </section>
 
-    <section>
-      <h2>통화 현황 (최근 30일)</h2>
+    <section id="sec-calls">
+      <div class="sec-head"><h2>통화 현황</h2><span class="muted small">최근 30일 · 일별 완료·무응답</span></div>
       <div class="chartbox"><canvas id="callChart"></canvas></div>
     </section>
 
-    <section>
-      <h2>케이스 큐 (위험도 순)</h2>
+    <section id="sec-queue">
+      <div class="sec-head"><h2>케이스 큐</h2><span class="muted small">위험도 높은 순</span></div>
       <table class="rtable">
         <thead><tr><th>이름</th><th>나이</th><th>최근 통화일</th><th>최근 점수</th><th>최근 z</th><th>30일 기울기</th><th>최근 SpO2 최저</th><th>열린 알림</th><th></th></tr></thead>
         <tbody>${rows.map(({ p, st, open, spo2 }) => `
           <tr>
-            <td data-label="이름"><b>${esc(p.name)}</b></td>
-            <td data-label="나이">${p.age}</td>
+            <td class="first"><div class="who"><span class="avatar">${initial(p.name)}</span><b>${esc(p.name)}</b></div></td>
+            <td data-label="나이">${p.age ?? '—'}세</td>
             <td data-label="최근 통화일">${st.lastCallDate ?? '—'}</td>
             <td data-label="최근 점수">${pctText(st.lastScore)}</td>
-            <td data-label="최근 z">${st.base.ready ? (st.lastZ?.toFixed(2) ?? '—') : '기저선 형성 중'}</td>
-            <td data-label="30일 기울기">${st.slope == null ? '—' : `${st.slope >= 0 ? '+' : ''}${st.slope.toFixed(2)}%p/일`}</td>
+            <td data-label="최근 z">${st.base.ready ? (st.lastZ?.toFixed(2) ?? '—') : '<span class="tag">기저선 형성 중</span>'}</td>
+            <td data-label="30일 기울기">${slopeText(st.slope)}</td>
             <td data-label="최근 SpO2 최저">${spo2 == null ? '—' : spo2 + '%'}</td>
-            <td data-label="열린 알림">${open.map(a => `<span class="badge lv-${a.level}">${LEVEL[a.level]} · ${TYPE_SHORT[a.type]}</span>`).join('') || '—'}</td>
-            <td><a class="btn" href="#/admin/p/${p.id}">상세</a></td>
+            <td data-label="열린 알림">${open.map(levelBadge).join('') || '<span class="muted">없음</span>'}</td>
+            <td class="end"><a class="btn go" href="#/admin/p/${p.id}" aria-label="${esc(p.name)} 상세">${icon('chev')}</a></td>
           </tr>`).join('')}</tbody>
       </table>
     </section>
 
-    <section>
-      <h2>대상자 관리</h2>
+    <section id="sec-people">
+      <div class="sec-head"><h2>대상자 관리</h2><span class="muted small">총 ${d.people.length}명 · 활성 ${d.people.filter(p => p.active).length}명</span></div>
       <table class="rtable">
         <thead><tr><th>이름</th><th>나이</th><th>연락처</th><th>보호자 연락처</th><th>선호 통화 시간</th><th>등록일</th><th></th></tr></thead>
         <tbody>${d.people.map(p => `
           <tr>
-            <td data-label="이름">${esc(p.name)}</td><td data-label="나이">${p.age}</td>
+            <td class="first"><div class="who"><span class="avatar">${initial(p.name)}</span><b>${esc(p.name)}</b></div></td>
+            <td data-label="나이">${p.age ?? '—'}세</td>
             <td data-label="연락처">${esc(p.phone)}</td><td data-label="보호자 연락처">${esc(p.guardianPhone)}</td>
             <td data-label="선호 통화 시간">${esc(p.preferredTime)}</td><td data-label="등록일">${p.enrolledAt}</td>
-            <td>${p.active ? `<button data-act="deactivate" data-id="${p.id}">비활성화</button>` : '<span class="muted">비활성</span>'}</td>
+            <td class="end">${p.active ? `<button data-act="deactivate" data-id="${p.id}">비활성화</button>` : '<span class="tag">비활성</span>'}</td>
           </tr>`).join('')}</tbody>
       </table>
       <h3>대상자 추가</h3>
       <div class="form">
-        <label>이름<input id="np-name"></label>
-        <label>나이<input id="np-age" type="number" min="0"></label>
-        <label>연락처<input id="np-phone" type="tel"></label>
-        <label>보호자 연락처<input id="np-guardian" type="tel"></label>
+        <label>이름<input id="np-name" placeholder="홍길동"></label>
+        <label>나이<input id="np-age" type="number" min="0" placeholder="78"></label>
+        <label>연락처<input id="np-phone" type="tel" placeholder="010-0000-0000"></label>
+        <label>보호자 연락처<input id="np-guardian" type="tel" placeholder="010-0000-0000"></label>
         <label>선호 통화 시간<input id="np-time" type="time" value="10:00"></label>
-        <button data-act="addPerson">추가</button>
+        <button class="primary" data-act="addPerson">추가</button>
       </div>
     </section>
 
-    <section>
-      <h2>설정</h2>
+    <section id="sec-settings">
+      <div class="sec-head"><h2>설정</h2><span class="muted small">판정 파라미터</span></div>
       <div class="form">${Object.keys(DEFAULT_SETTINGS).map(k => `
         <label>${SETTING_LABEL[k]}<input id="set-${k}" type="number" step="any" value="${s[k]}"></label>`).join('')}
-        <button data-act="saveSettings">저장</button>
+        <button class="primary" data-act="saveSettings">저장</button>
       </div>
-      <p class="row" style="margin-top:16px">
+      <div class="row" style="margin-top:20px">
         <button data-act="reseed">시연 데이터 다시 만들기</button>
         <button data-act="wipe">전체 초기화</button>
-      </p>
-      <p class="muted">시연용이라 로그인이 없습니다. 실제 운영하려면 인증과 서버 저장이 필요합니다.</p>
+      </div>
+      <p class="note">시연용이라 로그인이 없습니다. 실제 운영하려면 인증과 서버 저장이 필요합니다.</p>
     </section>`;
 
   if (window.Chart) {
     const days = [...Array(30)].map((_, i) => addDays(today, i - 29));
     const count = status => days.map(dt => d.calls.filter(c => c.date === dt && c.status === status).length);
+    const bar = { borderRadius: 4, borderSkipped: false, borderWidth: { top: 2 }, borderColor: '#fff', maxBarThickness: 18 };
     charts.push(new Chart(document.getElementById('callChart'), {
       type: 'bar',
       data: {
         labels: days.map(dt => dt.slice(5)),
         datasets: [
-          { label: '완료', data: count('completed'), backgroundColor: '#2e7d32' },
-          { label: '무응답', data: count('missed'), backgroundColor: '#d32020' }
+          { label: '완료', data: count('completed'), backgroundColor: C.green, ...bar },
+          { label: '무응답', data: count('missed'), backgroundColor: C.orange, ...bar }
         ]
       },
-      options: { maintainAspectRatio: false, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, ticks: { precision: 0 } } } }
+      options: {
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { position: 'top', align: 'end' } },
+        scales: {
+          x: { stacked: true, grid: { display: false } },
+          y: { stacked: true, beginAtZero: true, ticks: { precision: 0 }, grid: { color: C.grid }, border: { display: false } }
+        }
+      }
     }));
   }
 
+  actions.jump = el => document.getElementById(el.dataset.to).scrollIntoView({ behavior: 'smooth' });
   actions.period = el => { period = el.dataset.v === 'null' ? null : +el.dataset.v; render(); };
   actions.deactivate = el => {
     const p = d.people.find(x => x.id === el.dataset.id);
@@ -329,7 +425,7 @@ function adminPerson(id) {
   const d = getData(), s = d.settings, today = todayStr();
   const p = d.people.find(x => x.id === id);
   if (!p) {
-    app.innerHTML = `<p>대상자를 찾을 수 없습니다.</p><a href="#/admin">관리자 화면으로</a>`;
+    app.innerHTML = `${appbar()}<section><p>대상자를 찾을 수 없습니다.</p><a href="#/admin">관리자 화면으로</a></section>`;
     return;
   }
   const st = personStatus(p, d.calls, s, today, getNightVitals);
@@ -337,32 +433,44 @@ function adminPerson(id) {
     .sort((a, b) => (a.status === 'closed') - (b.status === 'closed') || b.createdAt.localeCompare(a.createdAt));
   const calls = d.calls.filter(c => c.personId === id)
     .sort((a, b) => (b.date + b.startedAt).localeCompare(a.date + a.startedAt));
+  const openCount = alerts.filter(a => a.status !== 'closed').length;
 
   app.innerHTML = `
-    <div class="top"><h1>${esc(p.name)} <span class="muted">(${p.age}세)</span></h1><a href="#/admin">← 관리자 화면</a></div>
-    <section>
-      <p>연락처 ${esc(p.phone)} · 보호자 ${esc(p.guardianPhone)} · 선호 통화 시간 ${esc(p.preferredTime)} · 등록 ${p.enrolledAt}${p.active ? '' : ' · <b>비활성</b>'}</p>
-      <p>기저선: ${st.base.ready
-        ? `평균 ${st.base.mean.toFixed(1)}% · 표준편차 ${st.base.sd.toFixed(1)} (${st.baseStart} ~ ${st.baseEnd})`
-        : `기저선 형성 중 (${st.base.n}/${s.baselineDays}회)`}
-        · 30일 추세 기울기: ${st.slope == null ? '—' : `${st.slope >= 0 ? '+' : ''}${st.slope.toFixed(2)}%p/일`}</p>
-    </section>
+    ${appbar(`<a class="back" href="#/admin">${icon('back')}관리자 화면</a>`)}
+
+    <div class="hero">
+      <div class="profile">
+        <span class="avatar">${initial(p.name)}</span>
+        <div>
+          <h1>${esc(p.name)} <span style="font-weight:500;font-size:18px">${p.age ?? '—'}세</span>${p.active ? '' : ' <span class="tag">비활성</span>'}</h1>
+          <p>연락처 ${esc(p.phone)} · 보호자 ${esc(p.guardianPhone)} · 선호 ${esc(p.preferredTime)} · 등록 ${p.enrolledAt}</p>
+        </div>
+      </div>
+      <div class="stat-row">
+        <div><small>최근 점수</small><b>${pctText(st.lastScore)}</b></div>
+        <div><small>최근 z</small><b>${st.base.ready ? (st.lastZ?.toFixed(2) ?? '—') : '—'}</b></div>
+        <div><small>30일 추세 기울기</small><b>${slopeText(st.slope)}</b></div>
+        <div><small>기저선</small><b>${st.base.ready
+          ? `${st.base.mean.toFixed(1)}% ± ${st.base.sd.toFixed(1)}`
+          : `형성 중 ${st.base.n}/${s.baselineDays}회`}</b></div>
+      </div>
+    </div>
 
     <section>
-      <div class="top"><h2>인지 z-score · 야간 SpO2 · 안정 시 심박</h2>
-        <div class="row">${[30, 90].map(n => `<button data-act="range" data-v="${n}" class="${range === n ? 'on' : ''}">${n}일</button>`).join('')}</div>
+      <div class="sec-head"><h2>인지 z-score · 야간 SpO2 · 안정 시 심박</h2>
+        <div class="seg">${[30, 90].map(n => `<button data-act="range" data-v="${n}" class="${range === n ? 'on' : ''}">${n}일</button>`).join('')}</div>
       </div>
       <div class="chartbox"><canvas id="personChart"></canvas></div>
-      <p class="muted">파란 음영 = 기저선 구간 · 점선 = 관찰 기준 · 빈칸 = 통화 없음 또는 무효 측정일 (신호품질 &lt; ${s.sqiMin} 또는 착용 4시간 미만)</p>
+      <p class="muted small">초록 음영 = 기저선 구간${st.baseEnd ? ` (${st.baseStart} ~ ${st.baseEnd})` : ''} · 회색 점선 = 관찰 기준 · 빈칸 = 통화 없음 또는 무효 측정일 (신호품질 &lt; ${s.sqiMin} 또는 착용 4시간 미만)</p>
     </section>
 
     <section>
-      <h2>알림</h2>
+      <div class="sec-head"><h2>알림</h2><span class="muted small">열린 알림 ${openCount}건</span></div>
       ${alerts.map(alertCard).join('') || '<p class="muted">알림 없음</p>'}
     </section>
 
     <section>
-      <h2>통화 기록</h2>
+      <div class="sec-head"><h2>통화 기록</h2><span class="muted small">${calls.length}건</span></div>
       ${calls.map(callRow).join('') || '<p class="muted">통화 기록 없음</p>'}
     </section>`;
 
@@ -405,12 +513,12 @@ function adminPerson(id) {
 function alertCard(a) {
   const closed = a.status === 'closed';
   return `
-    <div class="alert-card ${closed ? 'closed' : ''}">
-      <div><b>${TYPE[a.type]}</b> <span class="badge lv-${a.level}">${LEVEL[a.level]}</span> · ${STATUS[a.status]} · 생성 ${stamp(a.createdAt)}</div>
-      <div class="muted">보호자 통보: ${stamp(a.notifiedAt)} · 연계: ${stamp(a.referredAt)}</div>
+    <div class="alert-card lvb-${a.level} ${closed ? 'closed' : ''}">
+      <div class="row"><b>${TYPE[a.type]}</b><span class="badge lv-${a.level}">${LEVEL[a.level]}</span><span class="tag">${STATUS[a.status]}</span></div>
+      <div class="muted small">생성 ${stamp(a.createdAt)} · 보호자 통보 ${stamp(a.notifiedAt)} · 연계 ${stamp(a.referredAt)}</div>
       <div class="row">
         <button data-act="notify" data-id="${a.id}" ${a.notifiedAt || closed ? 'disabled' : ''}>보호자 통보함</button>
-        <button data-act="refer" data-id="${a.id}" ${a.status !== 'open' ? 'disabled' : ''}>치매안심센터 연계함</button>
+        <button class="primary" data-act="refer" data-id="${a.id}" ${a.status !== 'open' ? 'disabled' : ''}>치매안심센터 연계함</button>
         <button data-act="close" data-id="${a.id}" ${closed ? 'disabled' : ''}>종결</button>
         <label>수검 결과
           <select data-change="outcome" data-id="${a.id}">
@@ -421,11 +529,11 @@ function alertCard(a) {
         </label>
       </div>
       ${a.type === 'cognition' ? `
-        <div><b>감별 체크리스트</b> <span class="muted">— 점수 하락이 다른 원인 때문일 수 있는지 확인</span>
+        <div class="checklist"><b>감별 체크리스트</b> <span class="muted small">점수 하락이 다른 원인 때문일 수 있는지 확인</span>
           <div class="checks">${Object.entries(CHECKS).map(([k, t]) => `
             <label><input type="checkbox" data-change="check" data-id="${a.id}" data-k="${k}" ${a.checklist?.[k] ? 'checked' : ''}> ${t}</label>`).join('')}</div>
         </div>` : ''}
-      <label>메모 <textarea data-change="note" data-id="${a.id}">${esc(a.note)}</textarea></label>
+      <label>메모<textarea data-change="note" data-id="${a.id}" placeholder="처리 내용을 적어 두세요">${esc(a.note)}</textarea></label>
     </div>`;
 }
 
@@ -434,15 +542,15 @@ function callRow(c) {
   return `
     <div class="call">
       <div class="call-head">
-        <b>${c.date}</b>
-        <span class="st-${c.status}">${CALL_STATUS[c.status]}</span>
+        <span class="date">${c.date}</span>
+        <span class="st st-${c.status}">${CALL_STATUS[c.status]}</span>
         ${c.status === 'missed' ? '' : `
           <span>점수 <b data-pct="${c.id}">${pctText(c.scorePct)}</b></span>
-          <span>${mmss(c.durationSec)}</span>
-          ${c.rotationDomain ? `<span class="muted">${DOMAIN_LABEL[c.rotationDomain]}</span>` : ''}
+          <span class="muted">${mmss(c.durationSec)}</span>
+          ${c.rotationDomain ? `<span class="tag">${DOMAIN_LABEL[c.rotationDomain]}</span>` : ''}
           ${c.audioId
-            ? `<button data-act="play" data-id="${c.id}">녹음 듣기</button><button data-act="delAudio" data-id="${c.id}">녹음 삭제</button>`
-            : '<span class="muted">녹음 없음</span>'}`}
+            ? `<button data-act="play" data-id="${c.id}">${icon('play')}녹음 듣기</button><button data-act="delAudio" data-id="${c.id}">${icon('trash')}녹음 삭제</button>`
+            : '<span class="muted small">녹음 없음</span>'}`}
       </div>
       <div id="pl-${c.id}"></div>
       ${c.items.length ? `
@@ -484,31 +592,38 @@ function drawPersonChart(p, st, s, today) {
       const { ctx, chartArea: area, scales: { x } } = chart;
       const half = (x.getPixelForValue(1) - x.getPixelForValue(0)) / 2;
       ctx.save();
-      ctx.fillStyle = 'rgba(11, 79, 168, 0.1)';
+      ctx.fillStyle = 'rgba(0, 117, 74, 0.08)';
       ctx.fillRect(x.getPixelForValue(i0) - half, area.top, x.getPixelForValue(i1) - x.getPixelForValue(i0) + 2 * half, area.bottom - area.top);
       ctx.restore();
     }
   };
+
+  const line = (label, data, color, axis) => ({
+    label, data, yAxisID: axis, borderColor: color, backgroundColor: color,
+    borderWidth: 2, pointRadius: 3, pointHoverRadius: 5, pointBorderColor: '#fff', pointBorderWidth: 1.5, cubicInterpolationMode: 'monotone'
+  });
 
   charts.push(new Chart(document.getElementById('personChart'), {
     type: 'line',
     data: {
       labels: labels.map(dt => dt.slice(5)),
       datasets: [
-        { label: '인지 z-score', data: labels.map(dt => zByDate[dt] ?? null), yAxisID: 'y', borderColor: '#0b4fa8', backgroundColor: '#0b4fa8', pointRadius: 2 },
-        { label: `관찰 기준 (z ${s.zWatch})`, data: labels.map(() => s.zWatch), yAxisID: 'y', borderColor: '#e65100', borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0 },
-        { label: '야간 최저 SpO2 (%)', data: nights.map(v => v?.spo2Min ?? null), yAxisID: 'y1', borderColor: '#7b1fa2', backgroundColor: '#7b1fa2', pointRadius: 2 },
-        { label: '안정 시 심박 (bpm)', data: nights.map(v => v?.hrRest ?? null), yAxisID: 'y2', borderColor: '#c62828', backgroundColor: '#c62828', pointRadius: 2 }
+        line('인지 z-score', labels.map(dt => zByDate[dt] ?? null), C.green, 'y'),
+        { label: `관찰 기준 (z ${s.zWatch})`, data: labels.map(() => s.zWatch), yAxisID: 'y', borderColor: C.gray, borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 0 },
+        line('야간 최저 SpO2 (%)', nights.map(v => v?.spo2Min ?? null), C.blue, 'y1'),
+        line('안정 시 심박 (bpm)', nights.map(v => v?.hrRest ?? null), C.orange, 'y2')
       ]
     },
     options: {
       maintainAspectRatio: false,
       spanGaps: false,
       interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { position: 'top', align: 'start' } },
       scales: {
-        y: { title: { display: true, text: 'z' } },
-        y1: { position: 'right', title: { display: true, text: 'SpO2 %' }, grid: { drawOnChartArea: false } },
-        y2: { position: 'right', title: { display: true, text: '심박' }, grid: { drawOnChartArea: false } }
+        x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkipPadding: 12 } },
+        y: { title: { display: true, text: 'z' }, grid: { color: C.grid }, border: { display: false } },
+        y1: { position: 'right', title: { display: true, text: 'SpO2 %' }, grid: { drawOnChartArea: false }, border: { display: false } },
+        y2: { position: 'right', title: { display: true, text: '심박' }, grid: { drawOnChartArea: false }, border: { display: false } }
       }
     },
     plugins: [shade]
