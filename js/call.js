@@ -1,6 +1,6 @@
 // 통화 시뮬레이션: 음성합성 → 녹음 + 받아쓰기 → 다음 문항
 
-import { planForDate, scoreItem, isRepeatAsk, scorePct } from './items.js';
+import { planForDate, scoreItem, isRepeatAsk, scorePct, SELF_QUESTIONS, CHAT_QUESTION, classifySleep, classifyMood, findRequests } from './items.js';
 import { todayStr, nowStamp } from './metrics.js';
 
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -35,13 +35,14 @@ export function startRing() {
   return () => { clearInterval(id); ctx.close(); };
 }
 
+let rate = 0.9; // 말 속도 (대상자 기본 정보 ③)
 function speak(text) {
   return new Promise(resolve => {
     if (aborted) return resolve();
     speechSynthesis.cancel();
     utter = new SpeechSynthesisUtterance(text);
     utter.lang = 'ko-KR';
-    utter.rate = 0.9;
+    utter.rate = rate;
     const ko = speechSynthesis.getVoices().find(v => v.lang.startsWith('ko'));
     if (ko) utter.voice = ko;
     const fallback = setTimeout(resolve, 4000 + text.length * 350); // onend가 안 오는 경우 대비
@@ -52,8 +53,12 @@ function speak(text) {
 
 // 통화 한 번. 끝나면 { call, blob } (화면을 떠나 중단되면 null). 마이크를 못 쓰면 예외.
 // ui: { time(초), question(글자), level(0~1) }
-export async function runCall(settings, ui) {
+// person.info.call: 호칭(title), 말 속도(rate), 질문 다시 읽기 허용 횟수(rereads), 자기보고 질문(selfReport)
+export async function runCall(settings, ui, person) {
   aborted = false;
+  const cfg = person?.info?.call || {};
+  rate = cfg.rate || 0.9;
+  const rereads = cfg.rereads ?? 1;
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   const date = todayStr();
   const startedAt = nowStamp();
@@ -80,28 +85,52 @@ export async function runCall(settings, ui) {
   const ctx = { ui, level, deadline: t0 + settings.maxCallSec * 1000, useSR: !!SR };
   const clock = setInterval(() => ui.time(Math.floor((performance.now() - t0) / 1000)), 500);
 
-  const results = [];
-  for (const item of plan.items) {
-    if (aborted || performance.now() >= ctx.deadline) break; // 통화 상한을 넘으면 남은 문항은 건너뛴다
-    const r = { key: item.key, question: item.question, transcript: '', score: null, maxScore: item.maxScore,
-      latencyMs: null, repeatAsks: 0, startMs: Math.round(performance.now() - t0), endMs: null };
-    ui.question(item.question);
-    let reread = false;
+  // 한 문항 묻고 듣기 (재질문이면 허용 횟수만큼 질문을 다시 읽는다). 재질문 발화도 대답 원문에 남긴다.
+  const ask = async (question, item) => {
+    const r = { answer: '', latencySec: null, repeatAsked: 0, startMs: Math.round(performance.now() - t0), endMs: null };
+    ui.question(question);
+    let left = rereads;
+    const said = [];
     for (;;) {
-      await speak(item.question);
+      await speak(question);
       if (aborted) break;
-      const ans = await listen(ctx, item, !reread);
-      r.repeatAsks += ans.asks;
-      if (ans.wantReread) { reread = true; continue; } // 재질문이면 질문을 한 번만 다시 읽는다
-      r.transcript = ans.text;
-      r.latencyMs = ans.latencyMs;
+      const ans = await listen(ctx, item, left > 0);
+      r.repeatAsked += ans.asks;
+      if (ans.wantReread) { left--; said.push(ans.text); continue; }
+      said.push(ans.text);
+      r.latencySec = ans.latencyMs == null ? null : Math.round(ans.latencyMs / 100) / 10;
       break;
     }
+    r.answer = said.filter(Boolean).join(' ');
     r.endMs = Math.round(performance.now() - t0);
-    r.score = item.maxScore === 0 ? 0 : ctx.useSR ? scoreItem(item, r.transcript) : null; // 받아쓰기 없으면 관리자가 채점
-    results.push(r);
+    return r;
+  };
+
+  const results = [];
+  const timeUp = () => aborted || performance.now() >= ctx.deadline; // 통화 상한을 넘으면 남은 문항은 건너뛴다
+  for (const [n, item] of plan.items.entries()) {
+    if (timeUp()) break;
+    const question = n === 0 && cfg.title ? `${cfg.title}, 안녕하세요. ${item.question}` : item.question;
+    const r = await ask(question, item);
+    results.push({
+      key: item.key, domain: item.domain, question, answer: r.answer, expected: item.expected,
+      score: ctx.useSR ? scoreItem(item, r.answer) : null, // 받아쓰기가 없으면 관리자가 채점
+      maxScore: item.maxScore, latencySec: r.latencySec, repeatAsked: r.repeatAsked, startMs: r.startMs, endMs: r.endMs
+    });
   }
   const allDone = results.length === plan.items.length;
+
+  // 자기보고(수면·기분, 켬/끔 설정)와 안부 대화 — 채점하지 않는다
+  const free = { key: 'free', maxSec: 20 };
+  let selfReport = null, chat = null;
+  if (allDone && cfg.selfReport !== false && !timeUp()) {
+    const sleep = await ask(SELF_QUESTIONS.sleep, free);
+    const mood = timeUp() ? null : await ask(SELF_QUESTIONS.mood, free);
+    // 대답이 없으면 분류하지 않는다
+    selfReport = { sleep: { answer: sleep.answer, value: sleep.answer ? classifySleep(sleep.answer) : null } };
+    if (mood) selfReport.mood = { answer: mood.answer, value: mood.answer ? classifyMood(mood.answer) : null };
+  }
+  if (allDone && !timeUp()) chat = { question: CHAT_QUESTION, answer: (await ask(CHAT_QUESTION, free)).answer };
 
   if (!aborted) {
     ui.question('오늘도 통화해 주셔서 감사합니다.');
@@ -116,13 +145,15 @@ export async function runCall(settings, ui) {
   return {
     blob: new Blob(chunks, { type: recorder.mimeType }),
     call: {
-      date, startedAt,
+      date, startedAt, time: startedAt.slice(11, 16), source: 'real',
       status: allDone ? 'completed' : 'partial',
       durationSec: Math.round((performance.now() - t0) / 1000),
       rotationDomain: plan.rotationDomain,
       setIndex: plan.setIndex,
       items: results,
-      scorePct: scorePct(results)
+      scorePct: scorePct(results),
+      selfReport, chat,
+      requests: [chat?.answer, selfReport?.sleep?.answer, selfReport?.mood?.answer].flatMap(findRequests)
     }
   };
 }

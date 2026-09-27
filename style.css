@@ -326,7 +326,7 @@ body.admin main { max-width: none; padding: 0; }
 .leaflet-popup-content-wrapper { border-radius: 16px; }
 
 /* 요약 카드 (한 줄 6칸, 좁으면 3칸) */
-.kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin: 16px 0; }
+.kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin: 16px 0; }
 .kpi {
   background: var(--surface); border-radius: var(--r-md); padding: 16px; box-shadow: var(--shadow);
   display: flex; flex-direction: column; gap: 2px; color: var(--ink); text-decoration: none; transition: transform 0.12s, box-shadow 0.12s; min-width: 0;
@@ -433,4 +433,85 @@ tr.click:hover td { background: #faf9f6; }
   .kpi-ic { display: none; }
   .ptable tr.click { cursor: pointer; }
   .info { grid-template-columns: 90px 1fr; }
+}
+
+/* =========================================================
+   대상자 상세 확장: 기본 정보 · 변화 추이 · 통화 대화록 · 돌봄일지
+   ========================================================= */
+.chip.warn { background: #fef3c7; color: #92400e; }
+.tag.real { background: #dbeafe; color: #1e40af; font-weight: 700; }
+.hero-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; position: relative; z-index: 1; }
+.contact-card { background: rgba(255, 255, 255, 0.12); border-radius: 18px; padding: 12px 14px; display: grid; gap: 4px; min-width: 190px; }
+.contact-card small { color: rgba(255, 255, 255, 0.7); font-size: 12px; }
+.contact-card .call-btn { background: #1fa855; border: 0; color: #fff; min-height: 36px; margin-top: 4px; }
+.subnav { margin-top: 0; }
+.wait { padding: 14px 16px; border-radius: var(--r-sm); background: #eff6ff; color: #1e40af; font-weight: 700; }
+.file-btn { cursor: pointer; margin-top: 8px; }
+.small-table { font-size: 13px; margin-top: 10px; }
+.small-table td, .small-table th { padding: 8px 6px; }
+
+/* 변화 추이 표 */
+.ttable td { vertical-align: middle; }
+.ttable .group-row td { background: #f6f4f0; font-size: 12px; font-weight: 700; color: var(--ink-2); padding: 6px 10px; }
+.ttable small { font-size: 11px; }
+.delta { font-weight: 700; white-space: nowrap; }
+.delta.good { color: #15803d; }
+.delta.bad { color: #c2410c; }
+.delta.neu { color: var(--ink-3); }
+.state { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #eeece8; color: var(--ink-2); }
+.state.bad { background: #ffedd5; color: #c2410c; }
+.state.good { background: #dcfce7; color: #15803d; }
+.state.neu { background: #e5e7eb; color: #374151; }
+.state.none { background: transparent; color: var(--ink-3); font-weight: 500; }
+.spark { display: block; }
+.sp-band { fill: rgba(0, 117, 74, 0.12); }
+.sp-line { fill: none; stroke: #00754a; stroke-width: 1.6; stroke-linejoin: round; }
+.sp-dot { fill: #00754a; }
+.trend-line { font-weight: 700; margin: 10px 0 4px; }
+
+/* 통화 대화록 */
+.crow { border-bottom: 1px solid var(--line); padding: 12px 0; }
+.crow > summary { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; justify-content: flex-start; cursor: pointer; }
+.crow > summary .date { font-weight: 700; min-width: 96px; }
+.crow > summary button { min-height: 30px; padding: 3px 12px; font-size: 13px; }
+.convo { display: grid; gap: 14px; margin-top: 12px; padding: 14px; background: #faf9f6; border-radius: var(--r-md); }
+.qa { display: grid; gap: 6px; }
+.bubble { max-width: 80%; padding: 10px 14px; border-radius: 16px; line-height: 1.5; }
+.bubble small { display: block; font-size: 11px; font-weight: 700; color: var(--ink-3); margin-bottom: 2px; }
+.bubble.app { justify-self: start; background: #fff; border: 1px solid var(--line); border-top-left-radius: 4px; }
+.bubble.me { justify-self: end; background: var(--brand-50); color: var(--brand-900); border-top-right-radius: 4px; }
+.grade { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; font-size: 13px; justify-content: flex-end; }
+.grade input { width: 4.5em; padding: 4px 6px; }
+.ans { display: inline-block; padding: 1px 8px; border-radius: 999px; font-weight: 700; font-size: 12px; margin: 1px; }
+.ans.hit { background: #dcfce7; color: #15803d; }
+.ans.miss { background: #f1efea; color: var(--ink-3); text-decoration: line-through; }
+.reqs { display: grid; gap: 6px; padding: 12px; border-radius: var(--r-sm); background: #fff7ed; }
+.reqs button { min-height: 30px; padding: 3px 12px; font-size: 13px; }
+
+/* 기본 정보 */
+.infosec .edited { margin: 10px 0 0; }
+.info-edit { display: grid; gap: 12px; }
+.info-edit h3 { margin: 8px 0 0; }
+.info-edit > label { display: grid; gap: 4px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.cond-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px 12px; }
+.cond-grid .year { width: 5.5em; padding: 4px 6px; margin-left: auto; }
+.rowform { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px; background: #faf9f6; border-radius: var(--r-sm); }
+.rowform input { flex: 1 1 120px; min-width: 0; }
+.rowform label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--ink-2); }
+ul.plain { margin: 0; padding-left: 18px; }
+
+/* 돌봄일지 */
+.jlist { display: grid; gap: 6px; }
+.jitem { justify-content: flex-start; gap: 10px; border-radius: var(--r-sm); flex-wrap: wrap; }
+.jitem.on { border-color: var(--brand); background: var(--brand-50); }
+.journal label { display: grid; gap: 4px; margin-top: 12px; }
+.journal textarea { width: 100%; font-size: 14px; line-height: 1.6; }
+.draft-banner { margin: 0 0 12px; padding: 10px 14px; border-radius: var(--r-sm); background: #fef3c7; color: #92400e; font-weight: 700; }
+.hist pre { white-space: pre-wrap; background: #faf9f6; padding: 10px; border-radius: var(--r-sm); font-size: 13px; }
+
+@media (max-width: 720px) {
+  .bubble { max-width: 92%; }
+  .grade { justify-content: flex-start; }
+  .contact-card { width: 100%; }
+  .ttable .group-row td { display: block; }
 }

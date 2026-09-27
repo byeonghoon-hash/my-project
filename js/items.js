@@ -48,7 +48,15 @@ const PARTICLES = ['', '요', '이요', '랑', '이랑', '하고', '도', '이',
 // ---------- 도우미 ----------
 const DOMAINS = ['attention', 'fluency', 'executive'];
 export const DOMAIN_LABEL = { attention: '주의력', fluency: '언어유창성', executive: '집행기능' };
-const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
+// 문항별 영역 이름 (통화 기록의 items[].domain)
+export const ITEM_DOMAIN = {
+  orientation: '지남력', register: '기억 등록', backward3: '주의력', backward4: '주의력',
+  fluency: '언어유창성', similarity1: '공통점', similarity2: '공통점', recall: '지연 회상'
+};
+// 자기보고(켬/끔 설정)와 안부 대화(채점 안 함) 질문
+export const SELF_QUESTIONS = { sleep: '어젯밤 잠은 잘 주무셨어요?', mood: '오늘 기분은 어떠세요?' };
+export const CHAT_QUESTION = '요즘 지내시기는 어떠세요? 불편하신 건 없으세요?';
+export const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
 const KDIGIT = '공일이삼사오육칠팔구';
 
 const dayIndex = date => Math.floor(Date.UTC(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8, 10)) / 864e5);
@@ -56,7 +64,7 @@ const hasBatchim = w => (w.charCodeAt(w.length - 1) - 0xac00) % 28 !== 0;
 const nospace = t => (t || '').replace(/\s+/g, '');
 
 // 1~31을 한글 숫자 읽기로 (예: 27 → 이십칠)
-function korNum(n) {
+export function korNum(n) {
   const tens = Math.floor(n / 10), ones = n % 10;
   return (tens ? (tens > 1 ? KDIGIT[tens] : '') + '십' : '') + (ones ? KDIGIT[ones] : '');
 }
@@ -97,10 +105,37 @@ export function planForDate(date, sets = 6) {
       { key: 'orientation', question: '오늘은 몇 월 며칠, 무슨 요일인가요?', maxScore: 3, maxSec: 20, date },
       { key: 'register', question: `제가 말하는 세 단어를 잘 듣고 따라 말해 주세요. ${words.join(', ')}.`, maxScore: 3, maxSec: 20, words },
       ...rotation,
-      { key: 'recall', question: '아까 따라 하신 세 단어를 다시 한 번 말해 주세요.', maxScore: 3, maxSec: 20, words },
-      { key: 'mood', question: '오늘 기분은 어떠세요?', maxScore: 0, maxSec: 20 }
-    ]
+      { key: 'recall', question: '아까 따라 하신 세 단어를 다시 한 번 말해 주세요.', maxScore: 3, maxSec: 20, words }
+    ].map(it => ({ ...it, domain: ITEM_DOMAIN[it.key], expected: expectedText(it) }))
   };
+}
+
+// 정답 문구 (통화 기록에 함께 저장)
+export function expectedText(item) {
+  switch (item.key) {
+    case 'orientation': {
+      const m = +item.date.slice(5, 7), d = +item.date.slice(8, 10);
+      return `${m}월 ${d}일 ${WEEKDAYS[new Date(Date.UTC(+item.date.slice(0, 4), m - 1, d)).getUTCDay()]}요일`;
+    }
+    case 'register': case 'recall': return item.words.join(', ');
+    case 'backward3': case 'backward4': return [...item.digits].reverse().join(' ');
+    case 'fluency': return '동물 이름 15개 이상 (3개당 1점)';
+    default: return item.keys.join(' / ');
+  }
+}
+
+// 자기보고 대답 분류 (규칙 기반)
+export const classifySleep = a => (/설쳤|못\s*잤|못\s*자|안\s*와|깼|뒤척|잠이\s*안/.test(a || '') ? 'poor' : 'good');
+export function classifyMood(a) {
+  if (/안\s*좋|나쁘|우울|속상|힘들|외롭|적적/.test(a || '')) return 'bad';
+  if (/좋(다|아|네|습|지)|상쾌|즐겁|기분\s*좋/.test(a || '')) return 'good';
+  return 'normal';
+}
+
+// 대화에서 요청 후보 찾기: 이런 표현이 들어간 문장을 그대로 뽑는다
+const REQUEST_WORDS = /해\s*줬으면|해\s*주면|필요하|갖다|도와|아프|아파/;
+export function findRequests(text) {
+  return (text || '').split(/[.?!…\n]+/).map(t => t.trim()).filter(t => t && REQUEST_WORDS.test(t));
 }
 
 // ---------- 자동 채점 ----------
@@ -123,7 +158,9 @@ export function scoreItem(item, transcript) {
 }
 
 // 월·일·요일 각 1점. 숫자("9월 27일")와 한글("구월 이십칠일") 모두 받는다.
-function scoreOrientation(date, t) {
+const scoreOrientation = (date, t) => Object.values(orientationParts(date, t)).filter(Boolean).length;
+export function orientationParts(date, answer) {
+  const t = nospace(answer);
   const m = +date.slice(5, 7), d = +date.slice(8, 10);
   const wd = WEEKDAYS[new Date(Date.UTC(+date.slice(0, 4), m - 1, d)).getUTCDay()];
   const notNum = '(^|[^0-9일이삼사오육유칠팔구십시])'; // 앞 글자가 숫자면 다른 수의 일부다 (예: 십이월 안의 이월)
@@ -133,13 +170,13 @@ function scoreOrientation(date, t) {
   const monthOk = monthWords.some(w => new RegExp(notNum + w + '월').test(t));
   const dayOk = [String(d), korNum(d)].some(w => new RegExp(notNum + w + '일').test(t));
   const wdOk = t.includes(wd + '요일') || t.includes(wd + '욜');
-  return monthOk + dayOk + wdOk;
+  return { month: monthOk, day: dayOk, weekday: wdOk };
 }
 
 // 중복 없는 동물 수. 낱말 뒤의 조사("호랑이요", "사자랑")는 허용한다.
 export function countAnimals(transcript) {
   const found = new Set();
-  for (const raw of (transcript || '').split(/[\s,.?!]+/)) {
+  for (const raw of (transcript || '').split(/[\s,.?!…]+/)) {
     for (const p of PARTICLES) {
       if (raw.endsWith(p) && ANIMAL_SET.has(raw.slice(0, raw.length - p.length))) {
         found.add(raw.slice(0, raw.length - p.length));
@@ -151,7 +188,7 @@ export function countAnimals(transcript) {
 }
 
 // 재질문("네?", "뭐라고", "다시", "잘 안 들려") 감지
-export const isRepeatAsk = transcript => /네\?|예\?|뭐라고|뭐라구|다시|안\s*들려|못\s*들었/.test(transcript || '');
+export const isRepeatAsk = transcript => /네\?|예\?|뭐라고|뭐라구|뭐라꼬|다시|안\s*들려|못\s*들었/.test(transcript || '');
 
 // 하루 점수(%) = 얻은 점수 / 그날 만점 × 100. 채점 안 된 문항이 있으면 null.
 export function scorePct(items) {

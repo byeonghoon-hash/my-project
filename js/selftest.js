@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import { planForDate, scoreItem, countAnimals, isRepeatAsk, scorePct } from './items.js';
 import { DEFAULT_SETTINGS as S, baseline, zScore, cognitionLevel, dashboard, addDays, riskOf, filterPeople, aiSummary } from './metrics.js';
 import { makeSalt, hashPassword, verifyPassword } from './store.js';
+import { completion7, autoChecklist, validPhone, personStatus, trendAll, trendCsv, journalDraft } from './metrics.js';
+import { parseRingCsv, toMinutes, nightsFromMinutes, pickVitals, importRing, recomputeRing } from './vitals.js';
+import { planForDate as plan2 } from './items.js';
+import { readFileSync } from 'node:fs';
+import ungchon from './ungchon.js';
 import { makeSeed } from './seed.js';
 
 const DATE = '2026-09-27'; // 일요일
@@ -115,7 +120,7 @@ assert.ok(!(await verifyPassword(acc, 'secret2')));
 
 // ---- aiSummary: 시연 대상자 10명 모두 문장이 있고, 진단 표현이 없음 ----
 const seed = makeSeed(S, today);
-const getV = (pid, dd) => seed.vitals.find(v => v.personId === pid && v.date === dd) || null;
+const getV = (pid, dd) => pickVitals(seed, pid, dd);
 assert.equal(seed.people.length, 10);
 for (const p of seed.people) {
   const ai = aiSummary(p, seed, today, getV);
@@ -125,5 +130,98 @@ for (const p of seed.people) {
 }
 const levels = seed.people.map(p => riskOf(p, seed, today, getV).level);
 assert.deepEqual(['high', 'mid', 'low'].map(l => levels.filter(x => x === l).length), [2, 3, 5]);
+
+// ======== 기본 정보 연결 ========
+const bp = { id: 'b1', enrolledAt: '2026-09-01', active: true, info: { call: { pause: null } } };
+const bcalls = [21, 22, 23, 24, 25, 26].map(dd => ({ personId: 'b1', date: `2026-09-${dd}`, status: 'completed', items: [] }));
+assert.equal(completion7(bp, bcalls, today).days, 6);
+bp.info.call.pause = { from: '2026-09-23', to: '2026-09-24', reason: '가족 방문' };
+assert.equal(completion7(bp, bcalls, today).days, 4); // 통화 일시중지 이틀은 분모에서 빠짐
+assert.deepEqual(autoChecklist({ info: { acute: [{ name: '감기', start: '2026-09-22', end: '' }], meds: [] } }, today), { acute: true, meds: false });
+assert.deepEqual(autoChecklist({ info: { acute: [{ name: '감기', start: '2026-08-01', end: '2026-08-20' }], meds: [{ name: 'A', changed: '2026-09-20' }] } }, today), { acute: false, meds: true });
+assert.ok(validPhone('010-0000-3010') && validPhone('0212345678'));
+assert.ok(!validPhone('010-12') && !validPhone('010-0000-30100') && !validPhone('010 0000 3010'));
+
+// 개인 SpO2 기준: 링 요약의 기준 미만 시간과 야간 SpO2 알림에 적용
+const ringText = readFileSync(new URL('../sample/ring_sample.csv', import.meta.url), 'utf8');
+const rp2 = { id: 'r2', enrolledAt: '2026-09-01', active: true, info: { call: { spo2Threshold: 90 }, device: { source: 'device', clockOffsetMin: 0, spo2OffsetPct: 0 } } };
+const rd = { settings: { ...S, spo2Below90Alert: 3, spo2AlertNights: 1 }, people: [rp2], calls: [], vitals: [], alerts: [], ringImports: [], ringNights: [] };
+importRing(rd, 'r2', 'ring_sample.csv', ringText);
+const rgetV = (pid, dd) => pickVitals(rd, pid, dd);
+assert.equal(rgetV('r2', '2026-09-27').spo2BelowMin, 3);
+assert.equal(personStatus(rp2, [], rd.settings, today, rgetV).levels.spo2, 'caution');
+rp2.info.call.spo2Threshold = 88; recomputeRing(rd, 'r2');
+assert.equal(rgetV('r2', '2026-09-27').spo2BelowMin, 0);
+assert.equal(personStatus(rp2, [], rd.settings, today, rgetV).levels.spo2, null);
+
+// ======== 통화 기록: 10명 대화록과 점수가 맞는지 ========
+for (const c of seed.calls.filter(c => c.status === 'completed')) {
+  const items = plan2(c.date, S.parallelSets).items;
+  for (const it of c.items) {
+    const pi = items.find(x => x.key === it.key);
+    assert.equal(scoreItem(pi, it.answer), it.score, `${c.id} ${it.key}: ${it.answer}`);
+    if (it.key === 'recall') assert.equal(pi.words.filter(w => it.answer.replace(/\s+/g, '').includes(w)).length, it.score); // 지연 회상 점수 = 대답에 나온 정답 단어 수
+  }
+}
+assert.ok(seed.people.every(p => seed.calls.some(c => c.personId === p.id && c.date >= addDays(today, -13) && c.items.every(i => i.answer)))); // 최근 14일 대화록
+
+// ======== 웨어러블 ========
+const parsed = parseRingCsv(ringText);
+assert.equal(parsed.intervalSec, 1);
+const night = nightsFromMinutes(toMinutes(parsed, 0.6), parsed.intervalSec, { threshold: 90 })[0];
+assert.equal(night.date, '2026-09-27');       // 깬 날 기준
+assert.equal(night.wearHours, 7.25);          // 15분 벗은 구간 제외
+assert.equal(night.spo2Min, 89);              // 잡음 구간(sqi 낮음)의 70%대 튐은 제외
+assert.equal(night.spo2BelowMin, 3);          // 89%인 3분
+assert.equal(night.hrRest, 56);               // 가장 낮은 5분 구간 평균
+const cal = nightsFromMinutes(toMinutes(parsed, 0.6), 1, { threshold: 90, spo2OffsetPct: 1, clockOffsetMin: 120 })[0];
+assert.equal(cal.spo2Min, 90);                // SpO2 보정 +1%p
+assert.equal(cal.wearHours, 5.75);            // 시계 +2시간: 07:00 이후는 밤에서 빠짐
+const mix = { people: [{ id: 'a', info: { device: { source: 'device' } } }, { id: 'b', info: { device: { source: 'mock' } } }],
+  vitals: [{ personId: 'a', date: today, spo2Min: 80 }, { personId: 'b', date: today, spo2Min: 93 }], ringNights: [{ personId: 'a', date: today, spo2Min: 91 }] };
+assert.equal(pickVitals(mix, 'a', today).spo2Min, 91); // 기기 → 실측
+assert.equal(pickVitals(mix, 'b', today).spo2Min, 93); // 모의 → 모의
+assert.equal(pickVitals(mix, 'a', '2026-09-01'), null);
+
+// ======== 변화 추이 ========
+const tp = { id: 't1', enrolledAt: '2026-08-10', active: true, info: { device: { source: 'device' }, call: {} } };
+const tcalls = [];
+for (let k = 0; k <= 48; k++) {
+  const dd = addDays('2026-08-10', k), recent = dd >= addDays(today, -6);
+  tcalls.push({ id: 'tc' + k, personId: 't1', date: dd, startedAt: dd + 'T10:00', status: 'completed', scorePct: 80, durationSec: 150,
+    items: [{ domain: '지남력', score: 3, maxScore: 3, latencySec: recent ? 3.2 : 2.0, repeatAsked: 0 }],
+    selfReport: recent && k % 2 ? { sleep: { answer: '잘 잤다.', value: 'good' } } : null });
+}
+const tnights = [];
+for (let k = 0; k < 20; k++) tnights.push({ personId: 't1', date: addDays('2026-09-05', k), hrRest: 60, spo2Min: k < 3 ? 95 : 90 + (k % 3), spo2BelowMin: 0, wearHours: k < 3 ? 2 : 7, sqi: 0.9 });
+const td = { settings: S, people: [tp], calls: tcalls, vitals: [], alerts: [], ringNights: tnights, visits: [] };
+const T = trendAll(td, tp, { days: 30 }, today, (pid, dd) => pickVitals(td, pid, dd));
+assert.equal(T.sleepPoor.recentN, 3);
+assert.equal(T.sleepPoor.status, '데이터 부족');  // 유효값 3개
+assert.equal(T.score.baseline.sd, 0);
+assert.equal(T.score.sdEff, S.sdMinScore);         // 표준편차 0 → 최솟값
+assert.equal(T.score.status, '유지');
+assert.equal(T.latency.status, '악화');            // 응답 지연이 늘면 악화
+assert.equal(T.spo2Min.baseline.n, 7);             // 링 기저선 = 처음 유효한 7밤 (앞의 무효 3밤은 제외)
+assert.equal(T.spo2Min.baseline.mean, [3, 4, 5, 6, 7, 8, 9].map(k => 90 + (k % 3)).reduce((a, b) => a + b) / 7);
+assert.ok(trendCsv(td, tp, today, (pid, dd) => pickVitals(td, pid, dd)).startsWith('﻿'));
+
+// ======== 돌봄일지 초안: 인용 문장은 모두 실제 대화록에 있음 ========
+for (const p of seed.people) {
+  const dr = journalDraft(p, seed, today, getV);
+  const said = seed.calls.filter(c => c.personId === p.id).flatMap(c => [c.chat?.answer, c.selfReport?.sleep?.answer, c.selfReport?.mood?.answer, ...c.items.map(i => i.answer)]).filter(Boolean);
+  for (const [, q] of dr.S.matchAll(/"([^"]+)"/g)) assert.ok(said.includes(q), `${p.name}: ${q}`);
+  assert.ok(!/치매|진단/.test((dr.S + dr.O + dr.A + dr.P).replace(/치매안심센터/g, '')), p.name);
+}
+
+// ======== 지도 좌표 ========
+const inRange = p => p.lat >= 35.42 && p.lat <= 35.53 && p.lng >= 129.15 && p.lng <= 129.28; // 웅촌면 범위
+assert.ok(seed.people.every(inRange));
+const ring = ungchon.geometry.coordinates[0];
+const inside = (y, x) => { let c = false; for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) { const [xi, yi] = ring[i], [xj, yj] = ring[j]; if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) c = !c; } return c; };
+for (const p of seed.people) assert.ok(inside(p.lat, p.lng), `${p.name} 좌표가 웅촌면 경계 밖`);
+const ybh = seed.people.find(p => p.name === '윤병훈');
+assert.equal(ybh.lat, 35.456938);
+assert.equal(ybh.lng, 129.195938);
 
 console.log('selftest 통과');

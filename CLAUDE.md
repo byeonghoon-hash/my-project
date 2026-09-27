@@ -29,9 +29,10 @@ js/store.js       localStorage 읽기/쓰기, IndexedDB 녹음 저장·삭제, �
 js/items.js       문항 뱅크, 오늘의 문항 선택(로테이션), 자동 채점
 js/call.js        통화 시뮬레이션: 음성합성 → 녹음 + 받아쓰기 → 다음 문항
 js/metrics.js     지표, 개인 기저선, z-score, 알림 단계, riskOf, aiSummary, 검색 필터 (순수 함수만, DOM 사용 금지)
-js/vitals.js      생체신호 연계 지점. 지금은 모의 데이터 (아래 '웨어러블 연계' 참고)
-js/seed.js        시연용 대상자 10명과 61일치(오늘 포함) 가상 기록·방문 생성 (SEED_VERSION)
+js/vitals.js      생체신호 연계 지점: 모의/실측 선택, 링 CSV 읽기·하룻밤 요약 (아래 '웨어러블 연계')
+js/seed.js        시연용 대상자 10명과 61일치(오늘 포함) 가상 기록·대화록·방문·요청·일지 생성 (SEED_VERSION)
 js/ungchon.js     울주군 웅촌면 경계 GeoJSON (개발할 때 한 번 받아 고정 저장)
+sample/ring_sample.csv  링 CSV 시험 파일
 js/selftest.js    metrics.js·items.js·seed.js·비밀번호 해시 검사
 ```
 
@@ -65,7 +66,8 @@ I-ME 로고와 큰 버튼 두 개: **[대상자 화면]** **[관리자 화면]**
 | 2 | 기억 등록 | 단어 3개 따라 말하기 | 3 |
 | 3 | 로테이션 과제 | 날짜에 따라 아래 셋 중 하나 | 과제별 |
 | 4 | 지연 회상 | 아까 단어 3개 다시 말하기 | 3 |
-| 5 | 안부 대화 | "오늘 기분은 어떠세요?" — 녹음만, 채점 안 함 (사회적 고립 완화) | – |
+| 5 | 자기보고 (켬/끔) | "어젯밤 잠은 잘 주무셨어요?" · "오늘 기분은 어떠세요?" — 규칙으로 good/poor, good/normal/bad 분류, 채점 안 함 | – |
+| 6 | 안부 대화 | "요즘 지내시기는 어떠세요? 불편하신 건 없으세요?" — 채점 안 함 (사회적 고립 완화). '해 줬으면·필요하·갖다·도와·아프' 같은 표현이 든 문장을 요청 후보로 뽑는다 | – |
 
 로테이션 과제 (`dayIndex % 3`):
 - 주의력: 숫자 거꾸로 말하기 2회 (3자리, 4자리) — 각 1점 = 2
@@ -79,29 +81,38 @@ I-ME 로고와 큰 버튼 두 개: **[대상자 화면]** **[관리자 화면]**
 
 자동 채점 결과는 관리자가 문항별로 고칠 수 있다 (받아쓰기 오류 대비).
 
-## 웨어러블 연계 (js/vitals.js) — 나중에 실제 기기로 바꿀 부분
+통화는 대상자 기본 정보 ③의 호칭(첫 질문 앞 인사), 말 속도, 질문 다시 읽기 허용 횟수(0~2), 자기보고 켬/끔을 읽어 쓴다. 재질문 발화도 대답 원문에 남긴다.
 
-앱의 나머지 부분은 **이 파일의 함수 하나만** 부른다. 지금은 seed가 만든 모의 데이터를 돌려준다.
+## 웨어러블 연계 (js/vitals.js)
+
+앱의 나머지 부분은 **이 파일의 `getNightVitals` 하나만** 부른다. 대상자 기본 정보 ⑤의 데이터 출처가 '기기'면 링 실측(`ringNights`), '모의'면 seed가 만든 `vitals`를 돌려준다(`pickVitals`). 시드는 '기기'인 사람의 모의 생체신호를 만들지 않는다.
 
 ```js
 // 대상자 한 명의 하룻밤 요약. 없으면 null.
 getNightVitals(personId, date /* 'YYYY-MM-DD' */) → {
   hrRest,          // 안정 시 심박수 (bpm)
   spo2Min,         // 야간 최저 SpO2 (%)
-  spo2Below90Min,  // SpO2 90% 미만 누적 시간 (분)
+  spo2BelowMin,    // 개인 SpO2 기준(기본 90%) 미만 시간 (분)
   wearHours,       // 야간 착용 시간 (시간)
   sqi,             // 신호품질지수 0~1
-  steps            // 일일 걸음 수
+  steps,           // 일일 걸음 수 (모의만, 판정에 안 씀)
+  source           // 'demo' | 'real'
 } | null
 ```
 
-나중에 실제 기기와 연결하는 방법 (지금은 **만들지 않고**, vitals.js 맨 위 주석으로만 남긴다):
-- (가) 기기가 위 형식의 JSON/CSV를 파일로 내보내면 관리자 화면에서 불러오기
+실제 기기 연결:
+- (가) **CSV 파일 불러오기 — 만들어 둠** (아래 '링 CSV 형식'). 윤병훈 상세 > 요약 > [링 데이터 불러오기].
 - (나) Web Bluetooth로 직접 받기 — 표준 Heart Rate 서비스(0x180D), Pulse Oximeter 서비스(0x1822). 크롬만 가능.
 - (다) 기기가 Wi-Fi로 서버에 올리고 앱은 그 서버에서 가져오기
 어느 방식이든 원자료(초 단위 심박·SpO2)를 위 하룻밤 요약으로 줄이는 계산은 vitals.js 안에서 한다.
 
 해석 원칙: PPG 기반 SpO2는 의료기기급이 아니므로 **절대값보다 개인 내 변화**로 해석한다. `sqi < 설정값`이거나 `wearHours < 4`인 밤은 '무효 측정일'로 치고 판정에 쓰지 않는다.
+
+### 링 CSV 형식 (펌웨어가 이 형식으로 저장)
+
+첫 줄은 머리글 `timestamp,hr,spo2,sqi,worn`, 그다음 한 줄에 샘플 하나: `2026-10-01T23:00:00,62,95,0.91,1`. `timestamp`는 로컬 ISO 시각(`YYYY-MM-DDTHH:MM:SS`, 시간대 표기 없음) 또는 초 단위 유닉스 시간(숫자). `hr`은 bpm, `spo2`는 %, 둘 중 빈칸이나 0은 결측. `sqi`는 신호품질 0~1, `worn`은 착용 1 / 미착용 0. 측정 간격은 자유(타임스탬프 차이의 중앙값으로 계산)이고, 한 파일에 여러 밤이 들어가도 된다. 앱은 22:00~07:00을 하룻밤(날짜는 깬 날)으로 묶고, 착용 중이며 sqi ≥ 설정값(기본 0.6)인 샘플만 써서 1분 중앙값 SpO2의 최저값·개인 기준 미만 분 수, 1분 평균 심박 중 가장 낮은 연속 5분 평균, 착용 시간(worn 샘플 수 × 간격)을 계산한다. 착용 4시간 이상이고 평균 sqi ≥ 설정값인 밤만 유효하다. CSV를 읽는 코드는 `parseRingCsv` 하나뿐이라, 펌웨어 출력이 바뀌면 그 함수만 고친다. 시험용 파일: `sample/ring_sample.csv` (하룻밤, 1초 간격, 23:00~06:30, 15분 미착용·5분 잡음·SpO2 89% 3분).
+
+원본 샘플은 저장하지 않는다(2주면 100만 줄 이상). 1분 단위로 묶은 값(`ringImports[].minutes`)과 하룻밤 요약(`ringNights`)만 저장하고, 시계 보정(분)·SpO2 보정(%p)·개인 SpO2 기준을 바꾸면 1분 값으로 다시 계산한다. 같은 밤은 나중에 불러온 파일이 덮어쓴다. 시드를 다시 만들어도 링 데이터는 지우지 않는다.
 
 ## 데이터 (js/store.js)
 
@@ -110,18 +121,33 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 ```js
 {
   settings: {...},                       // 아래 판정 파라미터
-  seedVersion: 2,                        // 올리면 시연 데이터를 새로 만든다 (accounts·settings는 유지)
+  seedVersion: 3,                        // 올리면 시연 데이터를 새로 만든다 (accounts·settings·링 데이터는 유지)
   people: [{ id, name, sex, age, phone, guardianPhone, preferredTime, enrolledAt, active,
-             address, lat, lng, manager, livesAlone }],   // manager는 계정 표시 이름과 같은 형식 ('이름 직종')
-  calls:  [{ id, personId, date, status: 'completed'|'missed'|'partial',
-             startedAt, durationSec, rotationDomain, setIndex,
-             items: [{ key, question, transcript, score, maxScore, latencyMs, repeatAsks }],
-             scorePct, audioId }],
-  vitals: [{ personId, date, hrRest, spo2Min, spo2Below90Min, wearHours, sqi, steps }],
+             address, lat, lng, manager,              // manager는 계정 표시 이름과 같은 형식 ('이름 직종')
+             info: {                                  // 기본 정보 (관리자 화면에서만 보인다)
+               conditions: [{ name, year }], acute: [{ name, start, end, hospitalized, memo }],
+               meds: [{ name, dose, start, changed, reason }],
+               devices: ['보청기 우측', ...], hearing, vision, speech, mobility, living, bodyMemo,
+               call: { title, days: [0..6], rate, rereads, retry: { count, interval }, selfReport, pause: { from, to, reason } | null, spo2Threshold },
+               contacts: [{ name, relation, phone, priority, consent }], clinic: { name, phone },
+               agencies: { center: { name, phone }, dementia: { name, phone } },
+               device: { name, source: 'mock'|'device', clockOffsetMin, spo2OffsetPct },
+               edited: { <섹션>: { by, at } } } }],
+  calls:  [{ id, personId, date, time, startedAt, status: 'completed'|'missed'|'partial', source: 'demo'|'real',
+             durationSec, scorePct, z, rotationDomain, setIndex,
+             items: [{ key, domain, question, answer, expected, score, maxScore, latencySec, repeatAsked, startMs, endMs }],
+             selfReport: { sleep: { answer, value }, mood: { answer, value } } | null,
+             chat: { question, answer } | null, requests: ['대상자 말 그대로', ...], edited: { by, at }, audioId }],
+  vitals: [{ personId, date, hrRest, spo2Min, spo2BelowMin, wearHours, sqi, steps }],       // 모의
+  ringImports: [{ id, personId, fileName, importedAt, samples, intervalSec, missingPct, from, to, validNights, invalidNights, minutes }],
+  ringNights: [{ personId, date, importId, hrRest, spo2Min, spo2BelowMin, wearHours, sqi, valid }], // 링 실측
   alerts: [{ id, personId, createdAt, type: 'cognition'|'spo2'|'hearing'|'noAnswer',
              level: 'watch'|'caution'|'refer', status: 'open'|'referred'|'closed',
-             referredAt, notifiedAt, outcome: null|'confirmed'|'normal', checklist: {...}, note }],
+             referredAt, notifiedAt, notifiedTo: { name, relation, phone }, outcome: null|'confirmed'|'normal', checklist: {...}, note }],
   visits: [{ id, personId, date, reason, status: 'planned'|'done'|'canceled' }],
+  requests: [{ id, personId, callId, date, text, status: 'open'|'done', createdAt, by }],   // 어르신 요청사항
+  journals: [{ id, personId, date, type, author, status: 'draft'|'final', auto, S, O, A, P, from,
+               history: [{ by, at, prev: { date, type, S, O, A, P } }], confirmedBy, confirmedAt, createdAt }],
   accounts: [{ id, username, name, job, org, salt, hash, createdAt }]   // 비밀번호 원문은 저장하지 않는다
 }
 ```
@@ -197,14 +223,41 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 
 **전체 현황** (위에서부터)
 1. 지역별 현황 지도 · 울주군 웅촌면 (Leaflet): 경계 점선 + 옅은 채우기, 경계에 맞춰 시작. 대상자는 `L.circleMarker`(반지름 9, 흰 테두리 2px), 높음을 맨 마지막에 그린다. 마우스를 올리면 이름, 누르면 팝업(이름·나이·위험도·사유 2개·최근 통화일·[상세 보기]). 오른쪽 위 범례. `scrollWheelZoom: false`. 높이 420px(모바일 320px).
-2. 요약 카드 5개 (누르면 해당 목록): 전체 대상자 · 미조치 알림 · 평균 통화 완료율 · 오늘 통화 · 방문 예정. '미처리 요청' 카드는 어르신 요청사항 데이터가 없어 넣지 않았다.
+2. 요약 카드 6개 (누르면 해당 목록): 전체 대상자 · 미조치 알림 · 평균 통화 완료율 · 오늘 통화(통화 일시중지 제외) · 방문 예정 · 미처리 요청.
 3. 위험도 분포 도넛(가운데 전체 인원, 아래에 글자로도 표시) + 우선 확인 대상자 상위 5명([상세] [방문 예약], 예정이 있으면 '방문 예정 MM/DD').
 4. 운영 지표: 아래 계획서 지표 카드와 통화 현황 그래프.
 5. 판정 설정(접힘): 판정 파라미터 편집 · [시연 데이터 다시 만들기] · [전체 초기화] (둘 다 회원 계정은 남긴다).
 
 **대상자 관리** (#/admin/people): 검색창('이름 또는 담당자 검색', 공백 무시·부분 일치), '내 담당만', 위험도 필터. 표(좁으면 카드): 이름 · 성별/나이 · 주소(리까지) · 담당자 · 위험도 · 최근 7일 완료율 · 최근 통화일 · 다음 방문일. 기본 정렬 위험도 높은 순, 열 제목으로 정렬. 대상자 추가(담당자·위도·경도 포함).
 
-**대상자 상세**: 상단 카드(위험도 칩 + reasons 칩) + 탭 — 요약(AI 종합 분석, 종합 케어 스코어 근거, 기본 정보, 정보 수정) · 분석 그래프 · 통화 기록 · 알림.
+대상자 관리 안에 보기 전환: 대상자 목록 · 어르신 요청사항(미처리/처리 완료) · 일지 관리(날짜·작성자·대상자 필터). 전체 현황 카드에 '미처리 요청'(가장 오래된 요청 경과일)이 있다.
+
+**대상자 상세**: 상단 카드(위험도·사유 칩, 주요 만성질환 2개, 진행 중 급성질환, 보조기기, 통화 일시중지 + 오른쪽에 1순위 비상연락처와 [전화] `tel:`) + 탭:
+- **요약**: AI 종합 분석 → 지표별 변화 추이(요약 표, [전체 보기]) → 야간 생체신호(링 불러오기·불러오기 기록) · 종합 케어 스코어 → 등록 정보(주소·담당자·위도·경도 수정).
+- **기본 정보**: ① 질환·복용약 ② 보조기기·신체 상태 ③ AI 통화 맞춤 설정 ④ 응급 연락처 ⑤ 웨어러블 기기. 섹션마다 [수정] → 그 자리에서 입력칸, 저장하면 '최종 수정: 이름 직종 · MM.DD HH:MM'. 전화번호는 숫자·하이픈 10~11자리, 모두 `tel:` 링크.
+- **변화 추이**: 아래 '변화 추이' 표 + 줄을 누르면 큰 그래프 + CSV 내보내기 + 겹쳐 보기(z · SpO2 · 심박).
+- **통화 기록**: 최신순, 펼치면 대화록(앱 질문 왼쪽 · 대상자 대답 원문 오른쪽 · 정답 비교 · 점수 수정 · 자기보고 · 안부 대화 · 찾은 요청 [요청 등록]).
+- **돌봄일지**: SOAP, 초안/확정, 확정 후 수정 이력, [통화 기록으로 초안 만들기].
+- **알림**: 알림 처리, [보호자 통보 기록](1순위 동의 보호자 자동 채움, 미동의 표시), 감별 체크리스트(급성질환·약물 변경 자동 체크).
+
+### 기본 정보가 판정·알림·통화에 쓰이는 곳 (위험도 등급 규칙은 그대로)
+- 급성질환이 진행 중이거나 14일 안에 끝남 → 체크리스트 '최근 급성 질환' 자동 체크, AI 분석에 '최근 급성 질환(병명, MM.DD~) — 일시 하락 가능성'.
+- 복용약 최근 변경일이 14일 안 → '약물 변경' 자동 체크, AI 분석에 한 줄.
+- 보청기 또는 청력 '경도 저하' 이상 → 난청 의심 알림을 만들지 않고 '청력 저하 기록 있음 — 보청기 착용·배터리 확인' (청력검사 연계는 권하지 않음).
+- 통화 일시중지 기간·통화 요일이 아닌 날 → 발신 대상일에서 뺀다 (무응답, 연속 무응답, 완료율, '오늘 통화').
+- 개인 SpO2 기준 → 야간 SpO2 알림·위험도·링 요약의 '기준 미만 시간'.
+- 호칭·말 속도·다시 읽기 횟수·자기보고 → 어르신 화면 통화. 무응답 재발신은 실제 발신을 붙일 때 쓰는 값(시연 통화는 발신하지 않음).
+- 거동 '대부분 도움'·'와상' → 우선 확인 목록에 '거동 제한' 칩 (등급은 안 바꿈).
+
+### 변화 추이 — `trendAll` / `trendSummary(data, person, key, { days, weekly }, today, getV)`
+표·큰 그래프·CSV·AI 분석·돌봄일지 초안 O가 모두 이 계산을 쓴다. 지표: 인지검사 점수, 기저선 대비 z, 영역별 6개(지남력·기억 등록·지연 회상·주의력·언어유창성(개수)·공통점, 접어 둠), 응답 지연, 재질문, 통화 완료율, 통화 시간, 잠 설침 비율, 기분 나쁨 비율, 야간 최저 SpO2, 기준 미만 시간, 안정 시 심박, 착용 시간, 유효한 밤 비율.
+- 열: 최근 7일 · 이전 7일 · 개인 기저선(인지·통화 = 처음 14회 통화, 링 = 처음 유효한 7밤) · 변화(최근 7일 − 기저선, 화살표·부호·색) · 스파크라인(기저선 ±1SD 띠) · 상태.
+- 상태: 최근 7일 값 4개 미만이거나 기저선 없음 → 데이터 부족. |변화| ≥ max(기저선 SD, 설정 최솟값) → 개선/악화(방향 없는 지표는 '변화'). 그 밖은 유지. 인지 z는 열린 인지 알림이 있으면 '악화' + 단계 칩.
+- 큰 그래프: 일별 점, 7일 이동평균, 기저선 띠, 사건(급성질환 회색 띠, 약물 변경 세로 점선, 통화 일시중지 빗금, 방문 삼각형). 인지 지표 점은 그날 통화 요약을 보여 주고 누르면 그 통화로 간다.
+- CSV: `I-ME_이름_지표추이_YYYYMMDD.csv`, UTF-8 BOM, 날짜 × 지표 + `source` 열 + 사건 목록.
+
+### 돌봄일지 초안 — `journalDraft` (규칙 기반. LLM 연동 시 이 함수만 교체, API 키는 서버에)
+기간: 마지막 확정 일지 다음 날 ~ 오늘 (없으면 최근 7일). S = 자기보고·안부 대화·요청 발화를 날짜와 함께 **따옴표로 그대로** 3~5개, O = trendSummary 결과(링 실측이면 '(링 실측)', 없으면 '링 데이터 없음'), A = 위험도·사유·감별 체크리스트·인지 외 원인, P = 권장 조치 + 다음 재평가일. 초안은 자동 확정하지 않는다.
 
 ### 운영 지표 (계획서 평가 지표)
 
@@ -231,13 +284,16 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 
 ## 시연 데이터 (js/seed.js)
 
-처음 실행해서 저장된 데이터가 없거나 `seedVersion`이 바뀌었으면 자동 생성(회원 계정·설정 유지). 대상자 10명, 61일치(오늘 포함). 위험도 분포는 **높음 2 · 주의 3 · 낮음 5**가 되도록 사람마다 난수 시드를 바꿔 가며 만든다.
-- 안정 5명 (낮음) · 점진적 저하 정옥자 (인지 '의뢰' → 높음) · 야간 저산소 강만복 (높음) · 재질문 잦음 조복례 (난청 의심 → 주의) · 무응답 윤칠성 (최근 2일 미응답 → 주의)
-- 윤병훈: 남 78세 독거, 울산광역시 울주군 웅촌면 대학길 27, 담당 박지연 간호사. 최근 2주 서서히 하락, 최근 z ≈ −1.6 → '인지 경미한 저하'(주의).
+처음 실행해서 저장된 데이터가 없거나 `seedVersion`이 바뀌었으면 자동 생성(회원 계정·설정·링 실측 데이터 유지). 대상자 10명, 61일치(오늘 포함). 위험도 분포는 **높음 2 · 주의 3 · 낮음 5**가 되도록 사람마다 난수 시드를 바꿔 가며 만든다.
+- 안정 5명(한복남·이옥분·박순자·최영희·오금례, 낮음) · 점진적 저하 이상철(인지 '의뢰' → 높음) · COPD·야간 저산소 서정길(SpO2 기준 88%, 높음) · 보청기·재질문 김말순(청력 저하 기록 → 주의) · 무응답 정두만(최근 2일 미응답 → 주의) · 윤병훈(최근 2주 지연 회상 하락, z ≈ −1.6~−1.8 → '인지 경미한 저하', 주의).
+- 윤병훈: 남 78세 독거, 울주군 웅촌면 대학길 27 (실제 위치 35.456938, 129.195938), 담당 박지연 간호사, 데이터 출처 '기기'(모의 생체신호 없음, 링 CSV로 채움).
+- 한복남: 급성질환 '감기' 5일 전부터 진행 중. 이상철: 복용약 9일 전 변경. 김말순: 보청기 우측·청력 중등도 이상·거동 대부분 도움.
 - 담당자: 박지연 간호사 · 윤병훈 간호사 · 김민수 사회복지사.
-- 위치: 나머지 9명은 웅촌면 법정리 9곳에 한 명씩, 주소는 '울산광역시 울주군 웅촌면 ○○리 (시연용)'처럼 리까지만 (지번을 지어내지 않는다). 좌표는 추정값이며 상세 > 정보 수정에서 고친다.
-- 앞으로 7일 안의 방문 예정 4건 (높음 2명 포함), 과거 알림 몇 건에 연계·수검 결과(PPV·오경보율 계산용).
-- 시연 데이터에는 녹음 파일이 없다 ('녹음 없음' 표시).
+- 위치: 나머지 9명은 법정리 9곳에 임의 좌표, 주소는 '울주군 웅촌면 ○○리 (시연용)'처럼 리까지만. 박순자(검단리)는 표의 좌표가 경계 밖이라 가장 가까운 경계 안쪽으로 옮겼다.
+- 통화 대화록: 대답을 경상도 말투로 먼저 만들고, 점수는 그 대답을 자동 채점한 값이다(대답과 점수가 항상 맞음).
+- 전화번호는 모두 `010-0000-` 가짜, 보호자 이름은 지어낸 것, 의료기관명은 '(시연용)'.
+- 방문 예정 4건, 어르신 요청사항(최근 10일 대화에서 찾은 요청), 대상자마다 확정 돌봄일지 1~3건, 과거 알림 몇 건(PPV·오경보율 계산용).
+- 시연 데이터에는 녹음 파일이 없다 ('녹음 없음').
 
 ## 완료 기준
 
@@ -245,4 +301,5 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 - 크롬에서: 첫 화면 → 대상자 화면 → 전화 받기 → 실제로 말해서 통화 끝까지 → 관리자 화면에서 방금 통화가 목록·지표에 반영되고 녹음이 재생됨.
 - 시연 데이터만으로 관리자 화면의 모든 카드에 숫자가 나오고, 위험도가 높음 2 · 주의 3 · 낮음 5로 지도·분포·우선 확인에 세 색이 모두 보임.
 - `node js/selftest.js`에 riskOf(높음 조건 하나 → high, 조건 없음 → low), 검색 필터, 비밀번호 해시(salt가 다르면 해시가 다름·검증), aiSummary(10명 모두 문장 있음·진단 표현 없음) 검사 포함.
+- selftest에 기본 정보 연결(일시중지 분모 제외, 자동 체크, 개인 SpO2 기준, 전화번호 형식), 대화록-점수 일치(10명), 링 요약·보정·모의/실측 선택, 변화 추이(데이터 부족·SD 최솟값·응답 지연 악화·링 기저선 7밤·CSV BOM), 일지 초안 인용 검증, 지도 좌표(범위·경계·윤병훈 고정값) 검사 포함.
 - 휴대폰 너비(390px)에서 가로 스크롤 없음.
