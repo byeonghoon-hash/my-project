@@ -1,7 +1,9 @@
 // 채점·지표 계산 검사. 실행: node js/selftest.js
 import assert from 'node:assert/strict';
 import { planForDate, scoreItem, countAnimals, isRepeatAsk, scorePct } from './items.js';
-import { DEFAULT_SETTINGS as S, baseline, zScore, cognitionLevel, dashboard, addDays } from './metrics.js';
+import { DEFAULT_SETTINGS as S, baseline, zScore, cognitionLevel, dashboard, addDays, riskOf, filterPeople, aiSummary } from './metrics.js';
+import { makeSalt, hashPassword, verifyPassword } from './store.js';
+import { makeSeed } from './seed.js';
 
 const DATE = '2026-09-27'; // 일요일
 const item = key => planForDate(DATE, 6).items.find(i => i.key === key)
@@ -83,5 +85,45 @@ const m = dashboard(data, 7, today, () => null);
 assert.equal(m.completionRate, 50);
 assert.equal(m.missedRate, (2 / 14) * 100);
 assert.equal(m.retention8w, 50); // a만 유지
+
+// ---- 위험도 riskOf ----
+const rp = { id: 'r1', enrolledAt: '2026-09-01', active: true };
+const okCalls = [20, 21, 22, 23, 24, 25, 26].map(dd => ({ personId: 'r1', date: `2026-09-${dd}`, status: 'completed', scorePct: 80, items: [] }));
+const rdata = (alerts = [], calls = okCalls) => ({ settings: S, people: [rp], calls, alerts });
+assert.equal(riskOf(rp, rdata(), today, () => null).level, 'low'); // 아무 조건 없음 → 낮음
+const spo2Alert = { personId: 'r1', type: 'spo2', level: 'caution', status: 'open' };
+assert.equal(riskOf(rp, rdata([spo2Alert]), today, () => null).level, 'high'); // 야간 SpO2 알림 하나만 → 높음
+const missed3 = [24, 25, 26].map(dd => ({ personId: 'r1', date: `2026-09-${dd}`, status: 'missed', items: [] }));
+assert.equal(riskOf(rp, rdata([], [...okCalls.slice(0, 4), ...missed3]), today, () => null).level, 'high'); // 연속 무응답 3일 → 높음
+assert.equal(riskOf(rp, rdata([{ ...spo2Alert, type: 'hearing', status: 'closed' }]), today, () => null).level, 'low'); // 종결된 알림은 안 셈
+
+// ---- 검색 필터 ----
+const ppl = [
+  { name: '윤병훈', manager: '박지연 간호사' }, { name: '김순자', manager: '윤병훈 간호사' },
+  { name: '이영수', manager: '김민수 사회복지사' }
+];
+assert.deepEqual(filterPeople(ppl, '윤 병훈').map(p => p.name), ['윤병훈', '김순자']);
+assert.deepEqual(filterPeople(ppl, '', '김민수 사회복지사').map(p => p.name), ['이영수']);
+
+// ---- 비밀번호 해시 ----
+const s1 = makeSalt(), s2 = makeSalt();
+assert.notEqual(s1, s2);
+assert.notEqual(await hashPassword(s1, 'secret1'), await hashPassword(s2, 'secret1')); // salt가 다르면 해시도 다름
+const acc = { salt: s1, hash: await hashPassword(s1, 'secret1') };
+assert.ok(await verifyPassword(acc, 'secret1'));
+assert.ok(!(await verifyPassword(acc, 'secret2')));
+
+// ---- aiSummary: 시연 대상자 10명 모두 문장이 있고, 진단 표현이 없음 ----
+const seed = makeSeed(S, today);
+const getV = (pid, dd) => seed.vitals.find(v => v.personId === pid && v.date === dd) || null;
+assert.equal(seed.people.length, 10);
+for (const p of seed.people) {
+  const ai = aiSummary(p, seed, today, getV);
+  assert.ok(ai.bullets.length >= 1, p.name);
+  const text = ai.bullets.map(b => b.text).join(' ') + ai.action + ai.risk.reasons.join(' ');
+  assert.ok(!/치매|진단/.test(text.replace('치매안심센터', '')), p.name + ': ' + text);
+}
+const levels = seed.people.map(p => riskOf(p, seed, today, getV).level);
+assert.deepEqual(['high', 'mid', 'low'].map(l => levels.filter(x => x === l).length), [2, 3, 5]);
 
 console.log('selftest 통과');
