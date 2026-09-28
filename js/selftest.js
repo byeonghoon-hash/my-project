@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 import ungchon from './ungchon.js';
 import { visitConflicts, visitChecks, ageFrom, findDuplicates, dashboard as dash2, aiSummary as ai2, trendAll as tall2, journalDraft as jd2 } from './metrics.js';
 import { makeSeed } from './seed.js';
+import { fmtDate, fmtMD, fmtMDW, fmtTime, fmtStamp, fmtDur, fmtNum, fmtUnit, timelineRange, layoutLabels, completionDelta, completionAvg } from './metrics.js';
 
 const DATE = '2026-09-27'; // 일요일
 const item = key => planForDate(DATE, 6).items.find(i => i.key === key)
@@ -280,6 +281,54 @@ const strip = t => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/<!--[\s\S]*?-->/g
 for (const f of ['app.js', 'metrics.js', 'call.js', 'items.js', 'vitals.js', 'store.js', 'seed.js', '../index.html']) {
   const code = strip(readFileSync(new URL(f, import.meta.url), 'utf8'));
   assert.ok(!/시연|데모|—|\p{Extended_Pictographic}/u.test(code), `${f}: ${code.match(/.{0,30}(시연|데모|—|\p{Extended_Pictographic}).{0,30}/u)?.[0]}`);
+}
+
+// ======== 표시 형식 ========
+assert.equal(fmtDate('2026-09-28'), '2026.09.28');
+assert.equal(fmtMD('2026-09-28'), '09.28');
+assert.equal(fmtMDW('2026-09-28'), '09.28(월)');
+assert.equal(fmtTime('2026-09-28 14:05:00'), '14:05');
+assert.equal(fmtStamp('2026-09-28 14:05:00'), '2026.09.28 14:05');
+assert.equal(fmtDur(151), '2분 31초');
+assert.equal(fmtDur(42), '42초');
+assert.equal(fmtNum(1234.5, 1), '1,234.5');
+assert.equal(fmtUnit(84, '%'), '84%');        // %는 붙이고
+assert.equal(fmtUnit(62, 'bpm'), '62 bpm');   // 나머지는 띄운다
+assert.equal(fmtUnit(null, '건'), '-');
+
+// ======== 오늘 시간표: 범위 · 이름 배치 ========
+assert.deepEqual(timelineRange([9 * 60, 15 * 60]), [480, 1080]);          // 기본 08~18시
+assert.deepEqual(timelineRange([18 * 60 + 30]), [480, 1140]);              // 18:30 → 19:00까지 넓힘
+assert.deepEqual(timelineRange([7 * 60 + 10]), [420, 1080]);               // 07:10 → 07:00부터
+const labs = layoutLabels([0, 10, 20, 30, 45, 60, 100, 130].map((x, i) => ({ x, name: 'n' + i, label: `n${i} 통화` })));
+for (const side of ['top', 'bottom']) {
+  const xs = labs.filter(l => l.side === side && !l.hidden).map(l => l.x);
+  for (let i = 1; i < xs.length; i++) assert.ok(xs[i] - xs[i - 1] >= 40, `같은 쪽 보이는 이름 간격 40px 이상 (${side})`);
+}
+assert.ok(labs.some(l => l.hidden));
+assert.ok(labs.every(l => l.label)); // 숨긴 이름도 aria-label 문구는 남는다
+assert.equal(labs.length, 8);
+
+// ======== 완료율 지난주 대비 ========
+{
+  const cd2 = makeSeed(S, today);
+  const cdl = completionDelta(cd2, today);
+  assert.equal(cdl.now, completionAvg(cd2, today));
+  assert.equal(cdl.prev, completionAvg(cd2, addDays(today, -7)));
+  assert.ok(Math.abs(cdl.delta - (cdl.now - cdl.prev)) < 1e-9);
+}
+
+// ======== 화면 코드: 브라우저 기본 창(alert·confirm·prompt) 없음, 색상 코드는 :root에만 ========
+for (const f of ['app.js', 'call.js', 'icons.js']) {
+  const code = strip(readFileSync(new URL(f, import.meta.url), 'utf8'));
+  assert.ok(!/(^|[^.\w])(alert|confirm|prompt)\s*\(/m.test(code), `${f}: alert/confirm/prompt`);
+  assert.ok(!/#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b/.test(code.replace(/#\/[\w/?=&.-]*/g, '')), `${f}: 색상 코드 ${code.match(/#[0-9a-fA-F]{3,6}\b/)?.[0]}`);
+}
+{
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const root = css.match(/:root\s*\{[\s\S]*?\n\}/)[0];
+  const rest = css.replace(root, '');
+  assert.ok(!/#[0-9a-fA-F]{3,8}\b/.test(rest), `style.css :root 밖 색상 코드: ${rest.match(/.{0,40}#[0-9a-fA-F]{3,8}\b/)?.[0]}`);
 }
 
 console.log('selftest 통과');

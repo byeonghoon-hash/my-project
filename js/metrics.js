@@ -325,6 +325,37 @@ export function dashboard(data, periodDays, today, getV) {
 // 실제로 측정하는 것만 쓴다: 통화 인지검사, 통화 응답, 야간 SpO2, 안정 시 심박(맥박)
 // =========================================================
 
+// ---------- 표시 형식: 모든 화면이 이 함수들만 쓴다 ----------
+const WD = '일월화수목금토';
+export const fmtDate = s => (s ? s.slice(0, 10).replace(/-/g, '.') : '-');                       // 상세: YYYY.MM.DD
+export const fmtMD = s => (s ? `${s.slice(5, 7)}.${s.slice(8, 10)}` : '-');                       // 목록: MM.DD
+export const fmtMDW = s => (s ? `${fmtMD(s)}(${WD[new Date(utc(s)).getUTCDay()]})` : '-');         // 09.28(월)
+export const fmtTime = s => (s ? (s.length > 5 ? s.slice(11, 16) : s.slice(0, 5)) : '-');         // HH:MM
+export const fmtStamp = s => (s ? `${fmtDate(s)}${s.length > 10 ? ' ' + fmtTime(s) : ''}` : '-');  // YYYY.MM.DD HH:MM
+export const fmtDur = sec => (sec == null ? '-' : sec < 60 ? `${Math.round(sec)}초` : `${Math.floor(sec / 60)}분 ${Math.round(sec % 60)}초`);
+export const fmtNum = (v, digits = 0) => (v == null || !Number.isFinite(+v) ? '-'
+  : Number(v).toLocaleString('ko-KR', { minimumFractionDigits: digits, maximumFractionDigits: digits }));
+// 숫자와 단위: '%'만 붙이고 나머지는 띄운다 (84%, 62 bpm, 3 건)
+export const fmtUnit = (v, unit, digits = 0) => (v == null || !Number.isFinite(+v) ? '-' : unit === '%' ? `${fmtNum(v, digits)}%` : `${fmtNum(v, digits)} ${unit}`);
+
+// ---------- 오늘 시간표 ----------
+// 가로축 범위(분): 기본 08:00~18:00. 벗어나는 일정이 있으면 그 시각을 포함하는 정시까지 넓힌다.
+export function timelineRange(minutes) {
+  let a = 8 * 60, b = 18 * 60;
+  for (const m of minutes) { a = Math.min(a, Math.floor(m / 60) * 60); b = Math.max(b, Math.ceil(m / 60) * 60); }
+  return [a, b];
+}
+// 이름 배치: x 순서대로 위·아래를 번갈아 붙이고, 같은 쪽 보이는 이름과 minGap보다 가까우면 숨긴다 (aria-label은 그대로 둔다)
+export function layoutLabels(items, minGap = 40) {
+  const last = { top: -Infinity, bottom: -Infinity };
+  return [...items].sort((a, b) => a.x - b.x).map((it, k) => {
+    const side = k % 2 ? 'bottom' : 'top';
+    const hidden = it.x - last[side] < minGap;
+    if (!hidden) last[side] = it.x;
+    return { ...it, side, hidden };
+  });
+}
+
 // 최근 7일 통화 완료율. 대상일은 dashboard와 같은 방식.
 export function completion7(person, calls, today) {
   const start = addDays(today, -6);
@@ -425,6 +456,16 @@ export function filterPeople(people, query, mine = null) {
     if (!q) return true;
     return (p.name || '').replace(/\s+/g, '').includes(q) || (p.manager || '').replace(/\s+/g, '').includes(q);
   });
+}
+
+// 활성 대상자 7일 통화 완료율 평균과 지난 7일 대비 변화(%p)
+export function completionAvg(data, today) {
+  const rates = data.people.filter(p => p.active).map(p => completion7(p, data.calls, today).rate).filter(v => v != null);
+  return rates.length ? mean(rates) : null;
+}
+export function completionDelta(data, today) {
+  const now = completionAvg(data, today), prev = completionAvg(data, addDays(today, -7));
+  return { now, prev, delta: now != null && prev != null ? now - prev : null };
 }
 
 // 권장 조치 (우선 확인 목록·AI 종합 분석·돌봄일지 초안이 같은 문구를 쓴다)
@@ -627,47 +668,47 @@ export function aiSummary(person, data, today, getV) {
 
   // 급성질환·약물 변경 (점수가 일시적으로 흔들릴 수 있는 인지 외 원인)
   const acute = recentAcute(person, today);
-  if (acute) items.push({ text: `최근 급성 질환(${acute.name}, ${mmdd(acute.start)}~${acute.end ? mmdd(acute.end) : ''}), 일시 하락 가능성`, off: true });
+  if (acute) items.push({ label: '급성 질환', text: `최근 급성 질환(${acute.name}, ${mmdd(acute.start)}~${acute.end ? mmdd(acute.end) : ''}), 일시 하락 가능성`, off: true });
   const med = recentMedChange(person, today);
-  if (med) items.push({ text: `최근 약물 변경(${med.name}, ${mmdd(med.changed)}), 일시 변화 가능성`, off: true });
+  if (med) items.push({ label: '약물 변경', text: `최근 약물 변경(${med.name}, ${mmdd(med.changed)}), 일시 변화 가능성`, off: true });
 
   // 통화 인지검사
   const sc = t.score;
-  if (sc.recent7 == null && st.lastScore == null) items.push({ text: `인지검사 · 기저선 형성 중 (0/${s.baselineDays}회)`, off: false });
-  else if (!st.base.ready) items.push({ text: `인지검사 점수 ${f1(sc.recent7 ?? st.lastScore)}% · 기저선 형성 중 (${st.base.n}/${s.baselineDays}회)`, off: false });
+  if (sc.recent7 == null && st.lastScore == null) items.push({ label: '통화 인지검사', text: `인지검사 · 기저선 형성 중 (0/${s.baselineDays}회)`, off: false });
+  else if (!st.base.ready) items.push({ label: '통화 인지검사', text: `인지검사 점수 ${f1(sc.recent7 ?? st.lastScore)}% · 기저선 형성 중 (${st.base.n}/${s.baselineDays}회)`, off: false });
   else {
     const z = st.lastZ;
     const trend = sc.prev7 == null || sc.recent7 == null ? '' : sc.recent7 - sc.prev7 <= -3 ? ', 2주간 하락 추세' : sc.recent7 - sc.prev7 >= 3 ? ', 2주간 상승 추세' : ', 2주간 안정';
     const read = z <= s.zWatch ? `개인 기저선 대비 z ${f1(z)}` : `개인 기저선 범위 (z ${f1(z)})`;
-    items.push({ text: `인지검사 점수 ${f1(sc.recent7 ?? st.lastScore)}% · ${read}${trend}`, off: z <= s.zWatch || trend === ', 2주간 하락 추세' });
+    items.push({ label: '통화 인지검사', text: `인지검사 점수 ${f1(sc.recent7 ?? st.lastScore)}% · ${read}${trend}`, off: z <= s.zWatch || trend === ', 2주간 하락 추세' });
     // 가장 떨어진 영역
     const worst = TREND_METRICS.filter(m => m.domain).map(m => [m, t[m.key]])
       .filter(([, x]) => x.status === '악화').sort((a, b) => b[1].score - a[1].score)[0];
-    if (worst) items.push({ text: `${worst[0].label} ${f1(worst[1].recent7)}${worst[0].unit} · 기저선 ${f1(worst[1].baseline.mean)} 대비 하락`, off: true });
+    if (worst) items.push({ label: '인지 영역', text: `${worst[0].label} ${f1(worst[1].recent7)}${worst[0].unit} · 기저선 ${f1(worst[1].baseline.mean)} 대비 하락`, off: true });
   }
 
   // 야간 SpO2 · 안정 시 심박
   const tag = device ? ' (링 실측)' : '';
   const ringNights = t.validRate.daily.filter(x => x.date >= addDays(today, -6));
   if (noDevice) { /* 웨어러블 없음: 생체신호 줄을 쓰지 않는다 */ }
-  else if (device && !t.validRate.daily.length) items.push({ text: '야간 SpO₂·심박 · 링 데이터 없음', off: false });
-  else if (!t.spo2Min.recentN) items.push({ text: `야간 SpO₂ · 최근 7일 유효 측정 없음 (착용·신호 확인 필요)${tag}`, off: true });
+  else if (device && !t.validRate.daily.length) items.push({ label: '야간 생체신호', text: '야간 SpO₂·심박 · 링 데이터 없음', off: false });
+  else if (!t.spo2Min.recentN) items.push({ label: '야간 SpO₂', text: `야간 SpO₂ · 최근 7일 유효 측정 없음 (착용·신호 확인 필요)${tag}`, off: true });
   else {
     const thr = spo2Threshold(person);
     const bad = t.spo2Below.daily.filter(x => x.date >= addDays(today, -6) && x.value >= s.spo2Below90Alert).length;
     items.push({
-      text: `야간 최저 SpO₂ ${f1(t.spo2Min.recent7)}% · ${thr}% 미만 ${f1(t.spo2Below.recent7)}분 (최근 7일 중 ${bad}밤)${thr !== 90 ? ' · 개인 기준' : ''}${tag}`,
+      label: '야간 SpO₂', text: `야간 최저 SpO₂ ${f1(t.spo2Min.recent7)}% · ${thr}% 미만 ${f1(t.spo2Below.recent7)}분 (최근 7일 중 ${bad}밤)${thr !== 90 ? ' · 개인 기준' : ''}${tag}`,
       off: bad >= s.spo2AlertNights || risk.signals.spo2
     });
     const hr = t.hrRest;
-    if (hr.delta != null && Math.abs(hr.delta) >= 5) items.push({ text: `안정 시 심박 ${f1(hr.recent7)}bpm · 평소 대비 ${hr.delta > 0 ? '+' : ''}${f1(hr.delta)}bpm${tag}`, off: Math.abs(hr.delta) >= 8 });
+    if (hr.delta != null && Math.abs(hr.delta) >= 5) items.push({ label: '안정 시 심박', text: `안정 시 심박 ${f1(hr.recent7)} bpm · 평소 대비 ${hr.delta > 0 ? '+' : ''}${f1(hr.delta)} bpm${tag}`, off: Math.abs(hr.delta) >= 8 });
   }
 
   // 통화 응답
   const run = risk.signals.missedRun;
-  if (!comp.days) items.push({ text: '통화 기록 없음', off: false });
+  if (!comp.days) items.push({ label: '통화 응답', text: '통화 기록 없음', off: false });
   else items.push({
-    text: `최근 7일 통화 완료 ${comp.done}/${comp.days}` + (run >= 2 ? ` · ${run}일 연속 미응답` : comp.rate != null && comp.rate < 80 ? ' · 목표 80% 미달' : ' · 응답 양호'),
+    label: '통화 응답', text: `최근 7일 통화 완료 ${comp.done}/${comp.days}` + (run >= 2 ? ` · ${run}일 연속 미응답` : comp.rate != null && comp.rate < 80 ? ' · 목표 80% 미달' : ' · 응답 양호'),
     off: run >= 2 || (comp.rate != null && comp.rate < 80)
   });
 
@@ -675,16 +716,16 @@ export function aiSummary(person, data, today, getV) {
   if (t.repeats.recent7 != null) {
     const avg = t.repeats.recent7;
     const read = risk.signals.hearing ? (risk.signals.hearingKnown ? '청력 저하 기록 · 보청기 착용·배터리 확인' : '난청 의심') : avg >= 1 ? '가끔 되물음' : '정상 범위';
-    items.push({ text: `통화당 재질문 ${f1(avg)}회 · ${read}`, off: risk.signals.hearing });
+    items.push({ label: '재질문', text: `통화당 재질문 ${f1(avg)}회 · ${read}`, off: risk.signals.hearing });
   }
 
   // 자기보고 수면
-  if (t.sleepPoor.recentN) items.push({ text: `잠을 설쳤다고 답함 ${f1(t.sleepPoor.recent7)}% · ${t.sleepPoor.status === '악화' ? '평소보다 늘어남' : '평소 수준'}`, off: t.sleepPoor.status === '악화' });
+  if (t.sleepPoor.recentN) items.push({ label: '수면 자기보고', text: `잠을 설쳤다고 답함 ${f1(t.sleepPoor.recent7)}% · ${t.sleepPoor.status === '악화' ? '평소보다 늘어남' : '평소 수준'}`, off: t.sleepPoor.status === '악화' });
 
   // 야간 착용
   if (!noDevice && (ringNights.length || !device)) {
     const worn = t.wear.daily.filter(x => x.date >= addDays(today, -6) && x.value >= 4).length;
-    items.push({ text: `야간 착용 ${worn}/7밤 · ${worn >= 5 ? '측정 양호' : '착용 권장 필요'}${tag}`, off: worn < 5 });
+    items.push({ label: '야간 착용', text: `야간 착용 ${worn}/7밤 · ${worn >= 5 ? '측정 양호' : '착용 권장 필요'}${tag}`, off: worn < 5 });
   }
 
   const bullets = [...items.filter(i => i.off), ...items.filter(i => !i.off)].slice(0, 7);
@@ -728,7 +769,7 @@ export function journalDraft(person, data, today, getV) {
     worst ? `- 가장 떨어진 영역: ${worst[0].label} 최근 7일 ${f1(worst[1].recent7)}${worst[0].unit} (기저선 ${f1(worst[1].baseline.mean)}${worst[0].unit})` : null,
     `- 응답 지연 ${f1(t.latency.recent7)}초 · 재질문 ${f1(t.repeats.recent7)}회/통화`,
     device && !t.validRate.daily.length ? '- 링 데이터 없음'
-      : t.spo2Min.recentN ? `- 야간 최저 SpO₂ ${f1(t.spo2Min.recent7)}% · 기준(${spo2Threshold(person)}%) 미만 ${f1(t.spo2Below.recent7)}분 · 안정 시 심박 ${f1(t.hrRest.recent7)}bpm${device ? ' (링 실측)' : ''}`
+      : t.spo2Min.recentN ? `- 야간 최저 SpO₂ ${f1(t.spo2Min.recent7)}% · 기준(${spo2Threshold(person)}%) 미만 ${f1(t.spo2Below.recent7)}분 · 안정 시 심박 ${f1(t.hrRest.recent7)} bpm${device ? ' (링 실측)' : ''}`
       : '- 야간 생체신호: 최근 7일 유효 측정 없음'
   ].filter(Boolean).join('\n');
 

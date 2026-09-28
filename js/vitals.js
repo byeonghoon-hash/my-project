@@ -41,12 +41,17 @@ export function parseRingCsv(text, clockOffsetMin = 0) {
   const n = lines.length;
   const t = new Float64Array(n), hr = new Float32Array(n), spo2 = new Float32Array(n), sqi = new Float32Array(n), worn = new Uint8Array(n);
   let k = 0, missing = 0;
-  for (const raw of lines) {
+  const bad = []; // 건너뛴 줄: { line(1부터), reason } — 화면에 줄 번호와 이유를 보여 준다
+  const num = v => v === '' || Number.isFinite(+v);
+  for (const [i, raw] of lines.entries()) {
     const line = raw.trim();
     if (!line || /^timestamp/i.test(line)) continue;
-    const [ts, h, o, q, w] = line.split(',').map(x => (x ?? '').trim());
+    const cols = line.split(',').map(x => x.trim());
+    const [ts, h, o, q, w] = cols;
+    if (cols.length < 5) { if (bad.length < 200) bad.push({ line: i + 1, reason: `열 ${cols.length}개 (5개 필요: timestamp,hr,spo2,sqi,worn)` }); continue; }
     const time = /^\d+(\.\d+)?$/.test(ts) ? +ts * 1000 : new Date(ts).getTime();
-    if (!Number.isFinite(time)) continue;
+    if (!Number.isFinite(time)) { if (bad.length < 200) bad.push({ line: i + 1, reason: `시각 형식 오류 (${ts.slice(0, 25)})` }); continue; }
+    if (![h, o, q, w].every(num)) { if (bad.length < 200) bad.push({ line: i + 1, reason: '숫자가 아닌 값' }); continue; }
     t[k] = time + clockOffsetMin * 60000;
     hr[k] = +h || 0;
     spo2[k] = +o || 0;
@@ -60,7 +65,7 @@ export function parseRingCsv(text, clockOffsetMin = 0) {
   for (let i = 1; i < k; i++) diffs[i - 1] = t[i] - t[i - 1];
   diffs.sort();
   const intervalSec = k > 1 ? diffs[Math.floor(diffs.length / 2)] / 1000 : 1;
-  return { t: t.subarray(0, k), hr: hr.subarray(0, k), spo2: spo2.subarray(0, k), sqi: sqi.subarray(0, k), worn: worn.subarray(0, k), count: k, intervalSec, missing };
+  return { t: t.subarray(0, k), hr: hr.subarray(0, k), spo2: spo2.subarray(0, k), sqi: sqi.subarray(0, k), worn: worn.subarray(0, k), count: k, intervalSec, missing, bad };
 }
 
 const median = a => { const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
@@ -137,7 +142,7 @@ const personOpts = (data, person) => ({
 // 파일 하나 불러오기 → 불러오기 기록. 같은 밤이 이미 있으면 새 값으로 바꾼다.
 export function importRing(data, personId, fileName, text) {
   const parsed = parseRingCsv(text); // 시계 보정은 분 단위 값에 나중에 더한다 (보정을 바꾸면 다시 계산)
-  if (!parsed.count) throw new Error('측정 줄 없음 · 첫 줄 형식: timestamp,hr,spo2,sqi,worn');
+  if (!parsed.count) throw Object.assign(new Error('측정 줄 없음 · 첫 줄 형식: timestamp,hr,spo2,sqi,worn'), { bad: parsed.bad });
   data.ringImports ??= [];
   const rec = {
     id: 'ri' + Date.now().toString(36), personId, fileName, importedAt: nowStamp(),
@@ -147,7 +152,7 @@ export function importRing(data, personId, fileName, text) {
   };
   data.ringImports.push(rec);
   recomputeRing(data, personId);
-  return rec;
+  return { ...rec, bad: parsed.bad }; // 건너뛴 줄은 저장하지 않고 화면에만 알린다
 }
 
 // 보정값·SpO2 기준이 바뀌었을 때도 부른다. 나중에 불러온 파일이 같은 밤을 덮어쓴다.

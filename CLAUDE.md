@@ -9,7 +9,7 @@
 
 - 만드는 사람은 컴퓨터공학 전공자가 아니다. **가장 단순하게 동작하는 방법**을 고른다.
 - 빌드 도구 없음. npm 패키지 설치 없음. 순수 HTML + CSS + JavaScript(ES 모듈).
-- 외부 라이브러리는 **Chart.js**(`https://cdn.jsdelivr.net/npm/chart.js`)와 **Leaflet**(`https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js`·`leaflet.css`, 지도) 두 개만 CDN으로 쓴다. 글꼴은 Pretendard CDN(없으면 기본 글꼴). 지도 타일은 OpenStreetMap이며 출처 표기를 반드시 넣는다.
+- 외부 라이브러리는 **Chart.js**(`https://cdn.jsdelivr.net/npm/chart.js`)와 **Leaflet**(`https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js`·`leaflet.css`, 지도) 두 개만 CDN으로 쓴다. 글꼴은 Google Fonts의 IBM Plex Sans KR(본문)·Space Grotesk(숫자)(없으면 기본 글꼴). 지도 타일은 CARTO 밝은 지도(OpenStreetMap 기반)이며 출처 '© OpenStreetMap contributors © CARTO'를 반드시 넣는다.
 - 브라우저 기본 기능을 먼저 쓴다: `speechSynthesis`(질문 읽기), `MediaRecorder`(녹음), `SpeechRecognition`(받아쓰기, 크롬), `AnalyserNode`(말 시작·침묵 감지), `localStorage`, `IndexedDB`(녹음 파일만).
 - 서버·DB 없음. 모든 데이터는 브라우저에 저장된다. 로그인도 브라우저 안에서만 하는 시연용이다 (아래 '로그인').
 - 파일은 아래 구조보다 늘리지 않는다. 쓰이지 않는 설정, 미리 만든 확장 구조, 불필요한 추상화는 만들지 않는다.
@@ -25,7 +25,8 @@ index.html        단일 페이지. 해시 라우팅: #/ (첫 화면) · #/user 
                   · #/admin/p/<id>[/summary|info|trend|calls|visits|journal|alerts]
 style.css
 package.json      {"type":"module"} 한 줄만 (node가 selftest를 ES 모듈로 실행하도록)
-js/app.js         라우팅과 화면 그리기
+js/app.js         라우팅과 화면 그리기, 모달(modal·confirmBox)과 알림 메시지(toast)
+js/icons.js       선 아이콘 SVG 모음 (16/18/20px)
 js/store.js       localStorage 읽기/쓰기, IndexedDB 녹음 저장·삭제, 회원 계정(비밀번호 해시·로그인 상태)
 js/items.js       문항 뱅크, 오늘의 문항 선택(로테이션), 자동 채점
 js/call.js        통화 시뮬레이션: 음성합성 → 녹음 + 받아쓰기 → 다음 문항
@@ -36,6 +37,15 @@ js/ungchon.js     울주군 웅촌면 경계 GeoJSON (개발할 때 한 번 받�
 sample/ring_sample.csv  링 CSV 시험 파일
 js/selftest.js    metrics.js·items.js·seed.js·비밀번호 해시 검사
 ```
+
+## 디자인 규칙 (style.css)
+
+- 색·간격·모서리·그림자·겹침 순서는 `:root` 변수에만 둔다. 화면 CSS와 JS에 색상 코드를 직접 쓰지 않는다 (차트·지도 색은 `getComputedStyle`로 변수를 읽는다). selftest가 검사한다.
+- 부품은 CSS 클래스: `.btn`(`-primary`·`-secondary`·`-ghost`·`-danger`, `-sm`, `-icon`; 한 영역에 primary 하나) · 입력칸 · `.chip`(`-low`·`-mid`·`-high`·`-info`·`-neutral`, 위험도 칩은 글자 포함) · `.card` · `.glass` · `.table` · `.tabs` · `.toggle`/`.seg` · `[data-tip]` 말풍선.
+- JS 부품은 두 개만: `modal()`(480/720/1040px, 포커스 가두기, Esc·바깥 클릭, 작성 중이면 확인) · `toast()`(오른쪽 아래 3초, 실패 5초, 되돌리기). `alert`·`confirm`·`prompt`는 쓰지 않는다 (위험한 동작은 `confirmBox({ danger })`에 무엇이 사라지는지 한 줄).
+- 표시 형식은 metrics.js의 `fmt*` 함수만 쓴다: 날짜 YYYY.MM.DD · 목록 MM.DD · 09.28(월) · 시간 '2분 31초' · 숫자+단위는 '%'만 붙이고 나머지는 띄운다('62 bpm').
+- 이모지·그라데이션 없음. 움직임은 150ms(마우스 올림)·200ms(모달·서랍), `prefers-reduced-motion`이면 끈다. 다크 모드는 없다.
+- 인쇄: 사이드바·버튼·유리판을 숨기고 요약 탭·돌봄일지를 A4로, 머리에 '이름 · 출력일 · 출력자'.
 
 ## 첫 화면
 
@@ -206,7 +216,7 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 - **mid**: 스코어 55–74, 또는 열린 인지 알림 '관찰'·'주의', 또는 연속 무응답 2일, 또는 열린 난청 의심 알림
 - **low**: 그 밖
 - `reasons`: '인지 기저선 이탈 · 연계 검토' / '인지 저하 신호 · 연속 이탈' / '인지 경미한 저하' / '최근 n일 미응답' / '야간 저산소 반복' / '난청 의심 · 재질문 잦음' / '안정 시 심박 변화' / '종합 케어 스코어 n점'
-- 색은 style.css의 `--risk-low #16a34a` · `--risk-mid #f59e0b` · `--risk-high #dc2626` 한 곳에서 정한다.
+- 색은 style.css `:root`의 `--low` · `--mid` · `--high`(+ `-bg`·`-fg`) 한 곳에서 정한다.
 
 ## AI 종합 분석 — `aiSummary(person, data, today, getV)` → `{ bullets, action }`
 
@@ -227,9 +237,11 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 
 ## 관리자 화면 (#/admin)
 
-**사이드바(목록창)**: 전체 현황 · 대상자 관리 · 로그인(로그인 상태면 로그아웃). 맨 아래에 '담당 인력 / 표시 이름 / 소속'. 폭 900px 미만이면 접고 상단 메뉴 버튼으로 연다.
+**사이드바(아이콘 레일)**: 76px 짙은 띠에 전체 현황 · 대상자 · 로그아웃. 맨 아래 이니셜 원 + 이름·직종. 펼침 버튼으로 240px(이 브라우저에 기억). 768px 이하면 상단 바 + 서랍.
 
-**전체 현황** (위에서부터)
+**전체 현황** (새 배치, 위에서부터): ① 오늘 시간표 띠(할 일 N건, 칩 4개, [전체]/[내 담당] 기본 내 담당, 통화 점·방문 막대·현재 시각 선, `timelineRange`·`layoutLabels`) ② 지도 560px 위 유리판(왼쪽 위 요약 6칸 · 오른쪽 우선 확인 316px · 왼쪽 아래 범례) ③ 방문 일정 2주/월간 캘린더 ④ 위험도 도넛(누르면 대상자 목록 거르기) ⑤ 최근 14일 통화(완료·무응답·대기 + 목표 80% 점선) ⑥ 운영 지표 줄 목록 ⑦ 판정 설정(접힘). 1200px 이하면 요약·우선 확인이 지도 아래 카드로 내려간다.
+
+(아래는 각 항목의 내용 기준)
 1. 지역별 현황 지도 · 울주군 웅촌면 (Leaflet): 경계 점선 + 옅은 채우기, 경계에 맞춰 시작. 대상자는 `L.circleMarker`(반지름 9, 흰 테두리 2px), 높음을 맨 마지막에 그린다. 마우스를 올리면 이름, 누르면 팝업(이름·나이·위험도·사유 2개·최근 통화일·[상세 보기]). 오른쪽 위 범례. `scrollWheelZoom: false`. 높이 420px(모바일 320px).
 2. 요약 카드 6개 (누르면 해당 목록): 전체 대상자 · 미조치 알림 · 평균 통화 완료율 · 오늘 통화(통화 일시중지·첫 통화일 전 제외) · 방문 예정(누르면 방문 일정으로 스크롤) · 미처리 요청.
 3. 위험도 분포 도넛(가운데 전체 인원, 아래에 글자로도 표시) + 우선 확인 대상자 상위 5명([상세] [방문 예약] → 방문 등록 창, 예정이 있으면 '방문 예정 MM.DD').
