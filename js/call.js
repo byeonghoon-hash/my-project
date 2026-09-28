@@ -64,11 +64,14 @@ export async function runCall(settings, ui, person) {
   const startedAt = nowStamp();
   const plan = planForDate(date, settings.parallelSets);
 
-  // 통화 전체를 한 파일로 녹음
+  // 통화 전체를 한 파일로 녹음. 통화 녹음 미동의면 녹음하지 않고 채점만 한다 (마이크는 받아쓰기·음량 감지에 쓴다)
+  const record = person?.info?.consent?.recording !== false;
   const chunks = [];
-  const recorder = new MediaRecorder(stream);
-  recorder.ondataavailable = e => e.data.size && chunks.push(e.data);
-  recorder.start(1000);
+  const recorder = record ? new MediaRecorder(stream) : null;
+  if (recorder) {
+    recorder.ondataavailable = e => e.data.size && chunks.push(e.data);
+    recorder.start(1000);
+  }
 
   // 음량 측정 (말 시작·침묵 감지)
   const actx = new AudioContext();
@@ -137,13 +140,13 @@ export async function runCall(settings, ui, person) {
     await speak('오늘도 통화해 주셔서 감사합니다.');
   }
   clearInterval(clock);
-  await new Promise(resolve => { recorder.onstop = resolve; recorder.stop(); });
+  if (recorder) await new Promise(resolve => { recorder.onstop = resolve; recorder.stop(); });
   stream.getTracks().forEach(t => t.stop());
   actx.close();
   if (aborted) return null;
 
   return {
-    blob: new Blob(chunks, { type: recorder.mimeType }),
+    blob: new Blob(chunks, { type: recorder?.mimeType || 'audio/webm' }), // 녹음하지 않았으면 빈 파일 → 저장 안 함
     call: {
       date, startedAt, time: startedAt.slice(11, 16), source: 'real',
       status: allDone ? 'completed' : 'partial',

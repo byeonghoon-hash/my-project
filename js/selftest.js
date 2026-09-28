@@ -8,6 +8,7 @@ import { parseRingCsv, toMinutes, nightsFromMinutes, pickVitals, importRing, rec
 import { planForDate as plan2 } from './items.js';
 import { readFileSync } from 'node:fs';
 import ungchon from './ungchon.js';
+import { visitConflicts, visitChecks, ageFrom, findDuplicates, dashboard as dash2, aiSummary as ai2, trendAll as tall2, journalDraft as jd2 } from './metrics.js';
 import { makeSeed } from './seed.js';
 
 const DATE = '2026-09-27'; // 일요일
@@ -223,5 +224,62 @@ for (const p of seed.people) assert.ok(inside(p.lat, p.lng), `${p.name} 좌표�
 const ybh = seed.people.find(p => p.name === '윤병훈');
 assert.equal(ybh.lat, 35.456938);
 assert.equal(ybh.lng, 129.195938);
+
+// ======== 방문 겹침·한도 ========
+const vbase = { personId: 'x', visitor: '박지연 간호사', date: '2026-10-01', status: 'planned' };
+const vA = { ...vbase, id: 'A', startTime: '10:00', durationMin: 60 };                 // 10:00~11:00
+const at = (t, dur = 60, extra = {}) => ({ ...vbase, id: 'N', startTime: t, durationMin: dur, ...extra });
+assert.equal(visitConflicts([vA], at('11:10'), 20).length, 1);                        // 이동 여유 20분 안 → 겹침
+assert.equal(visitConflicts([vA], at('11:20'), 20).length, 0);                        // 경계: 기존 끝 = 새 시작 − 여유 → 안 겹침
+assert.equal(visitConflicts([vA], at('08:40'), 20).length, 0);                        // 새 끝(09:40) = 기존 시작 − 여유 → 안 겹침
+assert.equal(visitConflicts([vA], at('08:50'), 20).length, 1);
+assert.equal(visitConflicts([vA], at('10:30', 60, { visitor: '김민수 사회복지사' }), 20).length, 0); // 다른 방문자
+assert.equal(visitConflicts([{ ...vA, status: 'canceled' }], at('10:30'), 20).length, 0);           // 취소된 방문은 제외
+const vd = { settings: S, people: [{ id: 'x', info: { call: {} } }], visits: ['08:00', '10:00', '13:00', '15:00'].map((t, k) => ({ ...vbase, id: 'v' + k, startTime: t, durationMin: 30 })) };
+assert.ok(visitChecks(vd, at('17:00', 30), '2026-09-28T09:00').warnings.some(w => w.includes('하루 한도')));   // 하루 한도 4건
+assert.ok(!visitChecks({ ...vd, visits: vd.visits.slice(0, 3) }, at('17:00', 30), '2026-09-28T09:00').warnings.some(w => w.includes('하루 한도')));
+assert.ok(visitChecks(vd, at('17:00', 30), '2026-10-02T09:00').errors.length);          // 지난 날짜
+assert.ok(visitChecks(vd, at('17:40', 30), '2026-09-28T09:00').warnings.some(w => w.includes('08:00~18:00'))); // 18:00 넘김
+
+// ======== 나이·중복 ========
+assert.equal(ageFrom('1950-09-28', '2026-09-28'), 76);
+assert.equal(ageFrom('1950-09-29', '2026-09-28'), 75);
+assert.ok(ageFrom('1970-01-01', today) < 60);                                            // 60세 미만 → 확인 창 대상
+const pp = [{ id: 'a', name: '김새봄', birth: '1950-04-05', phone: '010-0000-7777' }];
+assert.equal(findDuplicates(pp, { name: '김새봄', birth: '1950-04-05', phone: '010-0000-1234' }).length, 1); // 이름+생년월일
+assert.equal(findDuplicates(pp, { name: '박가을', birth: '1940-01-01', phone: '01000007777' }).length, 1);   // 전화번호 (하이픈 무시)
+assert.equal(findDuplicates(pp, { name: '김새봄', birth: '1951-04-05', phone: '010-0000-1234' }).length, 0);
+assert.equal(findDuplicates(pp, { id: 'a', name: '김새봄', birth: '1950-04-05', phone: '010-0000-7777' }).length, 0); // 자기 자신
+
+// ======== 새 대상자: 데이터가 없어도 빈 상태로 ========
+const np = { id: 'n1', name: '새 대상자', enrolledAt: today, active: true, info: { device: { source: 'none' }, call: { firstCall: addDays(today, 1) }, contacts: [] } };
+const nd = { settings: S, people: [np], calls: [], vitals: [], alerts: [], visits: [], journals: [], ringNights: [] };
+const ngetV = (pid, dd) => pickVitals(nd, pid, dd);
+const nai = ai2(np, nd, today, ngetV);
+assert.equal(nai.risk.level, 'low');
+assert.ok(nai.bullets.some(b => b.text.includes(`기저선 형성 중 (0/${S.baselineDays}회)`)));
+assert.ok(Object.values(tall2(nd, np, { days: 30 }, today, ngetV)).every(t => t.status === '데이터 부족'));
+assert.ok(jd2(np, nd, today, ngetV).S.includes('통화 기록 없음'));
+
+// ======== 종결 대상자 제외 ========
+const cd = makeSeed(S, today);
+const cgetV = (pid, dd) => pickVitals(cd, pid, dd);
+const before = dash2(cd, 7, today, cgetV);
+const cp = cd.people[0];
+cp.closed = { reason: '이사', date: today }; cp.active = false;
+const after = dash2(cd, 7, today, cgetV);
+assert.equal(cd.people.filter(p => p.active).length, 9);
+// 분모(발신 대상일)에서 빠졌는지: 종결 전후 완료율 계산에 쓰인 대상일 수 비교
+const targetDays = data => { let n = 0; for (const p of data.people.filter(p => p.active)) n += completion7(p, data.calls, today).days; return n; };
+cp.active = true; const tBefore = targetDays(cd); cp.active = false; const tAfter = targetDays(cd);
+assert.ok(tAfter < tBefore);
+assert.notEqual(before.completionRate, undefined); assert.notEqual(after.completionRate, undefined);
+
+// ======== 화면 문구: '시연', '데모', 긴 줄표, 이모지가 없음 (주석 제외) ========
+const strip = t => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/<!--[\s\S]*?-->/g, '').split('\n').map(l => l.replace(/(^|[\s;{}(),])\/\/.*$/, '$1')).join('\n');
+for (const f of ['app.js', 'metrics.js', 'call.js', 'items.js', 'vitals.js', 'store.js', 'seed.js', '../index.html']) {
+  const code = strip(readFileSync(new URL(f, import.meta.url), 'utf8'));
+  assert.ok(!/시연|데모|—|\p{Extended_Pictographic}/u.test(code), `${f}: ${code.match(/.{0,30}(시연|데모|—|\p{Extended_Pictographic}).{0,30}/u)?.[0]}`);
+}
 
 console.log('selftest 통과');

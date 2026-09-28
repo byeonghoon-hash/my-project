@@ -11,16 +11,18 @@ import {
 import { pickVitals, recomputeRing } from './vitals.js';
 
 // 시드 버전. 올리면 저장된 시연 데이터를 새로 만든다 (회원 계정·링 실측 데이터는 유지).
-export const SEED_VERSION = 3;
+export const SEED_VERSION = 4;
 
-// 전화번호는 모두 가짜(010-0000-), 보호자 이름은 지어낸 것, 의료기관명은 '(시연용)'.
+// 전화번호는 모두 가짜(010-0000-), 보호자 이름은 지어낸 것, 의료기관명은 '○○내과의원'.
 const phone = n => `010-0000-${n}`;
 export const baseInfo = (o = {}) => ({
   conditions: [], acute: [], meds: [],
   devices: [], hearing: '정상', vision: '정상', speech: '정상', mobility: '독립', living: '독거', bodyMemo: '',
   call: { title: '', days: [0, 1, 2, 3, 4, 5, 6], rate: 0.9, rereads: 1, retry: { count: 1, interval: 30 }, selfReport: true, pause: null, spo2Threshold: 90 },
-  contacts: [], clinic: { name: '○○내과의원 (시연용)', phone: phone('5000') },
-  agencies: { center: { name: '웅촌면 보건지소 (시연용)', phone: phone('5100') }, dementia: { name: '울주군 치매안심센터 (시연용)', phone: phone('5200') } },
+  contacts: [], clinic: { name: '○○내과의원', phone: phone('5000') },
+  agencies: { center: { name: '웅촌면 보건지소', phone: phone('5100') }, dementia: { name: '울주군 치매안심센터', phone: phone('5200') } },
+  consent: { service: true, recording: true, guardianShare: true, privacy: true, method: '본인', proxy: null, date: '', renewDate: '' },
+  tests: [],
   device: { name: '손목 밴드 (모의)', source: 'mock', clockOffsetMin: 0, spo2OffsetPct: 0 },
   edited: {}, ...o
 });
@@ -28,7 +30,7 @@ export const baseInfo = (o = {}) => ({
 // 좌표: 윤병훈은 실제 위치, 나머지 9명은 임의 좌표 (주소는 리까지만, 지번을 지어내지 않는다)
 const PEOPLE = [
   { name: '한복남', sex: '남', age: 78, kind: 'stable', time: '09:30', manager: '박지연 간호사', tone: 1,
-    address: '울주군 웅촌면 석천리 (시연용)', lat: 35.4388, lng: 129.2029, // 임의 좌표
+    address: '울주군 웅촌면 석천리', lat: 35.4388, lng: 129.2029, // 임의 좌표
     info: t => baseInfo({
       conditions: [{ name: '고혈압', year: 2012 }, { name: '관절염', year: 2018 }],
       acute: [{ name: '감기', start: addDays(t, -5), end: '', hospitalized: false, memo: '기침·콧물, 보건지소 약 처방' }],
@@ -37,7 +39,7 @@ const PEOPLE = [
       contacts: [{ name: '한미경', relation: '딸', phone: phone('3001'), priority: 1, consent: true }]
     }) },
   { name: '이옥분', sex: '여', age: 81, kind: 'stable', time: '10:00', manager: '김민수 사회복지사', tone: 0,
-    address: '울주군 웅촌면 곡천리 (시연용)', lat: 35.4602, lng: 129.2013, // 임의 좌표
+    address: '울주군 웅촌면 곡천리', lat: 35.4602, lng: 129.2013, // 임의 좌표
     info: () => baseInfo({
       conditions: [{ name: '당뇨병', year: 2010 }, { name: '골다공증', year: 2020 }],
       meds: [{ name: '메트포르민 500mg', dose: '1일 2회 식후', start: '2010-09-01', changed: '', reason: '' }],
@@ -46,7 +48,7 @@ const PEOPLE = [
     }) },
   { name: '박순자', sex: '여', age: 74, kind: 'stable', time: '10:30', manager: '윤병훈 간호사', tone: 2,
     // 표의 좌표(35.4435, 129.2186)는 웅촌면 경계 밖이라, 경계에서 약 300m 안쪽인 가장 가까운 점(약 660m 북서)으로 옮김
-    address: '울주군 웅촌면 검단리 (시연용)', lat: 35.4485, lng: 129.2146, // 임의 좌표
+    address: '울주군 웅촌면 검단리', lat: 35.4485, lng: 129.2146, // 임의 좌표
     info: () => baseInfo({
       conditions: [{ name: '이상지질혈증', year: 2016 }],
       meds: [{ name: '아토르바스타틴 10mg', dose: '1일 1회 저녁', start: '2016-05-01', changed: '', reason: '' }],
@@ -54,7 +56,7 @@ const PEOPLE = [
       contacts: [{ name: '박지훈', relation: '아들', phone: phone('3003'), priority: 1, consent: true }]
     }) },
   { name: '최영희', sex: '여', age: 83, kind: 'stable', time: '11:00', manager: '박지연 간호사', tone: 0,
-    address: '울주군 웅촌면 초천리 (시연용)', lat: 35.4783, lng: 129.1968, // 임의 좌표
+    address: '울주군 웅촌면 초천리', lat: 35.4783, lng: 129.1968, // 임의 좌표
     info: () => baseInfo({
       conditions: [{ name: '고혈압', year: 2008 }, { name: '관절염', year: 2015 }, { name: '갑상선질환', year: 2019 }],
       meds: [{ name: '로사르탄 50mg', dose: '1일 1회 아침', start: '2008-03-01', changed: '', reason: '' }],
@@ -62,7 +64,7 @@ const PEOPLE = [
       contacts: [{ name: '최은주', relation: '딸', phone: phone('3004'), priority: 1, consent: true }]
     }) },
   { name: '이상철', sex: '남', age: 79, kind: 'decline', time: '09:00', manager: '윤병훈 간호사', tone: 1,
-    address: '울주군 웅촌면 대복리 (시연용)', lat: 35.4718, lng: 129.2104, // 임의 좌표
+    address: '울주군 웅촌면 대복리', lat: 35.4718, lng: 129.2104, // 임의 좌표
     info: t => baseInfo({
       conditions: [{ name: '고혈압', year: 2011 }, { name: '당뇨병', year: 2014 }],
       meds: [
@@ -73,7 +75,7 @@ const PEOPLE = [
         { name: '이성민', relation: '아들', phone: phone('3105'), priority: 2, consent: false }]
     }) },
   { name: '서정길', sex: '남', age: 76, kind: 'hypoxia', time: '14:00', manager: '김민수 사회복지사', tone: 2,
-    address: '울주군 웅촌면 대대리 (시연용)', lat: 35.4671, lng: 129.2231, // 임의 좌표
+    address: '울주군 웅촌면 대대리', lat: 35.4671, lng: 129.2231, // 임의 좌표
     info: () => baseInfo({
       conditions: [{ name: '만성폐쇄성폐질환(COPD)', year: 2012 }, { name: '고혈압', year: 2015 }],
       meds: [{ name: '흡입기 (티오트로피움)', dose: '1일 1회', start: '2012-10-01', changed: '', reason: '' }],
@@ -82,7 +84,7 @@ const PEOPLE = [
       contacts: [{ name: '서영숙', relation: '배우자', phone: phone('3006'), priority: 1, consent: true }]
     }) },
   { name: '김말순', sex: '여', age: 85, kind: 'hearing', time: '15:00', manager: '박지연 간호사', tone: 2,
-    address: '울주군 웅촌면 은현리 (시연용)', lat: 35.4651, lng: 129.1847, // 임의 좌표
+    address: '울주군 웅촌면 은현리', lat: 35.4651, lng: 129.1847, // 임의 좌표
     info: () => baseInfo({
       conditions: [{ name: '고혈압', year: 2005 }, { name: '관절염', year: 2012 }],
       meds: [{ name: '로사르탄 50mg', dose: '1일 1회 아침', start: '2005-06-01', changed: '', reason: '' }],
@@ -91,7 +93,7 @@ const PEOPLE = [
       contacts: [{ name: '김현숙', relation: '딸', phone: phone('3007'), priority: 1, consent: true }]
     }) },
   { name: '정두만', sex: '남', age: 80, kind: 'noAnswer', time: '16:00', manager: '윤병훈 간호사', tone: 1,
-    address: '울주군 웅촌면 통천리 (시연용)', lat: 35.4497, lng: 129.1872, // 임의 좌표
+    address: '울주군 웅촌면 통천리', lat: 35.4497, lng: 129.1872, // 임의 좌표
     info: () => baseInfo({
       conditions: [{ name: '우울증', year: 2021 }],
       meds: [{ name: '에스시탈로프람 10mg', dose: '1일 1회 아침', start: '2021-11-01', changed: '', reason: '' }],
@@ -100,7 +102,7 @@ const PEOPLE = [
         { name: '박상호', relation: '이웃', phone: phone('3108'), priority: 2, consent: false }]
     }) },
   { name: '오금례', sex: '여', age: 77, kind: 'stable', time: '13:30', manager: '김민수 사회복지사', tone: 0,
-    address: '울주군 웅촌면 고연리 (시연용)', lat: 35.4529, lng: 129.2257, // 임의 좌표
+    address: '울주군 웅촌면 고연리', lat: 35.4529, lng: 129.2257, // 임의 좌표
     info: () => baseInfo({
       conditions: [{ name: '고혈압', year: 2017 }],
       meds: [{ name: '암로디핀 5mg', dose: '1일 1회 아침', start: '2017-01-01', changed: '', reason: '' }],
@@ -144,10 +146,15 @@ export function makeSeed(settings = DEFAULT_SETTINGS, today = todayStr()) {
   PEOPLE.forEach((pf, i) => {
     const info = pf.info(today);
     info.call.title ||= `${pf.name} 어르신`;
+    info.consent = { ...info.consent, date: start, renewDate: addDays(start, 365) };
+    if (i % 2 === 0) info.tests = [{ kind: 'CIST', score: 20 + (i % 7), date: start, examiner: pf.manager }];
+    const birth = `${+today.slice(0, 4) - pf.age - 1}-${String(3 + i).padStart(2, '0')}-${String(10 + i).padStart(2, '0')}`;
     const person = {
-      id: 'p' + (i + 1), name: pf.name, sex: pf.sex, age: pf.age,
-      phone: phone(String(1001 + i)), guardianPhone: info.contacts[0]?.phone || '',
-      preferredTime: pf.time, enrolledAt: start, active: true,
+      id: 'p' + (i + 1), name: pf.name, sex: pf.sex, birth, age: pf.age,
+      phone: phone(String(1001 + i)), phoneType: '휴대폰', education: null, canRead: null,
+      guardianPhone: info.contacts[0]?.phone || '',
+      preferredTime: pf.time, enrolledAt: start, active: true, closed: null,
+      referral: ['보건소 의뢰', '방문간호 연계', '본인 신청', '보호자 신청'][i % 4], dementiaCenter: i === 4 ? '예' : '아니요',
       address: pf.address, lat: pf.lat, lng: pf.lng, manager: pf.manager, info
     };
     let made;
@@ -170,7 +177,7 @@ export function makeSeed(settings = DEFAULT_SETTINGS, today = todayStr()) {
       id: `al-past-${personId}-${daysAgo}`, personId, createdAt: `${created}T09:00`,
       type: 'cognition', level: 'refer', status: 'closed',
       referredAt: referredAfter == null ? null : `${addDays(created, referredAfter)}T10:00`,
-      notifiedAt: `${created}T11:00`, notifiedTo: null, outcome, checklist, note: '시연용 과거 기록'
+      notifiedAt: `${created}T11:00`, notifiedTo: null, outcome, checklist, note: '과거 기록'
     });
   };
   past('p2', 42, 2, 'confirmed', { acute: false, sleep: false, meds: false, mood: false, hearing: false });
@@ -185,9 +192,23 @@ export function makeSeed(settings = DEFAULT_SETTINGS, today = todayStr()) {
   }
 
   // ---- 방문 예정 (앞으로 7일 안, 위험도 높음 2명 포함) ----
-  [['p5', 1, '인지 기저선 이탈 확인 방문'], ['p6', 2, '야간 저산소 확인 · 수면 상태 점검'],
-    ['p8', 3, '연속 미응답 안부 확인'], ['p10', 5, '인지 변화 확인 방문']]
-    .forEach(([personId, after, reason], k) => data.visits.push({ id: 'v' + (k + 1), personId, date: addDays(today, after), reason, status: 'planned' }));
+  // [대상자, 며칠 뒤, 시각, 분, 유형, 목적, 상태]
+  [['p5', 1, '10:00', 60, '인지 재평가', '인지 기저선 이탈 확인', 'planned'],
+    ['p6', 2, '14:00', 60, '건강 확인', '야간 저산소 확인, 수면 상태 점검', 'planned'],
+    ['p8', 3, '11:00', 30, '정기 방문', '연속 미응답 안부 확인', 'planned'],
+    ['p10', 5, '15:00', 60, '인지 재평가', '인지 변화 확인', 'planned'],
+    ['p7', 1, '14:00', 60, '보호자 면담', '보청기 착용 확인, 보호자 면담', 'planned'],
+    ['p1', -4, '10:00', 60, '건강 확인', '감기 증상 확인', 'done'],
+    ['p3', -2, '15:00', 30, '정기 방문', '정기 안부 방문', 'canceled']]
+    .forEach(([personId, after, startTime, durationMin, type, purpose, status], k) => {
+      const date = addDays(today, after);
+      const visitor = data.people.find(p => p.id === personId).manager;
+      data.visits.push({
+        id: 'v' + (k + 1), personId, date, startTime, durationMin, type, visitor, purpose, status,
+        resultNote: status === 'done' ? '기침 줄어듦, 식사 양호' : '', cancelReason: status === 'canceled' ? '대상자 외출' : '',
+        createdBy: visitor, createdAt: `${addDays(date, -3)}T09:00`
+      });
+    });
 
   // ---- 어르신 요청사항: 최근 10일 대화에서 찾은 요청을 등록 (한 건은 처리 완료) ----
   let rq = 0;

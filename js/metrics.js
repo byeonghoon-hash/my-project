@@ -19,7 +19,9 @@ export const DEFAULT_SETTINGS = {
   sdMinScore: 5,           // 변화 추이: 표준편차 최솟값 (점수 %p)
   sdMinSpo2: 1,            //   SpO2 %p
   sdMinHr: 3,              //   심박 bpm
-  sdMinLatency: 0.3        //   응답 지연 초
+  sdMinLatency: 0.3,       //   응답 지연 초
+  visitBufferMin: 20,      // 방문 사이 이동 여유 시간(분). 웅촌면은 마을 간 이동 시간이 있다
+  visitDailyLimit: 4       // 방문자 하루 방문 한도(건)
 };
 
 export const LEVEL_RANK = { watch: 1, caution: 2, refer: 3 };
@@ -40,13 +42,14 @@ const mean = a => a.reduce((s, x) => s + x, 0) / a.length;
 const sdOf = a => (a.length > 1 ? Math.sqrt(a.reduce((t, x) => t + (x - mean(a)) ** 2, 0) / (a.length - 1)) : 0);
 const byTime = (a, b) => (a.date + (a.startedAt || '')).localeCompare(b.date + (b.startedAt || ''));
 const r1 = v => (v == null ? null : Math.round(v * 10) / 10);
-const f1 = v => (v == null ? '—' : String(r1(v)));
+const f1 = v => (v == null ? '-' : String(r1(v)));
 
 // ---------- 기본 정보에서 읽는 값 ----------
 // 통화 대상일인지: 통화 일시중지 기간이나 통화 요일이 아닌 날은 발신 대상일에서 뺀다
 export function isCallDay(person, date) {
   const c = person.info?.call;
   if (!c) return true;
+  if (c.firstCall && date < c.firstCall) return false; // 첫 통화일 전
   const p = c.pause;
   if (p?.from && date >= p.from && (!p.to || date <= p.to)) return false;
   if (Array.isArray(c.days) && c.days.length && c.days.length < 7) {
@@ -78,7 +81,66 @@ export function autoChecklist(person, today) {
   return { acute: !!recentAcute(person, today), meds: !!recentMedChange(person, today) };
 }
 // 전화번호 형식: 숫자와 하이픈만, 숫자 10~11자리
-export const validPhone = v => /^[0-9-]+$/.test(v || '') && /^\d{10,11}$/.test((v || '').replace(/-/g, ''));
+// 전화번호 형식: 숫자와 하이픈만. 비상연락처는 10~11자리, 대상자 통화 번호(집전화 포함)는 9~11자리
+export const validPhone = (v, min = 10) => /^[0-9-]+$/.test(v || '') && new RegExp(`^\\d{${min},11}$`).test((v || '').replace(/-/g, ''));
+
+// 만 나이
+export function ageFrom(birth, today) {
+  if (!birth) return null;
+  let a = +today.slice(0, 4) - +birth.slice(0, 4);
+  if (today.slice(5) < birth.slice(5)) a--;
+  return a;
+}
+
+// 중복 의심: 이름+생년월일이 같거나 통화 전화번호가 같은 대상자
+export function findDuplicates(people, cand) {
+  const digits = v => (v || '').replace(/\D/g, '');
+  return people.filter(p => p.id !== cand.id && (
+    (cand.name && cand.birth && p.name === cand.name && p.birth === cand.birth) ||
+    (digits(cand.phone) && digits(p.phone) === digits(cand.phone))));
+}
+
+// 점이 경계(GeoJSON Polygon) 안에 있는지
+export function insideBoundary(geo, lat, lng) {
+  const r = geo.geometry.coordinates[0];
+  let c = false;
+  for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+    const [xi, yi] = r[i], [xj, yj] = r[j];
+    if ((yi > lat) !== (yj > lat) && lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) c = !c;
+  }
+  return c;
+}
+
+// ---------- 방문 일정 ----------
+export const VISIT_TYPES = ['정기 방문', '건강 확인', '인지 재평가', '보호자 면담', '기관 연계 동행', '기타'];
+const toMin = t => +t.slice(0, 2) * 60 + +t.slice(3, 5);
+export const visitStart = v => toMin(v.startTime || '10:00');
+export const visitEnd = v => visitStart(v) + (v.durationMin || 60);
+export const minToTime = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+
+// 겹침: 같은 방문자·같은 날, 새 시작 < 기존 끝 + 여유 그리고 기존 시작 < 새 끝 + 여유
+export function visitConflicts(visits, cand, bufferMin) {
+  return visits.filter(v => v.id !== cand.id && v.status !== 'canceled' && v.visitor === cand.visitor && v.date === cand.date
+    && visitStart(cand) < visitEnd(v) + bufferMin && visitStart(v) < visitEnd(cand) + bufferMin);
+}
+
+// 등록 전 검사 → { errors, conflicts, warnings, notes }. now: 'YYYY-MM-DDTHH:MM'
+export function visitChecks(data, cand, now) {
+  const s = data.settings;
+  const out = { errors: [], conflicts: [], warnings: [], notes: [] };
+  if (!cand.date || !cand.startTime) { out.errors.push('날짜·시각 필요'); return out; }
+  if (`${cand.date}T${cand.startTime}` < now) out.errors.push('지난 날짜·시각은 등록 불가');
+  out.conflicts = visitConflicts(data.visits, cand, s.visitBufferMin);
+  const sameDay = data.visits.filter(v => v.id !== cand.id && v.status !== 'canceled' && v.visitor === cand.visitor && v.date === cand.date);
+  if (sameDay.length >= s.visitDailyLimit) out.warnings.push(`${cand.visitor} 그날 방문 ${sameDay.length}건 (하루 한도 ${s.visitDailyLimit}건)`);
+  const person = data.people.find(p => p.id === cand.personId);
+  if (person && isPausedOn(person, cand.date)) out.warnings.push(`통화 일시중지 기간 (${person.info.call.pause.reason || '사유 없음'})`);
+  if (visitStart(cand) < 8 * 60 || visitEnd(cand) > 18 * 60) out.warnings.push('업무 시간(08:00~18:00) 밖');
+  const near = data.visits.filter(v => v.id !== cand.id && v.status !== 'canceled' && v.personId === cand.personId
+    && Math.abs(daysBetween(v.date, cand.date)) <= 3);
+  for (const v of near) out.notes.push(`앞뒤 3일 안에 방문 있음 · ${mmdd(v.date)} ${v.startTime} ${v.type}`);
+  return out;
+}
 // 1순위 비상연락처
 export const primaryContact = person => [...(person.info?.contacts || [])].sort((a, b) => a.priority - b.priority)[0] || null;
 
@@ -348,7 +410,7 @@ export function riskOf(person, data, today, getV) {
   if (signals.cognition === 'watch') reasons.push('인지 경미한 저하');
   if (signals.missedRun >= 2) reasons.push(`최근 ${signals.missedRun}일 미응답`);
   if (signals.spo2) reasons.push('야간 저산소 반복');
-  if (signals.hearing) reasons.push(knownHearing ? '청력 저하 기록 있음 — 보청기 착용·배터리 확인' : '난청 의심 · 재질문 잦음');
+  if (signals.hearing) reasons.push(knownHearing ? '청력 저하 기록 · 보청기 착용·배터리 확인' : '난청 의심 · 재질문 잦음');
   if (signals.hrChange) reasons.push('안정 시 심박 변화');
   if (score != null && score < 75) reasons.push(`종합 케어 스코어 ${score}점`);
 
@@ -515,13 +577,13 @@ export function personEvents(person, data) {
     ...(i.acute || []).map(a => ({ type: '급성질환', start: a.start, end: a.end || '', label: a.name })),
     ...(i.meds || []).filter(m => m.changed).map(m => ({ type: '약물 변경', start: m.changed, end: '', label: m.name })),
     ...(i.call?.pause?.from ? [{ type: '통화 일시중지', start: i.call.pause.from, end: i.call.pause.to || '', label: i.call.pause.reason || '' }] : []),
-    ...(data.visits || []).filter(v => v.personId === person.id && v.status !== 'canceled').map(v => ({ type: '방문', start: v.date, end: '', label: v.reason }))
+    ...(data.visits || []).filter(v => v.personId === person.id && v.status !== 'canceled').map(v => ({ type: '방문', start: v.date, end: '', label: v.purpose || v.type }))
   ];
 }
 
 // 한 줄 요약 (큰 그래프 아래)
 export function trendSentence(m, t, today) {
-  if (!t.baseline || t.recent7 == null) return `${m.label} · 비교할 데이터가 부족합니다`;
+  if (!t.baseline || t.recent7 == null) return `${m.label} · 데이터 부족`;
   const unit = m.unit === '%' ? '%' : m.unit ? m.unit : '';
   let text = `최근 7일 ${m.label} ${f1(t.recent7)}${unit} · 기저선 ${f1(t.baseline.mean)}${unit} ± ${f1(t.baseline.sd)} 대비 ${f1(t.score)} 표준편차 ${t.delta >= 0 ? '상승' : '하락'}`;
   const lo = t.baseline.mean - t.sdEff, hi = t.baseline.mean + t.sdEff;
@@ -561,16 +623,17 @@ export function aiSummary(person, data, today, getV) {
   const t = trendAll(data, person, { days: 30 }, today, getV);
   const items = []; // { text, off }
   const device = person.info?.device?.source === 'device';
+  const noDevice = person.info?.device?.source === 'none';
 
   // 급성질환·약물 변경 (점수가 일시적으로 흔들릴 수 있는 인지 외 원인)
   const acute = recentAcute(person, today);
-  if (acute) items.push({ text: `최근 급성 질환(${acute.name}, ${mmdd(acute.start)}~${acute.end ? mmdd(acute.end) : ''}) — 일시 하락 가능성`, off: true });
+  if (acute) items.push({ text: `최근 급성 질환(${acute.name}, ${mmdd(acute.start)}~${acute.end ? mmdd(acute.end) : ''}), 일시 하락 가능성`, off: true });
   const med = recentMedChange(person, today);
-  if (med) items.push({ text: `최근 약물 변경(${med.name}, ${mmdd(med.changed)}) — 일시 변화 가능성`, off: true });
+  if (med) items.push({ text: `최근 약물 변경(${med.name}, ${mmdd(med.changed)}), 일시 변화 가능성`, off: true });
 
   // 통화 인지검사
   const sc = t.score;
-  if (sc.recent7 == null && st.lastScore == null) items.push({ text: '통화 인지검사 · 완료된 검사 없음', off: true });
+  if (sc.recent7 == null && st.lastScore == null) items.push({ text: `인지검사 · 기저선 형성 중 (0/${s.baselineDays}회)`, off: false });
   else if (!st.base.ready) items.push({ text: `인지검사 점수 ${f1(sc.recent7 ?? st.lastScore)}% · 기저선 형성 중 (${st.base.n}/${s.baselineDays}회)`, off: false });
   else {
     const z = st.lastZ;
@@ -586,7 +649,8 @@ export function aiSummary(person, data, today, getV) {
   // 야간 SpO2 · 안정 시 심박
   const tag = device ? ' (링 실측)' : '';
   const ringNights = t.validRate.daily.filter(x => x.date >= addDays(today, -6));
-  if (device && !t.validRate.daily.length) items.push({ text: '야간 SpO₂·심박 · 링 데이터 없음 (기기 연동 대기)', off: false });
+  if (noDevice) { /* 웨어러블 없음: 생체신호 줄을 쓰지 않는다 */ }
+  else if (device && !t.validRate.daily.length) items.push({ text: '야간 SpO₂·심박 · 링 데이터 없음', off: false });
   else if (!t.spo2Min.recentN) items.push({ text: `야간 SpO₂ · 최근 7일 유효 측정 없음 (착용·신호 확인 필요)${tag}`, off: true });
   else {
     const thr = spo2Threshold(person);
@@ -601,7 +665,8 @@ export function aiSummary(person, data, today, getV) {
 
   // 통화 응답
   const run = risk.signals.missedRun;
-  items.push({
+  if (!comp.days) items.push({ text: '통화 기록 없음', off: false });
+  else items.push({
     text: `최근 7일 통화 완료 ${comp.done}/${comp.days}` + (run >= 2 ? ` · ${run}일 연속 미응답` : comp.rate != null && comp.rate < 80 ? ' · 목표 80% 미달' : ' · 응답 양호'),
     off: run >= 2 || (comp.rate != null && comp.rate < 80)
   });
@@ -609,7 +674,7 @@ export function aiSummary(person, data, today, getV) {
   // 재질문
   if (t.repeats.recent7 != null) {
     const avg = t.repeats.recent7;
-    const read = risk.signals.hearing ? (risk.signals.hearingKnown ? '청력 저하 기록 있음 — 보청기 착용·배터리 확인' : '난청 의심') : avg >= 1 ? '가끔 되물음' : '정상 범위';
+    const read = risk.signals.hearing ? (risk.signals.hearingKnown ? '청력 저하 기록 · 보청기 착용·배터리 확인' : '난청 의심') : avg >= 1 ? '가끔 되물음' : '정상 범위';
     items.push({ text: `통화당 재질문 ${f1(avg)}회 · ${read}`, off: risk.signals.hearing });
   }
 
@@ -617,7 +682,7 @@ export function aiSummary(person, data, today, getV) {
   if (t.sleepPoor.recentN) items.push({ text: `잠을 설쳤다고 답함 ${f1(t.sleepPoor.recent7)}% · ${t.sleepPoor.status === '악화' ? '평소보다 늘어남' : '평소 수준'}`, off: t.sleepPoor.status === '악화' });
 
   // 야간 착용
-  if (ringNights.length || !device) {
+  if (!noDevice && (ringNights.length || !device)) {
     const worn = t.wear.daily.filter(x => x.date >= addDays(today, -6) && x.value >= 4).length;
     items.push({ text: `야간 착용 ${worn}/7밤 · ${worn >= 5 ? '측정 양호' : '착용 권장 필요'}${tag}`, off: worn < 5 });
   }
@@ -650,7 +715,7 @@ export function journalDraft(person, data, today, getV) {
   }
   const S = quotes.sort((a, b) => a.prio - b.prio || b.date.localeCompare(a.date)).slice(0, 5)
     .sort((a, b) => a.date.localeCompare(b.date))
-    .map(q => `- ${mmdd(q.date)} "${q.text}" (${q.tag})`).join('\n') || '- 기간 안에 기록된 대상자 발화 없음';
+    .map(q => `- ${mmdd(q.date)} "${q.text}" (${q.tag})`).join('\n') || '- 통화 기록 없음';
 
   // O: trendSummary 결과
   const done = calls.filter(c => c.status === 'completed').length;
@@ -680,7 +745,7 @@ export function journalDraft(person, data, today, getV) {
   if (med) other.push(`약물 변경(${med.name}, ${mmdd(med.changed)})`);
   if (t.sleepPoor.recent7 >= 50) other.push(`수면 불편 자기보고 ${f1(t.sleepPoor.recent7)}%`);
   const A = [
-    `- 위험도 ${RISK_LABEL[risk.level]}${risk.reasons.length ? ` — ${risk.reasons.join(', ')}` : ''}`,
+    `- 위험도 ${RISK_LABEL[risk.level]}${risk.reasons.length ? `: ${risk.reasons.join(', ')}` : ''}`,
     `- 감별 체크리스트: ${checked.length ? checked.join(', ') + ' 해당' : '해당 항목 없음'}`,
     other.length ? `- 인지 외 원인 가능성: ${other.join(', ')}` : '- 확인된 인지 외 원인 없음'
   ].join('\n');

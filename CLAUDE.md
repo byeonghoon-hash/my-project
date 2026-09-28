@@ -21,7 +21,8 @@
 
 ```
 index.html        단일 페이지. 해시 라우팅: #/ (첫 화면) · #/user · #/login · #/signup
-                  · #/admin (전체 현황) · #/admin/people (대상자 관리) · #/admin/p/<id>[/summary|chart|calls|alerts]
+                  · #/admin (전체 현황) · #/admin/people[?view=requests|journals] (대상자 관리) · #/admin/people/new[?id=] (대상자 추가·전체 수정)
+                  · #/admin/p/<id>[/summary|info|trend|calls|visits|journal|alerts]
 style.css
 package.json      {"type":"module"} 한 줄만 (node가 selftest를 ES 모듈로 실행하도록)
 js/app.js         라우팅과 화면 그리기
@@ -121,17 +122,21 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 ```js
 {
   settings: {...},                       // 아래 판정 파라미터
-  seedVersion: 3,                        // 올리면 시연 데이터를 새로 만든다 (accounts·settings·링 데이터는 유지)
-  people: [{ id, name, sex, age, phone, guardianPhone, preferredTime, enrolledAt, active,
+  seedVersion: 4,                        // 올리면 시연 데이터를 새로 만든다 (accounts·settings·링 데이터는 유지)
+  people: [{ id, name, sex, birth, age, phone, phoneType, education, canRead, guardianPhone, preferredTime, enrolledAt,
+             active, closed: { reason, date, by } | null,    // 삭제하지 않고 종결 (active=false)
+             referral, dementiaCenter: '예'|'아니요'|'모름',
              address, lat, lng, manager,              // manager는 계정 표시 이름과 같은 형식 ('이름 직종')
              info: {                                  // 기본 정보 (관리자 화면에서만 보인다)
                conditions: [{ name, year }], acute: [{ name, start, end, hospitalized, memo }],
                meds: [{ name, dose, start, changed, reason }],
                devices: ['보청기 우측', ...], hearing, vision, speech, mobility, living, bodyMemo,
-               call: { title, days: [0..6], rate, rereads, retry: { count, interval }, selfReport, pause: { from, to, reason } | null, spo2Threshold },
+               call: { title, days: [0..6], rate, rereads, retry: { count, interval }, selfReport, pause: { from, to, reason } | null, spo2Threshold, firstCall },
                contacts: [{ name, relation, phone, priority, consent }], clinic: { name, phone },
                agencies: { center: { name, phone }, dementia: { name, phone } },
-               device: { name, source: 'mock'|'device', clockOffsetMin, spo2OffsetPct },
+               device: { name, source: 'none'|'mock'|'device', clockOffsetMin, spo2OffsetPct },
+               consent: { service, recording, guardianShare, privacy, method: '본인'|'대리인', proxy: { name, relation, phone } | null, date, renewDate },
+               tests: [{ kind: 'CIST'|'MMSE-DS'|'기타', score, date, examiner }],   // 대면 인지검사 기록
                edited: { <섹션>: { by, at } } } }],
   calls:  [{ id, personId, date, time, startedAt, status: 'completed'|'missed'|'partial', source: 'demo'|'real',
              durationSec, scorePct, z, rotationDomain, setIndex,
@@ -144,7 +149,8 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
   alerts: [{ id, personId, createdAt, type: 'cognition'|'spo2'|'hearing'|'noAnswer',
              level: 'watch'|'caution'|'refer', status: 'open'|'referred'|'closed',
              referredAt, notifiedAt, notifiedTo: { name, relation, phone }, outcome: null|'confirmed'|'normal', checklist: {...}, note }],
-  visits: [{ id, personId, date, reason, status: 'planned'|'done'|'canceled' }],
+  visits: [{ id, personId, date, startTime, durationMin: 30|60|90|120, type, visitor, purpose,
+             status: 'planned'|'done'|'canceled', resultNote, cancelReason, createdBy, createdAt }],
   requests: [{ id, personId, callId, date, text, status: 'open'|'done', createdAt, by }],   // 어르신 요청사항
   journals: [{ id, personId, date, type, author, status: 'draft'|'final', auto, S, O, A, P, from,
                history: [{ by, at, prev: { date, type, S, O, A, P } }], confirmedBy, confirmedAt, createdAt }],
@@ -174,7 +180,9 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
   hearingRepeatAsks: 2,    // 통화당 재질문 2회 이상이
   hearingCalls: 3,         //   최근 5통화 중 3회 이상 → 난청 의심 알림
   parallelSets: 6,         // 평행형 문항 세트 수 N
-  maxCallSec: 180
+  maxCallSec: 180,
+  visitBufferMin: 20,      // 방문 사이 이동 여유 시간(분)
+  visitDailyLimit: 4       // 방문자 하루 방문 한도
 }
 ```
 
@@ -207,7 +215,7 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 - 기준을 벗어난 항목을 먼저, 최대 7줄.
 - 권장 조치(`recommendAction`): 높음 '48시간 내 방문 확인' / 주의 '이번 주 내 전화 상담, 1주 후 재평가' / 낮음 '현 관리 유지'.
   인지 '의뢰'면 '치매안심센터 2단계 검사 연계 검토', 야간 SpO₂ 알림이면 '수면무호흡 검사 의뢰 검토', 난청 의심이면 '청력검사 연계 검토'를 덧붙인다.
-- 맨 아래 문구: '※ AI 분석은 참고용 스크리닝이며 최종 판단은 담당 전문인력이 수행합니다.'
+- 맨 아래 문구: '선별 보조 자료이며 최종 판단은 담당자가 함.'
 
 ## 로그인 (시연용, 서버 없음)
 
@@ -223,19 +231,34 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 
 **전체 현황** (위에서부터)
 1. 지역별 현황 지도 · 울주군 웅촌면 (Leaflet): 경계 점선 + 옅은 채우기, 경계에 맞춰 시작. 대상자는 `L.circleMarker`(반지름 9, 흰 테두리 2px), 높음을 맨 마지막에 그린다. 마우스를 올리면 이름, 누르면 팝업(이름·나이·위험도·사유 2개·최근 통화일·[상세 보기]). 오른쪽 위 범례. `scrollWheelZoom: false`. 높이 420px(모바일 320px).
-2. 요약 카드 6개 (누르면 해당 목록): 전체 대상자 · 미조치 알림 · 평균 통화 완료율 · 오늘 통화(통화 일시중지 제외) · 방문 예정 · 미처리 요청.
-3. 위험도 분포 도넛(가운데 전체 인원, 아래에 글자로도 표시) + 우선 확인 대상자 상위 5명([상세] [방문 예약], 예정이 있으면 '방문 예정 MM/DD').
+2. 요약 카드 6개 (누르면 해당 목록): 전체 대상자 · 미조치 알림 · 평균 통화 완료율 · 오늘 통화(통화 일시중지·첫 통화일 전 제외) · 방문 예정(누르면 방문 일정으로 스크롤) · 미처리 요청.
+3. 위험도 분포 도넛(가운데 전체 인원, 아래에 글자로도 표시) + 우선 확인 대상자 상위 5명([상세] [방문 예약] → 방문 등록 창, 예정이 있으면 '방문 예정 MM.DD').
+3-1. 방문 일정: 왼쪽 월간 캘린더, 오른쪽 선택한 날짜의 일정 목록(시각~끝 · 대상자와 위험도 · 유형 · 방문자 · 목적 · 상태). 보기만 하고, 방문을 누르면 방문 창(수정·완료·취소)이 열린다. 등록은 대상자 관리에서.
 4. 운영 지표: 아래 계획서 지표 카드와 통화 현황 그래프.
 5. 판정 설정(접힘): 판정 파라미터 편집 · [시연 데이터 다시 만들기] · [전체 초기화] (둘 다 회원 계정은 남긴다).
 
-**대상자 관리** (#/admin/people): 검색창('이름 또는 담당자 검색', 공백 무시·부분 일치), '내 담당만', 위험도 필터. 표(좁으면 카드): 이름 · 성별/나이 · 주소(리까지) · 담당자 · 위험도 · 최근 7일 완료율 · 최근 통화일 · 다음 방문일. 기본 정렬 위험도 높은 순, 열 제목으로 정렬. 대상자 추가(담당자·위도·경도 포함).
+### 방문 일정
+- 월간 캘린더는 `monthCalendar` 함수 하나로 전체 현황과 방문 등록 창이 같이 쓴다 (외부 라이브러리 없이 CSS grid 7칸, 일요일 시작, 오늘 테두리, 일요일 빨강·토요일 파랑). 날짜 칸에 '시각 이름' 칩 최대 3개(+n), 칩 점은 위험도 색, 취소는 취소선, 완료는 흐리게. 필터: 전체 / 내 일정 / 방문자.
+- 방문 등록 창: 대상자 관리 목록의 [방문 등록], 상세 '방문 · 요청' 탭, 우선 확인 [방문 예약]에서 연다. 왼쪽은 모든 대상자 방문이 보이는 캘린더(기본 '내 일정', 이 대상자 방문은 굵게, 방문자의 그날 건수, 한도에 닿은 날은 옅게) + 그날 08:00~18:00 시간표(기존 블록, 새 방문 점선). 오른쪽은 날짜·시작 시각(10분 단위)·소요 시간·유형·방문자·목적.
+- 등록 전 검사 `visitChecks`: 지난 날짜·시각 불가, 같은 방문자 시간 겹침(이동 여유 포함, `visitConflicts`) 빨간 경고 + [그래도 등록], 하루 한도 이상 주황, 앞뒤 3일 안 다른 방문 안내, 통화 일시중지 기간 주황, 08:00 전·18:00 후 주황. 겹침: 새 시작 < 기존 끝 + 여유 그리고 기존 시작 < 새 끝 + 여유.
+- 수정도 같은 창·같은 검사. [방문 완료]는 결과 메모를 받아 done으로 바꾸고 돌봄일지를 유형 '방문'으로 연다. [방문 취소]는 사유를 받아 canceled (지우지 않음). 반복 방문은 만들지 않는다.
+
+### 대상자 추가·전체 수정 (#/admin/people/new, 수정은 ?id=)
+한 페이지에 섹션을 나열하고 왼쪽에 목차. 필수(*)만 채우면 저장. ① 기본 인적 사항(이름·성별·생년월일→나이 자동, 통화 전화번호 9~11자리, 거주 형태, 교육 연수, 한글 읽기) ② 주소와 위치(작은 Leaflet 지도 클릭으로 위도·경도, 경계 밖 경고, 주소 자동 검색 없음) ③ 관리 정보(담당자, 등록일, 의뢰 경로, 치매안심센터 기존 등록) ④ 동의(서비스·녹음·보호자 공유·개인정보, 본인/대리인, 동의일, 재동의 예정일 1년 뒤) ⑤~⑩은 '기본 정보' 탭 입력칸을 그대로 재사용(`infoTab(p, true)`, 저장은 `saveInfoSection`). 통화 녹음 미동의면 어르신 화면 통화가 녹음 없이 채점만 한다. 저장 전 검사: 빈 필수 개수, 전화번호 형식, 생년월일 미래 불가, 60세 미만 확인, 중복 의심(`findDuplicates`: 이름+생년월일 또는 전화번호) → [그래도 추가]. 저장하면 상세로 이동. 새 대상자는 위험도 '낮음' + '기저선 형성 중' 칩.
+종결: '기본 정보' 탭 [종결](사유·종결일). 통화 대상·활성 대상자에서 빠지고 기록은 남는다. 대상자 관리 '종결 포함'을 켜야 보인다.
+
+### 화면 문구
+보건소 업무 시스템 말투. '시연·데모·모의·임시' 같은 표시, 긴 줄표, 이모지, 기능 설명 부제를 쓰지 않는다. 설명형 문장 대신 짧은 명사형. 빈 상태는 '데이터 없음 · 기록 없음 · 일정 없음 · 검색 결과 없음'. 날짜는 목록 'MM.DD', 상세 'YYYY.MM.DD', 시각 'HH:MM', 요일은 '09.28(월)'. 버튼은 짧은 동사. 어르신에게 읽어 주는 질문·전화 수신 문구는 존댓말 그대로. AI 종합 분석 아래 문구: '선별 보조 자료이며 최종 판단은 담당자가 함.' selftest가 화면 문자열에 '시연'·'데모'·'—'·이모지가 없는지 검사한다.
+
+**대상자 관리** (#/admin/people): 검색창('이름 또는 담당자 검색', 공백 무시·부분 일치), '내 담당만', 위험도 필터. '종결 포함'. 오른쪽 위 [대상자 추가]. 표(좁으면 카드): 이름 · 성별/나이 · 주소(리까지) · 담당자 · 위험도 · 최근 7일 완료율 · 최근 통화일 · 다음 방문일 · [방문 등록]. 기본 정렬 위험도 높은 순, 열 제목으로 정렬.
 
 대상자 관리 안에 보기 전환: 대상자 목록 · 어르신 요청사항(미처리/처리 완료) · 일지 관리(날짜·작성자·대상자 필터). 전체 현황 카드에 '미처리 요청'(가장 오래된 요청 경과일)이 있다.
 
 **대상자 상세**: 상단 카드(위험도·사유 칩, 주요 만성질환 2개, 진행 중 급성질환, 보조기기, 통화 일시중지 + 오른쪽에 1순위 비상연락처와 [전화] `tel:`) + 탭:
 - **요약**: AI 종합 분석 → 지표별 변화 추이(요약 표, [전체 보기]) → 야간 생체신호(링 불러오기·불러오기 기록) · 종합 케어 스코어 → 등록 정보(주소·담당자·위도·경도 수정).
-- **기본 정보**: ① 질환·복용약 ② 보조기기·신체 상태 ③ AI 통화 맞춤 설정 ④ 응급 연락처 ⑤ 웨어러블 기기. 섹션마다 [수정] → 그 자리에서 입력칸, 저장하면 '최종 수정: 이름 직종 · MM.DD HH:MM'. 전화번호는 숫자·하이픈 10~11자리, 모두 `tel:` 링크.
+- **기본 정보**: 맨 위 [전체 수정] [종결]. ① 질환·복용약 ② 보조기기·신체 상태 ③ AI 통화 맞춤 설정(첫 통화일 포함) ④ 응급 연락처 ⑤ 웨어러블 기기(기기 없음/모의/기기) ⑥ 대면 인지검사 기록. 섹션마다 [수정] → 그 자리에서 입력칸, 저장하면 '최종 수정: 이름 직종 · MM.DD HH:MM'. 전화번호는 숫자·하이픈 10~11자리, 모두 `tel:` 링크.
 - **변화 추이**: 아래 '변화 추이' 표 + 줄을 누르면 큰 그래프 + CSV 내보내기 + 겹쳐 보기(z · SpO2 · 심박).
+- **방문 · 요청**: 이 대상자의 방문(누르면 방문 창) · [방문 등록] · 어르신 요청사항.
 - **통화 기록**: 최신순, 펼치면 대화록(앱 질문 왼쪽 · 대상자 대답 원문 오른쪽 · 정답 비교 · 점수 수정 · 자기보고 · 안부 대화 · 찾은 요청 [요청 등록]).
 - **돌봄일지**: SOAP, 초안/확정, 확정 후 수정 이력, [통화 기록으로 초안 만들기].
 - **알림**: 알림 처리, [보호자 통보 기록](1순위 동의 보호자 자동 채움, 미동의 표시), 감별 체크리스트(급성질환·약물 변경 자동 체크).
@@ -289,10 +312,10 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 - 윤병훈: 남 78세 독거, 울주군 웅촌면 대학길 27 (실제 위치 35.456938, 129.195938), 담당 박지연 간호사, 데이터 출처 '기기'(모의 생체신호 없음, 링 CSV로 채움).
 - 한복남: 급성질환 '감기' 5일 전부터 진행 중. 이상철: 복용약 9일 전 변경. 김말순: 보청기 우측·청력 중등도 이상·거동 대부분 도움.
 - 담당자: 박지연 간호사 · 윤병훈 간호사 · 김민수 사회복지사.
-- 위치: 나머지 9명은 법정리 9곳에 임의 좌표, 주소는 '울주군 웅촌면 ○○리 (시연용)'처럼 리까지만. 박순자(검단리)는 표의 좌표가 경계 밖이라 가장 가까운 경계 안쪽으로 옮겼다.
+- 위치: 나머지 9명은 법정리 9곳에 임의 좌표, 주소는 '울주군 웅촌면 ○○리'처럼 리까지만. 박순자(검단리)는 표의 좌표가 경계 밖이라 가장 가까운 경계 안쪽으로 옮겼다.
 - 통화 대화록: 대답을 경상도 말투로 먼저 만들고, 점수는 그 대답을 자동 채점한 값이다(대답과 점수가 항상 맞음).
-- 전화번호는 모두 `010-0000-` 가짜, 보호자 이름은 지어낸 것, 의료기관명은 '(시연용)'.
-- 방문 예정 4건, 어르신 요청사항(최근 10일 대화에서 찾은 요청), 대상자마다 확정 돌봄일지 1~3건, 과거 알림 몇 건(PPV·오경보율 계산용).
+- 전화번호는 모두 `010-0000-` 가짜, 보호자 이름은 지어낸 것, 의료기관명은 '○○내과의원'. 생년월일·동의·일부 대면 검사(CIST) 기록 포함.
+- 방문 7건(예정 5 · 완료 1 · 취소 1, 시각·유형·방문자 포함), 어르신 요청사항(최근 10일 대화에서 찾은 요청), 대상자마다 확정 돌봄일지 1~3건, 과거 알림 몇 건(PPV·오경보율 계산용).
 - 시연 데이터에는 녹음 파일이 없다 ('녹음 없음').
 
 ## 완료 기준
@@ -302,4 +325,5 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 - 시연 데이터만으로 관리자 화면의 모든 카드에 숫자가 나오고, 위험도가 높음 2 · 주의 3 · 낮음 5로 지도·분포·우선 확인에 세 색이 모두 보임.
 - `node js/selftest.js`에 riskOf(높음 조건 하나 → high, 조건 없음 → low), 검색 필터, 비밀번호 해시(salt가 다르면 해시가 다름·검증), aiSummary(10명 모두 문장 있음·진단 표현 없음) 검사 포함.
 - selftest에 기본 정보 연결(일시중지 분모 제외, 자동 체크, 개인 SpO2 기준, 전화번호 형식), 대화록-점수 일치(10명), 링 요약·보정·모의/실측 선택, 변화 추이(데이터 부족·SD 최솟값·응답 지연 악화·링 기저선 7밤·CSV BOM), 일지 초안 인용 검증, 지도 좌표(범위·경계·윤병훈 고정값) 검사 포함.
+- selftest에 방문 겹침(이동 여유·경계값)·하루 한도, 나이·60세 미만, 중복 의심, 새 대상자 빈 상태(AI 분석·변화 추이·일지 초안), 종결 대상자 제외, 화면 문구 검사 포함.
 - 휴대폰 너비(390px)에서 가로 스크롤 없음.

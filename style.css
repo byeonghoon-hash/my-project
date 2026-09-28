@@ -515,3 +515,94 @@ ul.plain { margin: 0; padding-left: 18px; }
   .contact-card { width: 100%; }
   .ttable .group-row td { display: block; }
 }
+
+/* =========================================================
+   방문 일정 캘린더 · 방문 등록 창 · 대상자 추가
+   ========================================================= */
+.cal-split { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(260px, 1fr); gap: 20px; align-items: start; }
+@media (max-width: 1000px) { .cal-split { grid-template-columns: 1fr; } }
+.cal-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.cal-head button { min-height: 34px; padding: 4px 12px; font-size: 13px; }
+.cal-head select { padding: 6px 8px; font-size: 13px; }
+.cal-title { font-size: 17px; margin-left: 6px; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.cal-dow { text-align: center; font-size: 12px; font-weight: 700; color: var(--ink-3); padding: 4px 0; }
+.cal-cell {
+  display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 2px;
+  min-height: 88px; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: #fff;
+  font-weight: 500; text-align: left; overflow: hidden; min-width: 0;
+}
+.cal-cell.empty { border: 0; background: transparent; }
+.cal-cell:hover { background: #faf9f6; }
+.cal-cell.today { border: 2px solid var(--brand); }
+.cal-cell.sel { background: var(--brand-50); }
+.cal-cell.full { background: #f1efea; }
+.cal-day { font-size: 13px; font-weight: 700; display: flex; justify-content: space-between; }
+.cal-cell.sun .cal-day, .cal-dow.sun { color: #dc2626; }
+.cal-cell.sat .cal-day, .cal-dow.sat { color: #2563eb; }
+.cal-count { font-size: 10px; background: var(--ink-3); color: #fff; border-radius: 8px; padding: 0 5px; line-height: 16px; }
+.cal-chip { display: flex; align-items: center; gap: 3px; font-size: 11px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
+.cal-chip .dot { width: 7px; height: 7px; margin: 0; flex: none; }
+.cal-chip.st-canceled { text-decoration: line-through; color: var(--ink-3); }
+.cal-chip.st-done { opacity: 0.45; }
+.cal-chip.hl { font-weight: 800; }
+.cal-more { font-size: 11px; color: var(--ink-3); }
+.daylist h3 { margin-top: 0; }
+.dayrow { display: grid; gap: 2px 10px; grid-template-columns: auto 1fr auto; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-sm); margin-bottom: 8px; cursor: pointer; }
+.dayrow > :nth-child(n+3) { grid-column: 2 / 3; }
+.dayrow > .chip, .dayrow > button { grid-column: 3; grid-row: 1; justify-self: end; }
+.dayrow:hover { background: #faf9f6; }
+.dayrow .time { font-variant-numeric: tabular-nums; }
+.dayrow.st-canceled { opacity: 0.6; text-decoration: line-through; }
+.dayrow.st-done { opacity: 0.7; }
+.dayrow .name { font-weight: 700; color: var(--ink); }
+.dayrow button { min-height: 30px; padding: 3px 12px; font-size: 13px; }
+.prio button.tag { border: 0; min-height: 0; cursor: pointer; }
+
+.modal { position: fixed; inset: 0; z-index: 2000; background: rgba(15, 25, 22, 0.45); display: grid; place-items: center; padding: 16px; overflow-y: auto; }
+.modal-panel { background: var(--surface); border-radius: var(--r-lg); padding: 20px; width: min(1080px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25); }
+.modal-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(260px, 1fr); gap: 20px; }
+@media (max-width: 860px) { .modal-grid { grid-template-columns: 1fr; } .modal { place-items: start center; } }
+.modal .cal-cell { min-height: 70px; }
+.vm-form { display: grid; gap: 10px; align-content: start; }
+.vm-form label { display: grid; gap: 4px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.chk { margin: 0; padding: 8px 12px; border-radius: var(--r-sm); font-size: 13px; font-weight: 600; }
+.err-box { background: #fee2e2; color: #b91c1c; }
+.warn-box { background: #ffedd5; color: #c2410c; }
+.note-box { background: #eff6ff; color: #1e40af; }
+#vm-checks { display: grid; gap: 6px; }
+.tt { margin-top: 14px; }
+.tt-body { position: relative; margin-top: 8px; margin-left: 44px; border-left: 2px solid var(--line); background: repeating-linear-gradient(to bottom, #faf9f6 0 60px, #fff 60px 120px); border-radius: 0 8px 8px 0; }
+.tt-hour { position: absolute; left: -46px; font-size: 11px; color: var(--ink-3); transform: translateY(-50%); }
+.tt-block { position: absolute; left: 6px; right: 6px; border-radius: 6px; background: var(--brand-50); border: 1px solid #9ccfb6; font-size: 12px; padding: 1px 8px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tt-block.new { left: 50%; background: rgba(0, 117, 74, 0.08); border: 2px dashed var(--brand); font-weight: 700; }
+.tt-block:not(.new) { right: 50%; }
+
+.title-row { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.pf { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 20px; align-items: start; }
+.pf-toc { position: sticky; top: 16px; display: grid; gap: 4px; }
+.pf-toc button { justify-content: flex-start; border: 0; background: transparent; font-size: 13px; min-height: 32px; border-radius: 10px; }
+.pf-toc button:hover { background: #fff; }
+.pf-sec { scroll-margin-top: 80px; }
+.pf-sec h2 { margin-bottom: 12px; }
+.fsec { border: 0; padding: 0; margin: 0; min-width: 0; }
+.req { color: var(--critical); }
+.wide { grid-column: 1 / -1; }
+.small-map { height: 300px; margin-top: 12px; }
+.consent { display: grid; gap: 8px; }
+.consent > div { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 12px; background: #faf9f6; border-radius: var(--r-sm); flex-wrap: wrap; }
+.yn { display: flex; gap: 14px; }
+.pf-save { position: sticky; bottom: 0; background: rgba(244, 242, 238, 0.95); padding: 12px 0; display: grid; gap: 8px; z-index: 5; }
+.missing { background: #fee2e2; border-color: #fecaca; color: #b91c1c; }
+.info-top { margin: 0 0 12px; }
+@media (max-width: 899px) {
+  .pf { grid-template-columns: 1fr; }
+  .pf-toc { position: static; display: flex; overflow-x: auto; gap: 4px; }
+  .pf-toc button { flex: none; background: #fff; }
+}
+@media (max-width: 560px) {
+  .cal-cell { min-height: 56px; padding: 3px; }
+  .cal-chip { font-size: 0; gap: 0; }       /* 좁은 화면: 칩은 위험도 점만 */
+  .cal-chip .dot { width: 8px; height: 8px; }
+  .cal-grid { gap: 2px; }
+}

@@ -22,6 +22,7 @@ import { todayStr, nowStamp } from './metrics.js';
 // spo2BelowMin: 개인 SpO2 기준(기본 90%) 미만인 시간(분)
 export function pickVitals(data, personId, date) {
   const p = data.people.find(x => x.id === personId);
+  if (p?.info?.device?.source === 'none') return null; // 기기 없음
   const real = p?.info?.device?.source === 'device';
   const v = (real ? data.ringNights || [] : data.vitals).find(x => x.personId === personId && x.date === date);
   if (!v) return null;
@@ -136,7 +137,7 @@ const personOpts = (data, person) => ({
 // 파일 하나 불러오기 → 불러오기 기록. 같은 밤이 이미 있으면 새 값으로 바꾼다.
 export function importRing(data, personId, fileName, text) {
   const parsed = parseRingCsv(text); // 시계 보정은 분 단위 값에 나중에 더한다 (보정을 바꾸면 다시 계산)
-  if (!parsed.count) throw new Error('읽을 수 있는 측정 줄이 없습니다. 첫 줄은 timestamp,hr,spo2,sqi,worn 이어야 합니다.');
+  if (!parsed.count) throw new Error('측정 줄 없음 · 첫 줄 형식: timestamp,hr,spo2,sqi,worn');
   data.ringImports ??= [];
   const rec = {
     id: 'ri' + Date.now().toString(36), personId, fileName, importedAt: nowStamp(),
