@@ -378,6 +378,7 @@ body.side-wide .content { margin-left: var(--rail-open); }
 .legend-glass span { display: inline-flex; align-items: center; gap: 6px; }
 .legend-glass i { display: inline-block; border-radius: 50%; box-shadow: 0 0 0 2px var(--panel), 0 0 0 3px var(--line-strong); }
 .leaflet-container { font-family: var(--font); background: var(--panel-2); }
+.leaflet-tile-pane { filter: grayscale(.85) brightness(1.06) contrast(.92); } /* 밝고 차분한 바탕 지도 */
 .leaflet-container .leaflet-control-attribution { font-size: 10px; }
 .pulse-ring { display: block; width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--high); animation: ripple 2s ease-out infinite; }
 @keyframes ripple { from { transform: scale(.6); opacity: .8; } to { transform: scale(2.2); opacity: 0; } }

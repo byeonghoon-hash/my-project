@@ -852,12 +852,12 @@ function prioRow(p, r) {
     </div>`;
 }
 
-// 지도 바탕 (CARTO 밝은 지도). 불러오는 중 · 실패 · 다시 시도
+// 지도 바탕 (OpenStreetMap, 키 없이 쓰는 공개 타일). 색은 style.css에서 옅게. 불러오는 중 · 실패 · 다시 시도
 function baseTiles(target, onLoad, onFail) {
   let loaded = false, errs = 0;
-  return L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-    maxZoom: 19, subdomains: 'abcd',
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+  return L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
   }).on('tileload', () => { loaded = true; })
     .on('load', () => { if (loaded) onLoad?.(); }) // 모든 타일이 실패해도 load가 오므로, 한 장이라도 받았을 때만
     .on('tileerror', () => { if (!loaded && ++errs >= 4) onFail?.(); })

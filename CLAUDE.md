@@ -9,7 +9,7 @@
 
 - 만드는 사람은 컴퓨터공학 전공자가 아니다. **가장 단순하게 동작하는 방법**을 고른다.
 - 빌드 도구 없음. npm 패키지 설치 없음. 순수 HTML + CSS + JavaScript(ES 모듈).
-- 외부 라이브러리는 **Chart.js**(`https://cdn.jsdelivr.net/npm/chart.js`)와 **Leaflet**(`https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js`·`leaflet.css`, 지도) 두 개만 CDN으로 쓴다. 글꼴은 Google Fonts의 IBM Plex Sans KR(본문)·Space Grotesk(숫자)(없으면 기본 글꼴). 지도 타일은 CARTO 밝은 지도(OpenStreetMap 기반)이며 출처 '© OpenStreetMap contributors © CARTO'를 반드시 넣는다.
+- 외부 라이브러리는 **Chart.js**(`https://cdn.jsdelivr.net/npm/chart.js`)와 **Leaflet**(`https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js`·`leaflet.css`, 지도) 두 개만 CDN으로 쓴다. 글꼴은 Google Fonts의 IBM Plex Sans KR(본문)·Space Grotesk(숫자)(없으면 기본 글꼴). 지도 타일은 OpenStreetMap(키 필요 없음, CSS로 옅게)이며 출처 '© OpenStreetMap contributors'를 반드시 넣는다. CARTO 타일은 키를 요구해 쓰지 않는다.
 - 브라우저 기본 기능을 먼저 쓴다: `speechSynthesis`(질문 읽기), `MediaRecorder`(녹음), `SpeechRecognition`(받아쓰기, 크롬), `AnalyserNode`(말 시작·침묵 감지), `localStorage`, `IndexedDB`(녹음 파일만).
 - 서버·DB 없음. 모든 데이터는 브라우저에 저장된다. 로그인도 브라우저 안에서만 하는 시연용이다 (아래 '로그인').
 - 파일은 아래 구조보다 늘리지 않는다. 쓰이지 않는 설정, 미리 만든 확장 구조, 불필요한 추상화는 만들지 않는다.
@@ -239,7 +239,7 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 
 **사이드바(아이콘 레일)**: 76px 짙은 띠에 전체 현황 · 대상자 · 로그아웃. 맨 아래 이니셜 원 + 이름·직종. 펼침 버튼으로 240px(이 브라우저에 기억). 768px 이하면 상단 바 + 서랍.
 
-**전체 현황** (새 배치, 위에서부터): ① 오늘 시간표 띠(할 일 N건, 칩 4개, [전체]/[내 담당] 기본 내 담당, 통화 점·방문 막대·현재 시각 선, `timelineRange`·`layoutLabels`) ② 지도 560px 위 유리판(왼쪽 위 요약 6칸 · 오른쪽 우선 확인 316px · 왼쪽 아래 범례) ③ 방문 일정 2주/월간 캘린더 ④ 위험도 도넛(누르면 대상자 목록 거르기) ⑤ 최근 14일 통화(완료·무응답·대기 + 목표 80% 점선) ⑥ 운영 지표 줄 목록 ⑦ 판정 설정(접힘). 1200px 이하면 요약·우선 확인이 지도 아래 카드로 내려간다.
+**전체 현황** (새 배치, 위에서부터): ① 오늘 시간표 띠(할 일 N건, 칩 4개, [전체]/[내 담당] 기본 내 담당, 통화 점·방문 막대·현재 시각 선, `timelineRange`·`layoutLabels`) ② 지도 560px(OpenStreetMap, 옅게) 위 유리판(왼쪽 위 요약 6칸 · 오른쪽 우선 확인 316px · 왼쪽 아래 범례) ③ 방문 일정 2주/월간 캘린더 ④ 위험도 도넛(누르면 대상자 목록 거르기) ⑤ 최근 14일 통화(완료·무응답·대기 + 목표 80% 점선) ⑥ 운영 지표 줄 목록 ⑦ 판정 설정(접힘). 1200px 이하면 요약·우선 확인이 지도 아래 카드로 내려간다.
 
 (아래는 각 항목의 내용 기준)
 1. 지역별 현황 지도 · 울주군 웅촌면 (Leaflet): 경계 점선 + 옅은 채우기, 경계에 맞춰 시작. 대상자는 `L.circleMarker`(반지름 9, 흰 테두리 2px), 높음을 맨 마지막에 그린다. 마우스를 올리면 이름, 누르면 팝업(이름·나이·위험도·사유 2개·최근 통화일·[상세 보기]). 오른쪽 위 범례. `scrollWheelZoom: false`. 높이 420px(모바일 320px).
