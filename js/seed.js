@@ -21,7 +21,7 @@ export const baseInfo = (o = {}) => ({
   call: { title: '', days: [0, 1, 2, 3, 4, 5, 6], rate: 0.9, rereads: 1, retry: { count: 1, interval: 30 }, selfReport: true, pause: null, spo2Threshold: 90 },
   contacts: [], clinic: { name: '○○내과의원', phone: phone('5000') },
   agencies: { center: { name: '웅촌면 보건지소', phone: phone('5100') }, dementia: { name: '울주군 치매안심센터', phone: phone('5200') } },
-  consent: { service: true, recording: true, guardianShare: true, privacy: true, method: '본인', proxy: null, date: '', renewDate: '' },
+  consent: { service: true, recording: true, guardianShare: true, privacy: true, ai: true, method: '본인', proxy: null, date: '', renewDate: '' },
   tests: [],
   device: { name: '손목 밴드 (모의)', source: 'mock', clockOffsetMin: 0, spo2OffsetPct: 0 },
   edited: {}, ...o

@@ -3,7 +3,7 @@
 // #/admin 전체 현황 · #/admin/people 대상자 관리 · #/admin/p/<id>[/<탭>] 대상자 상세
 
 import {
-  getData, setData, save, saveAudio, getAudio, deleteAudio, clearAudio,
+  getData, setData, save, reloadData, saveAudio, getAudio, deleteAudio, clearAudio,
   makeSalt, hashPassword, verifyPassword, displayName, currentAccount, setLogin
 } from './store.js';
 import { reseed, SEED_VERSION, baseInfo } from './seed.js';
@@ -16,8 +16,8 @@ import {
   fmtDate, fmtMD, fmtMDW, fmtStamp, fmtDur, fmtNum, fmtUnit, timelineRange, layoutLabels, completionDelta
 } from './metrics.js';
 import { getNightVitals, importRing, recomputeRing, deleteRingImport } from './vitals.js';
-import { startRing, runCall, nextItem, stopCall } from './call.js';
-import { scorePct, orientationParts, countAnimals, SELF_QUESTIONS } from './items.js';
+import { startRing, runCall, nextItem, stopCall, prepareCall, summarizeCall, getHealth, fetchVoice } from './call.js';
+import { scorePct, orientationParts, countAnimals, SELF_QUESTIONS, checkSummary, AI_CONSENT_TEXT } from './items.js';
 import ungchon from './ungchon.js';
 import { icon } from './icons.js';
 
@@ -25,7 +25,7 @@ const app = document.getElementById('app');
 
 const LEVEL = { watch: '관찰', caution: '주의', refer: '의뢰' };
 const LEVEL_CHIP = { watch: 'info', caution: 'mid', refer: 'high' };
-const TYPE = { cognition: '인지 기저선 이탈', spo2: '야간 저산소 (수면무호흡 의심)', hearing: '재질문 잦음 (난청 의심)', noAnswer: '연속 무응답 (안부 확인)' };
+const TYPE = { emergency: '응급 표현 (통화 중)', cognition: '인지 기저선 이탈', spo2: '야간 저산소 (수면무호흡 의심)', hearing: '재질문 잦음 (난청 의심)', noAnswer: '연속 무응답 (안부 확인)' };
 const STATUS = { open: '처리 전', referred: '연계됨', closed: '종결' };
 const CALL_STATUS = { completed: '완료', missed: '무응답', partial: '일부 (시간 초과)' };
 const CHECKS = { acute: '최근 급성 질환', sleep: '수면 부족', meds: '약물 변경', mood: '우울감', hearing: '청력 저하' };
@@ -285,7 +285,25 @@ function render() {
   if (railOpen()) document.body.classList.add('side-wide');
   app.innerHTML = pg.bare ? pg.html : shell(path, me, pg);
   pg.after?.();
+  if (me) notifyEmergencies();
 }
+
+// 열린 응급 표현 알림을 관리자 화면에서 한 번씩 알린다 (이 탭에서 이미 본 것은 다시 띄우지 않는다)
+function notifyEmergencies() {
+  const d = getData();
+  let seen = [];
+  try { seen = JSON.parse(sessionStorage.getItem('ime-seen-emergency') || '[]'); } catch { /* 저장이 막힌 브라우저 */ }
+  const fresh = d.alerts.filter(a => a.type === 'emergency' && a.status === 'open' && !seen.includes(a.id));
+  for (const a of fresh) toast(`응급 표현 · ${d.people.find(p => p.id === a.personId)?.name || '-'} · 즉시 확인`, { error: true });
+  try { sessionStorage.setItem('ime-seen-emergency', JSON.stringify([...seen, ...fresh.map(a => a.id)])); } catch { /* 무시 */ }
+}
+// 어르신 화면을 다른 탭에서 열어 통화하면 관리자 탭이 바로 다시 그린다 (입력 창이 열려 있으면 데이터만 다시 읽음)
+window.addEventListener('storage', e => {
+  if (e.key !== 'cogcare-v1' || !e.newValue) return;
+  reloadData();
+  if (location.hash.startsWith('#/admin') && !document.querySelector('.modal-backdrop') && !document.activeElement?.matches('input, textarea, select')) render();
+  else if (location.hash.startsWith('#/admin')) notifyEmergencies();
+});
 
 // 어르신 ↔ 관리자 화면 전환 (관리자는 로그인 필요)
 const switchTop = which => `<nav class="switch-top" aria-label="화면 전환">
@@ -380,6 +398,10 @@ function ringing(p) {
       </div>
     </div>`;
   const stopRing = startRing();
+  // 전화가 울리는 동안 서버 상태와 AI 인사를 미리 받아 둔다 (보내는 것: 지난 안부 요약만)
+  const summaries = getData().calls.filter(c => c.personId === p.id && c.aiSummary?.summary)
+    .sort((a, b) => (b.startedAt || b.date).localeCompare(a.startedAt || a.date)).map(c => c.aiSummary.summary);
+  const prep = prepareCall(p, summaries, getData().settings);
   const timer = setTimeout(missed, 30000); // 30초 동안 응답 없음 → 무응답
   cleanup = () => { stopRing(); clearTimeout(timer); };
 
@@ -397,10 +419,10 @@ function ringing(p) {
     app.innerHTML = `<h1>전화를 받지 않으셨어요.</h1><a class="big-btn" href="#/">${icon('back', 20)}처음으로</a>`;
   }
   actions.reject = missed;
-  actions.accept = () => { cleanup(); inCall(p); };
+  actions.accept = () => { cleanup(); inCall(p, prep); };
 }
 
-async function inCall(p) {
+async function inCall(p, prep) {
   app.innerHTML = `
     <div class="phone">
       <div class="call-top"><span class="live">통화 중</span><span class="timer" id="time">00:00</span></div>
@@ -416,6 +438,15 @@ async function inCall(p) {
     level: v => {
       const bars = $('lv')?.children || [];
       [...bars].forEach((b, i) => { b.style.height = 14 + Math.min(60, v * 900 * weights[i] * (0.7 + Math.random() * 0.6)) + 'px'; });
+    },
+    // 응급 표현: 통화가 끝나기 전에 바로 관리자 알림(높음)을 만든다
+    emergency: text => {
+      const d = getData();
+      d.alerts.push({
+        id: 'al' + Date.now().toString(36), personId: p.id, createdAt: nowStamp(), type: 'emergency', level: 'refer', status: 'open',
+        referredAt: null, notifiedAt: null, notifiedTo: null, outcome: null, checklist: {}, note: `통화 중 발화: "${text}"`
+      });
+      save();
     }
   };
   actions.next = nextItem;
@@ -423,7 +454,7 @@ async function inCall(p) {
 
   let res;
   try {
-    res = await runCall(getData().settings, ui, p); // 호칭·말 속도·다시 읽기 횟수는 대상자 기본 정보에서
+    res = await runCall(getData().settings, ui, p, prep); // 호칭·말 속도·다시 읽기 횟수는 대상자 기본 정보에서
   } catch {
     cleanup = null;
     app.innerHTML = `<h1>마이크 사용 불가</h1>
@@ -438,9 +469,22 @@ async function inCall(p) {
   const id = Date.now().toString(36);
   const audioId = res.blob.size ? 'a' + id : null;
   if (audioId) await saveAudio(audioId, res.blob);
-  d.calls.push({ id: 'c' + id, personId: p.id, ...res.call, z: null, audioId });
+  const call = { id: 'c' + id, personId: p.id, ...res.call, z: null, audioId };
+  d.calls.push(call);
   refreshZ(d, p, todayStr());
   evaluate([p.id]);
+  // 통화 후 정리 (AI): 인용이 확인된 항목만 붙인다. 실패하면 규칙 기반 추출 그대로.
+  if (res.aiChat) summarizeCall(res.talk).then(raw => {
+    const sum = checkSummary(raw, res.talk.filter(t => t.role === 'elder').map(t => t.text));
+    if (!sum) return;
+    call.aiSummary = { summary: sum.summary, concerns: sum.concerns, requests: sum.requests };
+    for (const r of sum.requests) if (!call.requests.includes(r.quote)) call.requests.push(r.quote);
+    for (const k of ['sleep', 'mood']) {
+      const v = sum.selfReport[k];
+      if (call.selfReport?.[k] && call.selfReport[k].value == null && v !== 'unknown') call.selfReport[k].value = v;
+    }
+    save();
+  });
   // 점수나 위험도는 대상자에게 보여주지 않는다
   app.innerHTML = `
     <div class="done-mark">${icon('check', 20)}</div>
@@ -735,6 +779,9 @@ function dashboardPage() {
         <label>${SETTING_LABEL[k]}<input id="set-${k}" type="number" step="any" value="${s[k]}"></label>`).join('')}
         <button class="btn btn-primary" type="submit">저장</button>
       </form>
+      <div class="card-head" style="margin:var(--s6) 0 var(--s2)"><h2>AI 음성 · 대화</h2></div>
+      <div id="voice-set" class="stack"><p class="muted">확인 중</p></div>
+      <p class="muted small" style="margin-top:var(--s3)">음성 합성: Typecast</p>
       <div class="row" style="margin-top:var(--s5)">
         ${btn(`${icon('refresh', 16)}재생성`, 'data-act="reseed"', 'secondary', '')}
         ${btn(`${icon('trash', 16)}초기화`, 'data-act="wipe"', 'danger', '')}
@@ -778,6 +825,32 @@ function dashboardPage() {
     toast('초기화됨');
   };
 
+  // AI 음성 설정: 서버(/api/health)의 목소리 목록에서 앱 전체에 하나만 고른다
+  const drawVoices = async () => {
+    const box = document.getElementById('voice-set');
+    const h = await getHealth();
+    if (!box || !document.contains(box)) return;
+    const cur = h.voices.some(v => v.id === s.voiceId) ? s.voiceId : h.voices[0]?.id;
+    const status = h.tts ? 'AI 음성 사용 중' : h.credits ? '음성 크레딧 부족 · 기본 음성' : 'AI 음성 미사용 · 기본 음성';
+    box.innerHTML = `
+      <p><span class="chip ${h.tts ? 'chip-low' : h.credits ? 'chip-mid' : 'chip-neutral'}">${status}</span>
+        <span class="chip ${h.llm ? 'chip-low' : 'chip-neutral'}">${h.llm ? 'AI 대화 사용 중' : 'AI 대화 미사용 · 고정 대본'}</span></p>
+      ${h.voices.length ? `<div class="stack" role="radiogroup" aria-label="목소리">${h.voices.map(v => `
+        <div class="row"><label class="check"><input type="radio" name="voice" value="${esc(v.id)}" data-change="voicePick" ${v.id === cur ? 'checked' : ''}> ${esc(v.label)}</label>
+          ${btn(`${icon('play', 16)}미리 듣기`, `data-act="voiceTry" data-v="${esc(v.id)}" ${h.tts ? '' : 'disabled'}`)}</div>`).join('')}</div>`
+        : '<p class="muted small">목소리 목록 없음 · server.py로 실행하고 .env에 TYPECAST_VOICES 입력</p>'}`;
+  };
+  actions.voicePick = el => { s.voiceId = el.value; save(); toast('목소리 저장됨'); };
+  actions.voiceTry = async el => {
+    el.setAttribute('aria-busy', 'true');
+    const r = await fetchVoice('안녕하세요. 보건소 안부 전화예요.', el.dataset.v, 0.9, true);
+    el.removeAttribute('aria-busy');
+    if (!r.blob) { toast(r.error === 'credits' ? '음성 크레딧 부족' : '미리 듣기 실패', { error: true }); drawVoices(); return; }
+    const a = new Audio(URL.createObjectURL(r.blob));
+    a.onended = () => URL.revokeObjectURL(a.src);
+    a.play().catch(() => toast('재생 실패', { error: true }));
+  };
+
   const drawTl = () => {
     const box = document.getElementById('tl');
     if (!box || (!plan.calls.length && !plan.visits.length)) return;
@@ -790,6 +863,7 @@ function dashboardPage() {
     title: '전체 현황', sub: fmtDate(today), html,
     after: () => {
       drawTl();
+      drawVoices();
       timers.push(setInterval(drawTl, 60000)); // 현재 시각 선은 1분마다
       if (new URLSearchParams(location.hash.split('?')[1] || '').get('to') === 'cal') document.getElementById('cal')?.scrollIntoView({ block: 'start' });
       drawMap(people, R);
@@ -1108,7 +1182,7 @@ function personPage([id, tab = 'summary'], params) {
   const r = ai.risk;
   const st = r.signals.status;
   const alerts = d.alerts.filter(a => a.personId === id)
-    .sort((a, b) => (a.status === 'closed') - (b.status === 'closed') || b.createdAt.localeCompare(a.createdAt));
+    .sort((a, b) => (a.status === 'closed') - (b.status === 'closed') || (a.type !== 'emergency') - (b.type !== 'emergency') || b.createdAt.localeCompare(a.createdAt));
   const openCount = alerts.filter(a => a.status !== 'closed').length;
   const pc = primaryContact(p);
   const acuteNow = (info.acute || []).filter(a => a.start <= today && (!a.end || a.end >= today));
@@ -1679,7 +1753,7 @@ function callRow(c, p) {
   const t = ms => (ms == null ? '' : mmss(ms / 1000));
   const asks = c.items.reduce((a, i) => a + (i.repeatAsked || 0), 0);
   const registered = text => (d.requests || []).some(r => r.callId === c.id && r.text === text);
-  const bubbleQ = (q, tag) => `<div class="bubble app">${tag ? `<small>${esc(tag)}</small>` : ''}${esc(q)}</div>`;
+  const bubbleQ = (q, tag, ai = false) => `<div class="bubble app ${ai ? 'ai' : ''}">${tag ? `<small>${esc(tag)}</small>` : ''}${esc(q)}</div>`;
   const bubbleA = (a, extra = '') => `<div class="bubble me">${a ? esc(a) : '<span class="muted">받아쓰기 없음</span>'}${extra}</div>`;
   const SV = { good: '잘 잠', poor: '잠을 설침' }, MV = { good: '좋음', normal: '보통', bad: '나쁨' };
   return `
@@ -1692,12 +1766,20 @@ function callRow(c, p) {
           <span class="muted">${fmtDur(c.durationSec)}</span>
           <span class="muted">재질문 ${asks}회</span>`}
         ${c.source === 'real' ? '<span class="chip chip-info">실측</span>' : ''}
+        ${c.voice ? `<span class="chip chip-neutral">${c.voice === 'ai' ? 'AI 음성' : '기본 음성'}</span>` : ''}
+        ${c.emergencies?.length ? '<span class="chip chip-high">응급 표현</span>' : ''}
         ${c.edited ? '<span class="chip">수정됨</span>' : ''}
         ${c.audioId ? `<button type="button" class="btn btn-secondary btn-sm" data-act="play" data-id="${c.id}">${icon('play', 16)}재생</button>` : ''}
       </summary>
       <div id="pl-${c.id}"></div>
       ${c.status === 'missed' ? '<p class="muted small" style="margin-top:8px">무응답 · 대화 없음</p>' : `
       <div class="convo">
+        ${c.emergencies?.length ? `<div class="chk err-box"><b>응급 표현</b>${c.emergencies.map(e => `<div>"${esc(e.text)}" · ${esc(e.phrase)}</div>`).join('')}</div>` : ''}
+        ${c.aiSummary?.summary || c.aiSummary?.concerns?.length ? `<div class="chk note-box">
+          ${c.aiSummary.summary ? `<div><b>안부 요약</b> ${esc(c.aiSummary.summary)}</div>` : ''}
+          ${c.aiSummary.concerns?.length ? `<div><b>관찰 메모</b></div>${c.aiSummary.concerns.map(x => `<div>${esc(x.text)} · "${esc(x.quote)}"</div>`).join('')}` : ''}
+        </div>` : ''}
+        ${c.greeting ? `<div class="qa">${bubbleQ(c.greeting.text, c.greeting.ai ? '인사 · AI 문장' : '인사', c.greeting.ai)}</div>` : ''}
         ${c.items.map((it, i) => `
           <div class="qa">
             ${bubbleQ(it.question, it.domain)}
@@ -1711,7 +1793,9 @@ function callRow(c, p) {
         ${c.selfReport ? `
           <div class="qa">${bubbleQ(SELF_QUESTIONS.sleep, '자기보고 · 수면')}${bubbleA(c.selfReport.sleep?.answer, ` <span class="chip chip-neutral">${SV[c.selfReport.sleep?.value] || ''}</span>`)}</div>
           ${c.selfReport.mood ? `<div class="qa">${bubbleQ(SELF_QUESTIONS.mood, '자기보고 · 기분')}${bubbleA(c.selfReport.mood.answer, ` <span class="chip chip-neutral">${MV[c.selfReport.mood.value] || ''}</span>`)}</div>` : ''}` : ''}
-        ${c.chat ? `<div class="qa">${bubbleQ(c.chat.question, '안부 대화 · 채점 안 함')}${bubbleA(c.chat.answer)}</div>` : ''}
+        ${c.chatTurns?.length ? `<div class="qa"><small class="muted">안부 대화 · 채점 안 함${c.chatMode === 'ai' ? ' · 옅은 말풍선 = AI 문장' : ''}</small>
+          ${c.chatTurns.map(t => (t.role === 'app' ? bubbleQ(t.text, '', t.ai) : bubbleA(t.text))).join('')}</div>`
+          : c.chat ? `<div class="qa">${bubbleQ(c.chat.question, '안부 대화 · 채점 안 함')}${bubbleA(c.chat.answer)}</div>` : ''}
         ${c.requests?.length ? `<div class="reqs"><b>대화에서 찾은 요청</b>${c.requests.map((q, i) => `
           <div class="row">"${esc(q)}" ${registered(q) ? '<span class="chip">등록됨</span>' : `<button type="button" class="btn btn-secondary btn-sm" data-act="addRequest" data-id="${c.id}" data-i="${i}">요청 등록</button>`}</div>`).join('')}</div>` : ''}
         ${c.edited ? `<p class="muted small">수정됨 · ${esc(c.edited.by)} · ${mdot(c.edited.at.slice(0, 10))} ${c.edited.at.slice(11, 16)}</p>` : ''}
@@ -1823,6 +1907,7 @@ function infoTab(p, form = false) {
         <dt>말 속도</dt><dd>${c.rate ?? 0.9}</dd><dt>질문 다시 읽기</dt><dd>최대 ${c.rereads ?? 1}회</dd>
         <dt>무응답 재발신</dt><dd>${c.retry?.count ?? 0}회 · ${c.retry?.interval ?? 30}분 간격</dd>
         <dt>자기보고 질문</dt><dd>${c.selfReport === false ? '끔' : '켬 (수면·기분)'}</dd>
+        <dt>외부 AI 서비스</dt><dd>${i.consent?.ai === true ? '동의 (AI 음성·대화)' : '미동의 · 기본 음성과 고정 대본'}</dd>
         <dt>통화 일시중지</dt><dd>${c.pause?.from ? `${fmtDate(c.pause.from)} ~ ${c.pause.to ? fmtDate(c.pause.to) : '종료일 미정'} · ${esc(c.pause.reason || '')}` : '없음'}</dd>
         <dt>SpO₂ 알림 기준</dt><dd>${c.spo2Threshold ?? 90}%${(c.spo2Threshold ?? 90) !== 90 ? ' <span class="chip chip-mid">개인 기준 적용 중</span>' : ''}</dd>
       </dl>
@@ -1835,6 +1920,7 @@ function infoTab(p, form = false) {
         <label>무응답 재발신<select name="retry">${opts(['0', '1', '2', '3'], String(c.retry?.count ?? 0))}</select></label>
         <label>재발신 간격 (분)<select name="interval">${opts(['10', '30', '60'], String(c.retry?.interval ?? 30))}</select></label>
         <label>자기보고 질문 (수면·기분)<select name="self">${opts(['켬', '끔'], c.selfReport === false ? '끔' : '켬')}</select></label>
+        ${form ? '' : `<label>외부 AI 서비스 이용 동의<select name="ai-consent">${opts(['동의', '미동의'], i.consent?.ai === true ? '동의' : '미동의')}</select><span class="help">${AI_CONSENT_TEXT}</span></label>`}
         <label>SpO₂ 알림 기준 (%)<input name="spo2" type="number" step="1" min="80" max="95" value="${c.spo2Threshold ?? 90}"></label>
         <label>첫 통화일<input name="firstCall" type="date" value="${c.firstCall || ''}"></label>
       </div>
@@ -1937,6 +2023,7 @@ function saveInfoSection(p, sec, f) {
       spo2Threshold: +F('spo2').value || 90, firstCall: F('firstCall').value
     };
     p.preferredTime = F('time').value;
+    if (F('ai-consent')) i.consent = { ...(i.consent || {}), ai: F('ai-consent').value === '동의' };
   }
   if (sec === 'contacts') {
     const errs = {};
@@ -2016,7 +2103,7 @@ function alertCard(a, p) {
   const first = contacts.find(c => c.consent) || contacts[0];
   return `
     <div class="alert-card lvb-${a.level} ${closed ? 'closed' : ''}">
-      <div class="row"><b>${TYPE[a.type]}</b>${levelChip(a.level)}<span class="chip">${STATUS[a.status]}</span></div>
+      <div class="row"><b>${TYPE[a.type]}</b>${a.type === 'emergency' ? '<span class="chip chip-high">높음</span>' : levelChip(a.level)}<span class="chip">${STATUS[a.status]}</span></div>
       <div class="muted small">생성 ${stamp(a.createdAt)} · 보호자 통보 ${stamp(a.notifiedAt)}${a.notifiedTo ? ` (${esc(a.notifiedTo.name)}${a.notifiedTo.relation ? ' · ' + esc(a.notifiedTo.relation) : ''} ${esc(a.notifiedTo.phone)})` : ''} · 연계 ${stamp(a.referredAt)}</div>
       <div class="row">
         <button type="button" class="btn btn-secondary btn-sm" data-act="notify" data-id="${a.id}" ${closed ? 'disabled' : ''}>보호자 통보 기록</button>
@@ -2043,6 +2130,7 @@ function alertCard(a, p) {
           <div class="checks">${Object.entries(CHECKS).map(([k, t]) => `
             <label><input type="checkbox" data-change="check" data-id="${a.id}" data-k="${k}" ${a.checklist?.[k] || auto[k] ? 'checked' : ''} ${auto[k] ? 'disabled' : ''}> ${t}${auto[k] ? ' <span class="chip chip-info">자동</span>' : ''}</label>`).join('')}</div>
         </div>` : ''}
+      ${a.type === 'emergency' ? '<p class="chk err-box">대상자에게 119 안내함 · 즉시 전화 확인</p>' : ''}
       <label>메모<textarea data-change="note" data-id="${a.id}" placeholder="처리 내용">${esc(a.note)}</textarea></label>
     </div>`;
 }
@@ -2394,6 +2482,7 @@ function personFormPage(params) {
             <div><span>통화 녹음 ${R}</span>${yn('c-recording', cs.recording, true)}</div>
             <div><span>결과의 보호자 공유</span>${yn('c-share', cs.guardianShare, false)}</div>
             <div><span>개인정보 수집·이용 ${R}</span>${yn('c-privacy', cs.privacy, true)}</div>
+            <div><span>외부 AI 서비스 이용 ${R}<br><small class="muted">${AI_CONSENT_TEXT}</small></span>${yn('c-ai', cs.ai, true)}</div>
           </div>
           <p class="muted small">통화 녹음 미동의: 녹음 없이 채점만</p>
           <div class="form">
@@ -2496,7 +2585,7 @@ function personFormPage(params) {
     target.info.consent = {
       service: true, recording: radio('c-recording'), guardianShare: radio('c-share'), privacy: true,
       method: F('c-method').value, proxy: F('c-method').value === '대리인' ? { name: F('px-name').value.trim(), relation: F('px-rel').value.trim(), phone: F('px-phone').value.trim() } : null,
-      date: F('c-date').value, renewDate: F('c-renew').value
+      date: F('c-date').value, renewDate: F('c-renew').value, ai: radio('c-ai') === true
     };
     const by = me ? displayName(me) : '';
     target.info.edited = { ...(target.info.edited || {}), ...Object.fromEntries(['disease', 'body', 'call', 'contacts', 'device', 'tests'].map(k => [k, { by, at: nowStamp() }])) };
@@ -2565,6 +2654,8 @@ for (const v of d0.visits) {
 }
 // 나이는 생년월일로 다시 계산
 for (const p of d0.people) if (p.birth) p.age = ageFrom(p.birth, todayStr());
+// 외부 AI 서비스 동의 칸이 없던 기존 대상자는 동의한 것으로 (새 대상자는 추가할 때 고른다)
+for (const p of d0.people) if (p.info && p.info.consent?.ai === undefined) p.info.consent = { ...(p.info.consent || {}), ai: true };
 d0.accounts ??= [];
 window.addEventListener('hashchange', route);
 route();

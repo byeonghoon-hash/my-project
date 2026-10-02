@@ -14,12 +14,16 @@
 - 서버·DB 없음. 모든 데이터는 브라우저에 저장된다. 로그인도 브라우저 안에서만 하는 시연용이다 (아래 '로그인').
 - 파일은 아래 구조보다 늘리지 않는다. 쓰이지 않는 설정, 미리 만든 확장 구조, 불필요한 추상화는 만들지 않는다.
 - 화면 문구·주석은 한국어로 쓴다.
-- 실행: 폴더에서 `python3 -m http.server 8000` → 크롬에서 `http://localhost:8000` (마이크는 localhost에서만 허용된다).
-- 검사: `node js/selftest.js` (채점·지표 계산 함수를 assert로 확인한다. 테스트 프레임워크는 쓰지 않는다.)
+- 실행: 폴더에서 `python server.py` → 크롬에서 `http://localhost:8000` (127.0.0.1에만 열림, 마이크는 localhost에서만 허용된다). `python3 -m http.server 8000`으로 열어도 앱은 동작하고 통화는 기본 음성 + 고정 대본이 된다.
+- 검사: `python server.py --selftest` · `node js/selftest.js` (채점·지표 계산 함수를 assert로 확인한다. 테스트 프레임워크는 쓰지 않는다.)
 
 ## 파일 구조
 
 ```
+server.py         앱 파일 제공 + API 중계 (표준 라이브러리만). /api/health · /api/tts(Typecast) · /api/chat · /api/summarize(Claude)
+.env.example      키 칸 견본 (.env는 사용자가 복사해 키를 넣는다, git에 올리지 않음)
+.gitignore        .env · cache/
+cache/tts/        고정 문장 mp3 캐시 (server.py가 만든다)
 index.html        단일 페이지. 해시 라우팅: #/ (첫 화면) · #/user · #/login · #/signup
                   · #/admin (전체 현황) · #/admin/people[?view=requests|journals] (대상자 관리) · #/admin/people/new[?id=] (대상자 추가·전체 수정)
                   · #/admin/p/<id>[/summary|info|trend|calls|visits|journal|alerts]
@@ -28,8 +32,8 @@ package.json      {"type":"module"} 한 줄만 (node가 selftest를 ES 모듈로
 js/app.js         라우팅과 화면 그리기, 모달(modal·confirmBox)과 알림 메시지(toast)
 js/icons.js       선 아이콘 SVG 모음 (16/18/20px)
 js/store.js       localStorage 읽기/쓰기, IndexedDB 녹음 저장·삭제, 회원 계정(비밀번호 해시·로그인 상태)
-js/items.js       문항 뱅크, 오늘의 문항 선택(로테이션), 자동 채점
-js/call.js        통화 시뮬레이션: 음성합성 → 녹음 + 받아쓰기 → 다음 문항
+js/items.js       문항 뱅크, 오늘의 문항 선택(로테이션), 자동 채점, 통화 고정 대본(SCRIPT)·응급 표현 목록·AI 응답 검사
+js/call.js        통화: speak()(AI 음성 또는 기본 음성) → 녹음 + 받아쓰기 → 다음 문항, AI 인사·안부 대화·통화 후 정리 요청
 js/metrics.js     지표, 개인 기저선, z-score, 알림 단계, riskOf, aiSummary, 검색 필터 (순수 함수만, DOM 사용 금지)
 js/vitals.js      생체신호 연계 지점: 모의/실측 선택, 링 CSV 읽기·하룻밤 요약 (아래 '웨어러블 연계')
 js/seed.js        시연용 대상자 10명과 61일치(오늘 포함) 가상 기록·대화록·방문·요청·일지 생성 (SEED_VERSION)
@@ -66,6 +70,19 @@ I-ME 로고와 큰 버튼 두 개: **[대상자 화면]** **[관리자 화면]**
    - 답변에 "네?", "뭐라고", "다시", "잘 안 들려" 같은 재질문이 있으면 해당 질문을 **한 번만** 다시 읽고, 재질문 횟수를 센다 (난청 의심 지표).
    - **통화 상한 3분.** 넘으면 남은 문항을 건너뛰고 인사로 끝낸다.
 4. 끝 인사: "오늘도 통화해 주셔서 감사합니다." **점수나 위험도는 대상자에게 절대 보여주지 않는다** (결과는 보건소·의료진을 통해서만 알린다 — 계획서 윤리 원칙).
+
+## AI 음성·대화 (server.py + js/call.js)
+
+브라우저 받아쓰기(STT) → 대화 두뇌 Claude(LLM) → 음성 합성 Typecast(TTS). ②③은 키가 필요해서 server.py를 거친다.
+- **검사는 고정, 대화는 유연.** 문항 문장·순서·제한 시간·채점은 그대로. LLM은 인사·안부 대화·통화 후 정리만.
+- 키는 앱 폴더 `.env`에만: `TYPECAST_API_KEY`, `TYPECAST_VOICES`(id:이름,…), `ANTHROPIC_API_KEY`, `LLM_MODEL`(모델 이름은 코드에 없다). 키 값은 응답·로그·오류에 나오지 않는다. 시스템 프롬프트는 server.py 안에만.
+- 키가 있는 만큼만 켜진다: Typecast만 있으면 AI 목소리 + 고정 대본(고정 인사, 안부 질문 2개, 규칙 기반 정리), Claude만 있으면 기본 음성 + AI 대화.
+- 기본 음성으로 자동 전환: 서버 꺼짐·키 없음·응답 8초 초과·크레딧 부족(402면 10분간)·대상자 '외부 AI 서비스 이용' 미동의. 실패한 문장만 기본 음성으로 읽고 통화는 끝까지 간다.
+- 음성 출력은 `speak(text, { cache, slow })` 하나만. 다시 읽기는 같은 mp3를 0.85배 재생. 고정 문장만 `cache/tts`에 저장(안부 대화 문장은 저장 안 함). 통화 시작 때 고정 문장을 2개씩 미리 받는다. 앱 목소리가 끝나고 0.3초 뒤부터 마이크 입력을 받는다.
+- 통화 흐름: ① 인사(AI 한 문장 + '오늘도 몇 가지 여쭤볼게요.') ② 인지검사(고정 연결 멘트) ③ 자기보고 ④ 안부 대화(AI 최대 3번·60초, 3분 상한이 모자라면 여기부터 줄임) ⑤ 끝인사 → 통화 후 정리(요약·관찰 메모·요청, 인용 검사 통과분만).
+- 밖으로 보내는 것: 인사·자기보고·안부 대화 문장, 지난 안부 요약, `{호칭}` 자리표시. 이름·주소·전화·질환·보호자·점수는 보내지 않는다.
+- 응급 표현(`EMERGENCY_PHRASES`, items.js 한 곳)은 LLM보다 먼저 코드에서: 119 안내 + 관리자 알림 '응급 표현'(높음, riskOf high) + 통화 기록 표시. '죽고 싶·살기 싫'은 안내 뒤 끝인사.
+- 목소리는 관리자 화면 '판정 설정 > AI 음성 · 대화'에서 앱 전체에 하나. 출처 표기 '음성 합성: Typecast'.
 
 ## 인지검사 프로토콜 (js/items.js)
 

@@ -549,6 +549,7 @@ ul.plain { margin: 0; padding-left: 18px; }
 .bubble { max-width: 80%; padding: 10px 14px; border-radius: 14px; line-height: 1.5; }
 .bubble small { display: block; font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 2px; }
 .bubble.app { justify-self: start; background: var(--panel-2); border-top-left-radius: 4px; }
+.bubble.app.ai { background: var(--panel); border: 1px dashed var(--line-strong); color: var(--muted); }
 .bubble.me { justify-self: end; background: var(--accent-soft); border-top-right-radius: 4px; }
 .grade { display: flex; flex-wrap: wrap; gap: 4px var(--s3); align-items: center; font-size: 12px; justify-content: flex-end; color: var(--muted); }
 .grade input { width: 64px; height: 28px; font-size: 12px; }

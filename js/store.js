@@ -12,6 +12,9 @@ export function getData() {
   return data;
 }
 
+// 다른 탭(어르신 화면)이 저장하면 다시 읽는다
+export function reloadData() { data = null; return getData(); }
+
 export function setData(d) {
   data = d;
   save();

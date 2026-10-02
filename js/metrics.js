@@ -419,6 +419,7 @@ export function riskOf(person, data, today, getV) {
     .sort((a, b) => LEVEL_RANK[b] - LEVEL_RANK[a])[0] ?? null;
   const knownHearing = hearingKnown(person);
   const signals = {
+    emergency: !!openLevel('emergency'), // 통화 중 응급 표현 (열린 알림)
     cognition: openLevel('cognition'),
     spo2: !!openLevel('spo2'),
     // 난청 의심: 열린 난청 알림, 또는 청력 저하 기록이 있는 사람의 재질문 잦음
@@ -430,12 +431,13 @@ export function riskOf(person, data, today, getV) {
     status: st, completion: comp, night, parts
   };
 
-  const high = (score != null && score < 55) || signals.cognition === 'refer'
+  const high = signals.emergency || (score != null && score < 55) || signals.cognition === 'refer'
     || signals.missedRun >= s.missedEscalateDays || signals.spo2;
   const mid = (score != null && score < 75) || signals.cognition === 'watch' || signals.cognition === 'caution'
     || signals.missedRun >= 2 || signals.hearing;
 
   const reasons = [];
+  if (signals.emergency) reasons.push('응급 표현 · 즉시 확인');
   if (signals.cognition === 'refer') reasons.push('인지 기저선 이탈 · 연계 검토');
   if (signals.cognition === 'caution') reasons.push('인지 저하 신호 · 연속 이탈');
   if (signals.cognition === 'watch') reasons.push('인지 경미한 저하');
@@ -472,6 +474,7 @@ export function completionDelta(data, today) {
 export function recommendAction(risk) {
   const base = { high: '48시간 내 방문 확인', mid: '이번 주 내 전화 상담, 1주 후 재평가', low: '현 관리 유지' }[risk.level];
   const add = [];
+  if (risk.signals.emergency) add.unshift('응급 표현 즉시 전화 확인');
   if (risk.signals.cognition === 'refer') add.push('치매안심센터 2단계 검사 연계 검토');
   if (risk.signals.spo2) add.push('수면무호흡 검사 의뢰 검토');
   if (risk.signals.hearing) add.push(risk.signals.hearingKnown ? '보청기 착용·배터리 확인' : '청력검사 연계 검토');
@@ -754,6 +757,10 @@ export function journalDraft(person, data, today, getV) {
     if (c.selfReport?.mood) add(c.selfReport.mood.answer, '기분', c.selfReport.mood.value === 'bad' ? 1 : 3);
     if (c.chat) add(c.chat.answer, c.requests?.length ? '요청' : '안부 대화', c.requests?.length ? 0 : 2);
   }
+  // AI 통화 후 정리: 인용 검사를 통과한 요청·관찰 메모의 말을 같은 방식으로 인용
+  for (const c of calls) for (const x of [...(c.aiSummary?.requests || []), ...(c.aiSummary?.concerns || [])]) {
+    if (!quotes.some(q => q.text.includes(x.quote))) quotes.push({ date: c.date, text: x.quote, tag: x.text, prio: 0 });
+  }
   const S = quotes.sort((a, b) => a.prio - b.prio || b.date.localeCompare(a.date)).slice(0, 5)
     .sort((a, b) => a.date.localeCompare(b.date))
     .map(q => `- ${mmdd(q.date)} "${q.text}" (${q.tag})`).join('\n') || '- 통화 기록 없음';
@@ -785,10 +792,15 @@ export function journalDraft(person, data, today, getV) {
   const med = recentMedChange(person, today);
   if (med) other.push(`약물 변경(${med.name}, ${mmdd(med.changed)})`);
   if (t.sleepPoor.recent7 >= 50) other.push(`수면 불편 자기보고 ${f1(t.sleepPoor.recent7)}%`);
+  const aiNotes = calls.filter(c => c.aiSummary).flatMap(c => [
+    c.aiSummary.summary ? `${mmdd(c.date)} ${c.aiSummary.summary}` : null,
+    ...(c.aiSummary.concerns || []).map(x => `${mmdd(c.date)} 관찰 메모: ${x.text}`)
+  ]).filter(Boolean).slice(-4);
   const A = [
     `- 위험도 ${RISK_LABEL[risk.level]}${risk.reasons.length ? `: ${risk.reasons.join(', ')}` : ''}`,
     `- 감별 체크리스트: ${checked.length ? checked.join(', ') + ' 해당' : '해당 항목 없음'}`,
-    other.length ? `- 인지 외 원인 가능성: ${other.join(', ')}` : '- 확인된 인지 외 원인 없음'
+    other.length ? `- 인지 외 원인 가능성: ${other.join(', ')}` : '- 확인된 인지 외 원인 없음',
+    ...aiNotes.map(t => `- 통화 정리(AI 참고): ${t}`)
   ].join('\n');
 
   // P: 권장 조치와 다음 재평가 날짜

@@ -198,3 +198,86 @@ export function scorePct(items) {
   const max = scored.reduce((s, i) => s + i.maxScore, 0);
   return Math.round((got / max) * 1000) / 10;
 }
+
+// =========================================================
+// 통화 대본 (고정 문장) · AI 대화 검사 — 순수 함수만 (브라우저·node 공용)
+// 검사 문항·채점은 위 코드 그대로다. AI(LLM)는 인사·안부 대화·통화 후 정리만 맡는다.
+// =========================================================
+export const SCRIPT = {
+  greetTail: '오늘도 몇 가지 여쭤볼게요.',
+  greetFixed: '{호칭}, 안녕하세요. 보건소 안부 전화예요.',
+  bridges: ['잘하셨어요. 다음 거 여쭤볼게요.', '네, 좋습니다. 이번에는요.', '고맙습니다. 하나 더 여쭤볼게요.'],
+  offTopic: '네, 그 얘기는 조금 있다가 더 들을게요. 먼저 이것부터 여쭤볼게요.',
+  acks: ['네, 그러셨구나.', '아이고, 네.'],
+  chatFixed: ['식사는 잘 하셨어요?', '요즘 불편하신 데는 없으세요?'],  // AI 대화를 못 쓸 때 안부 질문 2개
+  chatClose: '말씀 잘 들었어요. 담당 간호사님께도 전해 드릴게요.',
+  emergency: '지금 많이 불편하시면 바로 119에 전화하세요. 담당 간호사님께도 바로 알릴게요.',
+  goodbye: '오늘도 통화해 주셔서 감사합니다.'
+};
+
+// 응급 표현 목록: 이 두 줄만 고치면 된다. 띄어쓰기는 무시하고 찾는다.
+export const EMERGENCY_PHRASES = ['가슴이 아파', '가슴이 답답', '숨이 차', '숨을 못', '쓰러', '넘어졌', '피가', '어지러워서 못', '죽고 싶', '살기 싫'];
+export const SEVERE_PHRASES = ['죽고 싶', '살기 싫']; // 이 표현이면 안내 뒤 바로 끝인사
+
+// 어르신 발화에서 응급 표현 찾기 → { phrase, severe } | null (LLM보다 먼저 코드에서)
+export function detectEmergency(text) {
+  const t = nospace(text);
+  const phrase = EMERGENCY_PHRASES.find(p => t.includes(nospace(p)));
+  return phrase ? { phrase, severe: SEVERE_PHRASES.includes(phrase) } : null;
+}
+
+// AI 답에 들어 있으면 버리는 말 (진단·점수 표현)
+export const FORBIDDEN_WORDS = ['치매', '진단', '점수', '검사 결과'];
+const hasForbidden = t => FORBIDDEN_WORDS.some(w => nospace(t).includes(nospace(w)));
+
+// /api/chat 응답 검사: 형식이 틀리거나, say가 80자를 넘거나, 금지어가 있으면 null (→ 고정 문장으로 마무리)
+export function checkChatReply(raw) {
+  let r = raw;
+  if (typeof r === 'string') { try { r = JSON.parse(r); } catch { return null; } }
+  if (!r || typeof r !== 'object' || typeof r.say !== 'string' || typeof r.end !== 'boolean') return null;
+  const say = r.say.trim();
+  if (!say || say.length > 80 || hasForbidden(say)) return null;
+  return { say, end: r.end };
+}
+
+// {호칭} 자리표시를 실제 호칭으로 (AI에게는 이름을 보내지 않는다)
+export const fillTitle = (text, title) => (text || '').replaceAll('{호칭}', (title || '').trim() || '어르신');
+
+// 인용 검사: quote가 어르신이 실제로 한 말 안에 그대로 있어야 남긴다 (띄어쓰기만 무시)
+export function keepQuoted(list, elderTexts) {
+  const said = (elderTexts || []).map(nospace);
+  return (Array.isArray(list) ? list : []).filter(x => x && typeof x.text === 'string' && typeof x.quote === 'string'
+    && nospace(x.quote).length >= 2 && said.some(s => s.includes(nospace(x.quote))))
+    .map(x => ({ text: x.text.trim().slice(0, 60), quote: x.quote.trim() }));
+}
+
+// /api/summarize 응답 정리. 인용이 확인된 항목만, 진단 표현이 든 요약은 버린다.
+export function checkSummary(raw, elderTexts) {
+  if (!raw || typeof raw !== 'object') return null;
+  const summary = typeof raw.summary === 'string' && !hasForbidden(raw.summary) ? fillTitle(raw.summary.trim(), '').slice(0, 200) : '';
+  const pick = (v, ok) => (ok.includes(v) ? v : 'unknown');
+  return {
+    summary,
+    selfReport: { sleep: pick(raw.selfReport?.sleep, ['good', 'poor']), mood: pick(raw.selfReport?.mood, ['good', 'normal', 'bad']) },
+    requests: keepQuoted(raw.requests, elderTexts),
+    concerns: keepQuoted(raw.concerns, elderTexts).filter(c => !hasForbidden(c.text))
+  };
+}
+
+// 대상자 동의 문구 (대상자 추가 ④ 동의 · 기본 정보 ③)
+export const AI_CONSENT_TEXT = '음성 합성은 Typecast, 대화 처리는 Anthropic 서버로 대화 내용(읽어 줄 문장·호칭, 인사·자기보고·안부 대화의 말)이 전송됨. 이름·주소·전화·질환·검사 점수는 보내지 않음.';
+
+// 음성·대화 방식 고르기. 서버 상태(/api/health)와 대상자 동의를 함께 본다.
+export const aiAgreed = person => person?.info?.consent?.ai === true;
+export const useAiVoice = (health, person) => !!health?.tts && aiAgreed(person);
+export const useAiChat = (health, person) => !!health?.llm && aiAgreed(person);
+// 문장 하나의 AI 음성 결과 → 'ok' | 'fallback'(그 문장만 기본 음성) | 'credits'(이후 기본 음성)
+export function ttsOutcome({ status, elapsedMs, timeoutMs = 8000 }) {
+  if (status === 402) return 'credits';
+  if (status !== 200 || elapsedMs > timeoutMs) return 'fallback';
+  return 'ok';
+}
+
+// 검사 중 딴 이야기: 꽤 길게 말했는데 문항 점수가 0이면 (동물 이름 과제, '모르겠다'·'기억 안 난다' 같은 대답은 제외)
+export const isOffTopic = (item, answer) => item.key !== 'fluency' && nospace(answer).length >= 15
+  && !/모르|기억|생각이안|까먹/.test(nospace(answer)) && scoreItem(item, answer) === 0;

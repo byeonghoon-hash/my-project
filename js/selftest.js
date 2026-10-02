@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 import ungchon from './ungchon.js';
 import { visitConflicts, visitChecks, ageFrom, findDuplicates, dashboard as dash2, aiSummary as ai2, trendAll as tall2, journalDraft as jd2 } from './metrics.js';
 import { makeSeed } from './seed.js';
+import { detectEmergency, checkChatReply, keepQuoted, checkSummary, fillTitle, useAiVoice, useAiChat, ttsOutcome, isOffTopic, SCRIPT } from './items.js';
 import { fmtDate, fmtMD, fmtMDW, fmtTime, fmtStamp, fmtDur, fmtNum, fmtUnit, timelineRange, layoutLabels, completionDelta, completionAvg } from './metrics.js';
 
 const DATE = '2026-09-27'; // 일요일
@@ -330,5 +331,50 @@ for (const f of ['app.js', 'call.js', 'icons.js']) {
   const rest = css.replace(root, '');
   assert.ok(!/#[0-9a-fA-F]{3,8}\b/.test(rest), `style.css :root 밖 색상 코드: ${rest.match(/.{0,40}#[0-9a-fA-F]{3,8}\b/)?.[0]}`);
 }
+
+// ======== AI 통화: 응급 표현 · AI 답 검사 · 인용 검사 · 호칭 · 기본 음성 대체 ========
+assert.deepEqual(detectEmergency('아이고 가슴이 답답해가 죽겠다'), { phrase: '가슴이 답답', severe: false });
+assert.deepEqual(detectEmergency('요새는 마 살기 싫다'), { phrase: '살기 싫', severe: true });
+assert.equal(detectEmergency('가슴이아파서').phrase, '가슴이 아파'); // 띄어쓰기 무시
+assert.ok(detectEmergency('어제 넘어졌어요'));
+assert.equal(detectEmergency('밥은 잘 묵었다'), null);
+
+assert.deepEqual(checkChatReply('{"say":"{호칭}, 허리는 좀 어떠세요?","end":false}'), { say: '{호칭}, 허리는 좀 어떠세요?', end: false });
+assert.equal(checkChatReply('허리는 좀 어떠세요?'), null);                                   // JSON 아님
+assert.equal(checkChatReply({ say: '네', end: 'no' }), null);                                  // end 형식
+assert.equal(checkChatReply({ say: '가'.repeat(81), end: false }), null);                      // 80자 초과
+assert.ok(checkChatReply({ say: '가'.repeat(80), end: true }));
+for (const w of ['치매', '진단', '점수', '검사 결과']) assert.equal(checkChatReply({ say: `${w} 얘기는요`, end: false }), null);
+
+const elder = ['허리가 계속 쑤시고 밤에 잠을 못 자요', '반찬 좀 갖다주면 좋겠다'];
+assert.deepEqual(keepQuoted([{ text: '반찬 지원', quote: '반찬 좀 갖다주면 좋겠다' }, { text: '외로움', quote: '혼자라서 외로워요' }], elder),
+  [{ text: '반찬 지원', quote: '반찬 좀 갖다주면 좋겠다' }]);                                  // 지어낸 인용은 버린다
+assert.equal(keepQuoted([{ text: '허리', quote: '허리가 계속 쑤시고' }], elder).length, 1);    // 일부 그대로 인용은 통과
+const sum = checkSummary({ summary: '허리 통증과 반찬 요청', selfReport: { sleep: 'poor', mood: 'weird' },
+  requests: [{ text: '반찬', quote: '반찬 좀 갖다주면' }], concerns: [{ text: '허리 통증', quote: '쑤시고 밤에' }, { text: '불안', quote: '없는 말' }] }, elder);
+assert.equal(sum.selfReport.mood, 'unknown');
+assert.equal(sum.requests.length, 1);
+assert.deepEqual(sum.concerns.map(c => c.text), ['허리 통증']);
+assert.equal(checkSummary({ summary: '치매 의심', requests: [], concerns: [] }, elder).summary, '');
+assert.equal(checkSummary(null, elder), null);
+
+assert.equal(fillTitle('{호칭}, 오늘은 좀 어떠세요?', '윤병훈 어르신'), '윤병훈 어르신, 오늘은 좀 어떠세요?');
+assert.equal(fillTitle('{호칭}, 안녕하세요.', ''), '어르신, 안녕하세요.');
+assert.ok(!fillTitle(SCRIPT.greetFixed, '김말순 어르신').includes('{'));
+
+const agreed = { info: { consent: { ai: true } } }, refused = { info: { consent: { ai: false } } };
+assert.equal(useAiVoice({ tts: true }, agreed), true);
+assert.equal(useAiVoice({ tts: false }, agreed), false);       // 서버 꺼짐·키 없음·크레딧 부족 → health.tts false
+assert.equal(useAiVoice({ tts: true }, refused), false);       // 미동의
+assert.equal(useAiVoice({ tts: true }, { info: {} }), false);
+assert.equal(useAiChat({ tts: true, llm: false }, agreed), false); // Typecast만 있음 → 고정 대본
+assert.equal(ttsOutcome({ status: 200, elapsedMs: 900 }), 'ok');
+assert.equal(ttsOutcome({ status: 200, elapsedMs: 8500 }), 'fallback'); // 시간 초과
+assert.equal(ttsOutcome({ status: 0, elapsedMs: 8000 }), 'fallback');   // 연결 실패
+assert.equal(ttsOutcome({ status: 502, elapsedMs: 300 }), 'fallback');
+assert.equal(ttsOutcome({ status: 402, elapsedMs: 300 }), 'credits');   // 크레딧 부족 → 이후 기본 음성
+const regItem = plan2('2026-09-28', 6).items.find(i => i.key === 'register');
+assert.equal(isOffTopic(regItem, '아이고 요새 허리가 계속 쑤시가 밭에도 못 나가요'), true);
+assert.equal(isOffTopic(regItem, '잘 모르겠는데 기억이 하나도 안 나요 미안해요'), false);
 
 console.log('selftest 통과');
