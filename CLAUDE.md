@@ -26,7 +26,7 @@ server.py         앱 파일 제공 + API 중계 (표준 라이브러리만). /a
 cache/tts/        고정 문장 mp3 캐시 (server.py가 만든다)
 index.html        단일 페이지. 해시 라우팅: #/ (첫 화면) · #/user · #/login · #/signup
                   · #/admin (전체 현황) · #/admin/people[?view=requests|journals] (대상자 관리) · #/admin/people/new[?id=] (대상자 추가·전체 수정)
-                  · #/admin/p/<id>[/summary|info|trend|calls|visits|journal|alerts]
+                  · #/admin/p/<id>[/summary|info|trend|calls|visits|journal|alerts] · #/admin/questions[?tab=] (문항 관리)
 style.css
 package.json      {"type":"module"} 한 줄만 (node가 selftest를 ES 모듈로 실행하도록)
 js/app.js         라우팅과 화면 그리기, 모달(modal·confirmBox)과 알림 메시지(toast)
@@ -84,32 +84,34 @@ I-ME 로고와 큰 버튼 두 개: **[대상자 화면]** **[관리자 화면]**
 - 응급 표현(`EMERGENCY_PHRASES`, items.js 한 곳)은 LLM보다 먼저 코드에서: 119 안내 + 관리자 알림 '응급 표현'(높음, riskOf high) + 통화 기록 표시. '죽고 싶·살기 싫'은 안내 뒤 끝인사.
 - 목소리는 관리자 화면 '판정 설정 > AI 음성 · 대화'에서 앱 전체에 하나. 출처 표기 '음성 합성: Typecast'.
 
-## 인지검사 프로토콜 (js/items.js)
+## 인지검사 프로토콜 (js/items.js) — 질문 리스트 문서 기준
 
-매일 전체 검사는 하지 않는다. 하루 통화 구성 (약 2~3분):
+통화 순서 (상한 `maxCallSec` 기본 240초):
+1. 첫인사 '안녕하세요, {호칭}. 통화 가능하신가요?' — '바쁘다·나중에' 같은 대답이면 '편하실 때 다시 전화드릴게요'로 끝 (검사 없음, `declined`)
+2. 몸 상태 '그럼 오늘 몸 상태는 좀 어떠세요?' (AI 대화를 쓰면 지난 안부 요약을 잇는 AI 질문 한 문장)
+3. 최근 문제 '최근 며칠 동안 불편하거나 잊어버리신 게 있나요?' → '알려 주셔서 감사합니다. 이제 기억과 집중에 관한 짧은 질문…'
+4. 인지검사 6개 영역, **영역마다 한 문항** (지남력 1 · 기억 등록 3 · 주의력 1 · 언어기능 1 · 지연 회상 3 · 집행기능 1 = 10점)
+5. 자기보고(수면·기분, 대상자별 켬/끔) → 안부 대화(AI 또는 고정 '식사는…' '요즘 필요하신 건…') → 마무리 '질문에 답변해 주셔서 감사합니다…'
 
-| 순서 | 도메인 | 내용 | 배점 |
-|---|---|---|---|
-| 1 | 지남력 | "오늘은 몇 월 며칠, 무슨 요일인가요?" | 월·일·요일 각 1 = 3 |
-| 2 | 기억 등록 | 단어 3개 따라 말하기 | 3 |
-| 3 | 로테이션 과제 | 날짜에 따라 아래 셋 중 하나 | 과제별 |
-| 4 | 지연 회상 | 아까 단어 3개 다시 말하기 | 3 |
-| 5 | 자기보고 (켬/끔) | "어젯밤 잠은 잘 주무셨어요?" · "오늘 기분은 어떠세요?" — 규칙으로 good/poor, good/normal/bad 분류, 채점 안 함 | – |
-| 6 | 안부 대화 | "요즘 지내시기는 어떠세요? 불편하신 건 없으세요?" — 채점 안 함 (사회적 고립 완화). '해 줬으면·필요하·갖다·도와·아프' 같은 표현이 든 문장을 요청 후보로 뽑는다 | – |
+| 영역 | 문항 (기본 뱅크 `DEFAULT_BANK`) | 채점 |
+|---|---|---|
+| 지남력 | 연도·월·일·요일·계절 중 하나 | 통화 날짜로 자동 (숫자·한글 숫자) |
+| 기억 등록·지연 회상 | 단어 25개 중 무작위 3개 (전날 단어와 겹치지 않게) | 대답에 나온 단어 수 |
+| 주의력 | 숫자 바로 따라 4개 · 숫자 거꾸로 3개 · 단어 거꾸로(고양이→이양고) | 숫자열·뒤집은 낱말 포함 |
+| 언어기능 | 이름 대기 6 · 문장 따라 말하기 7 | 정답 낱말 중 하나 / 낱말마다 앞 두 글자 모두 |
+| 집행기능 | 공통점 12쌍 (버스–기차, 피아노–기타 …) | 정답으로 볼 말 중 하나 |
 
-로테이션 과제 (`dayIndex % 3`):
-- 주의력: 숫자 거꾸로 말하기 2회 (3자리, 4자리) — 각 1점 = 2
-- 언어유창성: 1분 동안 동물 이름 — 중복 없는 동물 수, items.js 안의 동물 목록(약 150개)과 대조, 15개 이상 = 만점 5점으로 환산
-- 집행기능: 공통점 말하기 2문항 (예: 사과–배 → 과일) — 핵심어 포함 시 각 1점 = 2
+- **학습 방지**: 켜진 문항을 날짜에 따라 건너뛰며 고른다 (보폭이 문항 수와 서로소라 n일 동안 모두 한 번씩, 이어지는 날 같은 문항 없음). 숫자는 날짜로 정한 무작위·중복 없음.
+- **하루 점수** = 얻은 점수 / 10 × 100 (%). 자동 채점 결과는 관리자가 문항별로 고칠 수 있다.
+- 통화 기록의 문항(`items[]`)에 그날 정답 정보(`qid, part, date, words, digits, word, sentence, answers`)를 함께 저장한다 → 뱅크를 고쳐도 지난 기록 채점은 그대로. 예전 기록(월·일·요일 3점, 숫자 거꾸로 3·4자리, 동물 이름, 공통점 2문항)도 그대로 읽힌다.
+- 통화는 대상자 기본 정보 ③의 호칭, 말 속도, 질문 다시 읽기 허용 횟수(0~2), 자기보고 켬/끔을 읽어 쓴다. 재질문 발화도 대답 원문에 남긴다.
 
-**연습효과 통제 (계획서 3-1)**: 단어 세트·숫자열·공통점 문항을 **평행형 N세트**(기본 N=6)로 만들고 날짜 순서대로 돌린다. 같은 세트가 다시 나오기까지의 간격 D = N × (해당 과제가 나오는 주기)일. N은 설정에서 바꿀 수 있다.
-
-**하루 점수** = 얻은 점수 / 그날 만점 × 100 (%). 로테이션 때문에 날마다 만점이 달라서 퍼센트로 통일한다.
-(도메인별 기저선은 데이터가 충분히 쌓인 뒤 추가. 지금은 하지 않는다.)
-
-자동 채점 결과는 관리자가 문항별로 고칠 수 있다 (받아쓰기 오류 대비).
-
-통화는 대상자 기본 정보 ③의 호칭(첫 질문 앞 인사), 말 속도, 질문 다시 읽기 허용 횟수(0~2), 자기보고 켬/끔을 읽어 쓴다. 재질문 발화도 대답 원문에 남긴다.
+### 문항 관리 (#/admin/questions, 사이드바 '문항')
+대본 · 지남력 · 기억(단어) · 주의력 · 언어기능 · 집행기능 · 미리보기 탭. 고친 뱅크는 `data.questionBank`(정리는 `normalizeBank`)에 저장되고 다음 통화부터 쓰인다.
+- 문항 추가·수정(유형별 입력칸, 채점 시험), 사용/쉼 토글(영역마다 하나 이상), 삭제(확인 창), 미리 듣기(AI 음성이면 그 목소리)
+- 문항별 쓰인 횟수·정답률(5회 이상, 95% 이상 '너무 쉬움', 30% 이하 '너무 어려움'), 단어별 지연 회상 기억률
+- 대본 문장 편집({호칭}), 통화 미리보기(날짜별 전체 순서) · 앞으로 7일 문항표, 내보내기·가져오기(JSON, 다른 컴퓨터와 공유), 기본값으로 되돌리기, 최종 수정자
+- 시드를 다시 만들어도 문항 뱅크와 직접 한 통화(`source: 'real'`)·응급 표현 알림은 남는다.
 
 ## 웨어러블 연계 (js/vitals.js)
 
@@ -149,7 +151,7 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 ```js
 {
   settings: {...},                       // 아래 판정 파라미터
-  seedVersion: 4,                        // 올리면 시연 데이터를 새로 만든다 (accounts·settings·링 데이터는 유지)
+  seedVersion: 5,                        // 올리면 시연 데이터를 새로 만든다 (accounts·settings·링 데이터는 유지)
   people: [{ id, name, sex, birth, age, phone, phoneType, education, canRead, guardianPhone, preferredTime, enrolledAt,
              active, closed: { reason, date, by } | null,    // 삭제하지 않고 종결 (active=false)
              referral, dementiaCenter: '예'|'아니요'|'모름',
@@ -166,8 +168,8 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
                tests: [{ kind: 'CIST'|'MMSE-DS'|'기타', score, date, examiner }],   // 대면 인지검사 기록
                edited: { <섹션>: { by, at } } } }],
   calls:  [{ id, personId, date, time, startedAt, status: 'completed'|'missed'|'partial', source: 'demo'|'real',
-             durationSec, scorePct, z, rotationDomain, setIndex,
-             items: [{ key, domain, question, answer, expected, score, maxScore, latencySec, repeatAsked, startMs, endMs }],
+             durationSec, scorePct, z, declined, voice, chatMode, greeting, opening: { hello, condition, recent }, chatTurns, emergencies, aiSummary,
+             items: [{ key, qid, domain, question, answer, expected, score, maxScore, latencySec, repeatAsked, startMs, endMs, part|words|digits|word|sentence|answers }],
              selfReport: { sleep: { answer, value }, mood: { answer, value } } | null,
              chat: { question, answer } | null, requests: ['대상자 말 그대로', ...], edited: { by, at }, audioId }],
   vitals: [{ personId, date, hrRest, spo2Min, spo2BelowMin, wearHours, sqi, steps }],       // 모의
@@ -181,7 +183,8 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
   requests: [{ id, personId, callId, date, text, status: 'open'|'done', createdAt, by }],   // 어르신 요청사항
   journals: [{ id, personId, date, type, author, status: 'draft'|'final', auto, S, O, A, P, from,
                history: [{ by, at, prev: { date, type, S, O, A, P } }], confirmedBy, confirmedAt, createdAt }],
-  accounts: [{ id, username, name, job, org, salt, hash, createdAt }]   // 비밀번호 원문은 저장하지 않는다
+  accounts: [{ id, username, name, job, org, salt, hash, createdAt }]   // 비밀번호 원문은 저장하지 않는다,
+  questionBank: { script, orientation, memory: { register, recall, words }, attention, language, executive, edited } // 문항 관리 (없으면 DEFAULT_BANK)
 }
 ```
 
@@ -206,8 +209,7 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
   spo2AlertNights: 3,      //   최근 7일 중 3밤 이상 → 수면무호흡 의심 알림
   hearingRepeatAsks: 2,    // 통화당 재질문 2회 이상이
   hearingCalls: 3,         //   최근 5통화 중 3회 이상 → 난청 의심 알림
-  parallelSets: 6,         // 평행형 문항 세트 수 N
-  maxCallSec: 180,
+  maxCallSec: 240,
   visitBufferMin: 20,      // 방문 사이 이동 여유 시간(분)
   visitDailyLimit: 4       // 방문자 하루 방문 한도
 }
@@ -302,7 +304,7 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 - 거동 '대부분 도움'·'와상' → 우선 확인 목록에 '거동 제한' 칩 (등급은 안 바꿈).
 
 ### 변화 추이 — `trendAll` / `trendSummary(data, person, key, { days, weekly }, today, getV)`
-표·큰 그래프·CSV·AI 분석·돌봄일지 초안 O가 모두 이 계산을 쓴다. 지표: 인지검사 점수, 기저선 대비 z, 영역별 6개(지남력·기억 등록·지연 회상·주의력·언어유창성(개수)·공통점, 접어 둠), 응답 지연, 재질문, 통화 완료율, 통화 시간, 잠 설침 비율, 기분 나쁨 비율, 야간 최저 SpO2, 기준 미만 시간, 안정 시 심박, 착용 시간, 유효한 밤 비율.
+표·큰 그래프·CSV·AI 분석·돌봄일지 초안 O가 모두 이 계산을 쓴다. 지표: 인지검사 점수, 기저선 대비 z, 영역별 6개(지남력·기억 등록·지연 회상·주의력·언어기능·집행기능, 접어 둠), 응답 지연, 재질문, 통화 완료율, 통화 시간, 잠 설침 비율, 기분 나쁨 비율, 야간 최저 SpO2, 기준 미만 시간, 안정 시 심박, 착용 시간, 유효한 밤 비율.
 - 열: 최근 7일 · 이전 7일 · 개인 기저선(인지·통화 = 처음 14회 통화, 링 = 처음 유효한 7밤) · 변화(최근 7일 − 기저선, 화살표·부호·색) · 스파크라인(기저선 ±1SD 띠) · 상태.
 - 상태: 최근 7일 값 4개 미만이거나 기저선 없음 → 데이터 부족. |변화| ≥ max(기저선 SD, 설정 최솟값) → 개선/악화(방향 없는 지표는 '변화'). 그 밖은 유지. 인지 z는 열린 인지 알림이 있으면 '악화' + 단계 칩.
 - 큰 그래프: 일별 점, 7일 이동평균, 기저선 띠, 사건(급성질환 회색 띠, 약물 변경 세로 점선, 통화 일시중지 빗금, 방문 삼각형). 인지 지표 점은 그날 통화 요약을 보여 주고 누르면 그 통화로 간다.

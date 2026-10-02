@@ -17,7 +17,10 @@ import {
 } from './metrics.js';
 import { getNightVitals, importRing, recomputeRing, deleteRingImport } from './vitals.js';
 import { startRing, runCall, nextItem, stopCall, prepareCall, summarizeCall, getHealth, fetchVoice } from './call.js';
-import { scorePct, orientationParts, countAnimals, SELF_QUESTIONS, checkSummary, AI_CONSENT_TEXT } from './items.js';
+import {
+  scorePct, scoreItem, orientationParts, countAnimals, SELF_QUESTIONS, checkSummary, AI_CONSENT_TEXT, SCRIPT,
+  DEFAULT_BANK, normalizeBank, planForDate, DOMAINS, ORIENT_PART, ATTENTION_TYPE, LANGUAGE_TYPE
+} from './items.js';
 import ungchon from './ungchon.js';
 import { icon } from './icons.js';
 
@@ -44,7 +47,6 @@ const SETTING_LABEL = {
   spo2AlertNights: '최근 7일 중 해당 밤 수',
   hearingRepeatAsks: '통화당 재질문 기준 (회)',
   hearingCalls: '최근 5통화 중 해당 통화 수',
-  parallelSets: '평행형 문항 세트 수 N (최대 10)',
   maxCallSec: '통화 상한 (초)',
   sdMinScore: '변화 추이 표준편차 최솟값: 점수 (%p)',
   sdMinSpo2: '변화 추이 표준편차 최솟값: SpO₂ (%p)',
@@ -276,6 +278,7 @@ function render() {
   else if (path === '#/admin') pg = dashboardPage();
   else if (path === '#/admin/people') pg = peoplePage(params);
   else if (path === '#/admin/people/new') pg = personFormPage(params);
+  else if (path === '#/admin/questions') pg = questionsPage(params);
   else if (path.startsWith('#/admin/p/')) pg = personPage(path.slice(10).split('/').map(decodeURIComponent), params);
   else pg = { title: '없는 화면', html: empty('없는 화면') };
 
@@ -321,6 +324,7 @@ function shell(path, me, pg) {
       <nav>
         ${item('#/admin', 'map', '전체 현황', path === '#/admin')}
         ${item('#/admin/people', 'users', '대상자', path.startsWith('#/admin/p'))}
+        ${item('#/admin/questions', 'list', '문항', path === '#/admin/questions')}
         <button type="button" class="nav" data-act="logout" data-tip="로그아웃">${icon('logout', 20)}<span>로그아웃</span></button>
       </nav>
       <div class="side-foot">
@@ -454,7 +458,7 @@ async function inCall(p, prep) {
 
   let res;
   try {
-    res = await runCall(getData().settings, ui, p, prep); // 호칭·말 속도·다시 읽기 횟수는 대상자 기본 정보에서
+    res = await runCall(getData().settings, ui, p, prep, getData().questionBank); // 호칭·말 속도·다시 읽기 횟수는 대상자 기본 정보에서, 문항은 '문항 관리'에서
   } catch {
     cleanup = null;
     app.innerHTML = `<h1>마이크 사용 불가</h1>
@@ -1739,7 +1743,7 @@ const nospace = t => (t || '').replace(/\s+/g, '');
 function expectedHtml(c, it) {
   const ok = (text, good) => `<span class="ans ${good ? 'hit' : 'miss'}">${esc(text)}</span>`;
   if (it.key === 'register' || it.key === 'recall') return it.expected.split(', ').map(w => ok(w, nospace(it.answer).includes(w))).join(' ');
-  if (it.key === 'orientation') {
+  if (it.key === 'orientation' && !it.part) { // 예전 기록 (월·일·요일 3점)
     const parts = orientationParts(c.date, it.answer || '');
     const [m, dd, w] = it.expected.split(' ');
     return [ok(m, parts.month), ok(dd, parts.day), ok(w, parts.weekday)].join(' ');
@@ -1768,6 +1772,7 @@ function callRow(c, p) {
         ${c.source === 'real' ? '<span class="chip chip-info">실측</span>' : ''}
         ${c.voice ? `<span class="chip chip-neutral">${c.voice === 'ai' ? 'AI 음성' : '기본 음성'}</span>` : ''}
         ${c.emergencies?.length ? '<span class="chip chip-high">응급 표현</span>' : ''}
+        ${c.declined ? '<span class="chip chip-mid">통화 어려움</span>' : ''}
         ${c.edited ? '<span class="chip">수정됨</span>' : ''}
         ${c.audioId ? `<button type="button" class="btn btn-secondary btn-sm" data-act="play" data-id="${c.id}">${icon('play', 16)}재생</button>` : ''}
       </summary>
@@ -1779,7 +1784,12 @@ function callRow(c, p) {
           ${c.aiSummary.summary ? `<div><b>안부 요약</b> ${esc(c.aiSummary.summary)}</div>` : ''}
           ${c.aiSummary.concerns?.length ? `<div><b>관찰 메모</b></div>${c.aiSummary.concerns.map(x => `<div>${esc(x.text)} · "${esc(x.quote)}"</div>`).join('')}` : ''}
         </div>` : ''}
-        ${c.greeting ? `<div class="qa">${bubbleQ(c.greeting.text, c.greeting.ai ? '인사 · AI 문장' : '인사', c.greeting.ai)}</div>` : ''}
+        ${c.opening ? `<div class="qa">
+            ${bubbleQ(c.greeting?.text || '', '인사')}${c.opening.hello ? bubbleA(c.opening.hello) : ''}
+            ${bubbleQ(c.opening.condition.question, c.opening.condition.ai ? '몸 상태 · AI 문장' : '몸 상태', c.opening.condition.ai)}${bubbleA(c.opening.condition.answer)}
+            ${c.opening.recent ? bubbleQ(c.opening.recent.question, '최근 문제 · 채점 안 함') + bubbleA(c.opening.recent.answer) : ''}</div>`
+          : c.greeting ? `<div class="qa">${bubbleQ(c.greeting.text, c.greeting.ai ? '인사 · AI 문장' : '인사', c.greeting.ai)}</div>` : ''}
+        ${c.declined ? '<p class="chk warn-box">통화 어려움 · 검사 없이 종료 (다음 통화에서 다시)</p>' : ''}
         ${c.items.map((it, i) => `
           <div class="qa">
             ${bubbleQ(it.question, it.domain)}
@@ -2419,6 +2429,291 @@ const visitActions = {
   },
   openVisit: el => openVisit({ personId: el.dataset.p, visitId: el.dataset.v })
 };
+
+// ---------- 문항 관리 (#/admin/questions) ----------
+// 인지검사 문항 뱅크를 고친다. 영역마다 통화 한 번에 한 문항, 다음 통화에는 다른 문항 (켜진 문항 수 = 반복 간격 일수).
+// 고친 뱅크는 data.questionBank에 저장되고 다음 통화부터 쓰인다. 지난 통화 기록은 그날 문항 정보를 따로 갖고 있어 바뀌지 않는다.
+const Q_TABS = [['script', '대본'], ['orientation', '지남력'], ['memory', '기억 (단어)'], ['attention', '주의력'], ['language', '언어기능'], ['executive', '집행기능'], ['preview', '미리보기']];
+const SCRIPT_LABEL = { greeting: '① 첫인사 (통화 가능 여부)', condition: '② 몸 상태 (AI 대화를 쓰면 AI가 이 자리를 지난 안부에 맞게 바꿈)', recent: '③ 최근 문제', intro: '④ 검사 시작 안내', closing: '⑧ 마무리' };
+const qStats = d => { // 문항별 사용 횟수와 정답률 (완료 통화)
+  const m = new Map();
+  for (const c of d.calls) for (const it of c.items || []) {
+    if (!it.qid || it.score == null || !it.maxScore) continue;
+    const k = it.key === 'recall' || it.key === 'register' ? `${it.key}` : it.qid;
+    const x = m.get(k) || { n: 0, sum: 0 };
+    x.n++; x.sum += it.score / it.maxScore; m.set(k, x);
+  }
+  return id => { const x = m.get(id); return x ? { n: x.n, rate: (x.sum / x.n) * 100 } : { n: 0, rate: null }; };
+};
+// 단어별: 몇 번 나왔고, 지연 회상에서 몇 % 기억했는지
+const wordStats = d => {
+  const m = new Map();
+  for (const c of d.calls) for (const it of c.items || []) {
+    if (it.key !== 'recall' || !it.words || it.score == null) continue;
+    for (const w of it.words) { const x = m.get(w) || { n: 0, hit: 0 }; x.n++; if (nospace(it.answer).includes(w)) x.hit++; m.set(w, x); }
+  }
+  return w => m.get(w) || { n: 0, hit: 0 };
+};
+const rateChip = st => (st.n < 5 || st.rate == null ? '<span class="muted small">-</span>'
+  : `<span class="num">${fmtNum(st.rate, 0)}%</span>${st.rate >= 95 ? ' <span class="chip chip-info">너무 쉬움</span>' : st.rate <= 30 ? ' <span class="chip chip-mid">너무 어려움</span>' : ''}`);
+const splitList = v => [...new Set(String(v || '').split(/[,\n]/).map(x => x.trim()).filter(Boolean))];
+
+// 미리 듣기: AI 음성이 켜져 있으면 그 목소리, 아니면 브라우저 기본 음성
+async function previewSpeak(text) {
+  const h = await getHealth(), s = getData().settings;
+  if (h.tts) {
+    const vid = h.voices.some(v => v.id === s.voiceId) ? s.voiceId : h.voices[0]?.id;
+    const r = await fetchVoice(text, vid, 0.9, true);
+    if (r.blob) { const a = new Audio(URL.createObjectURL(r.blob)); a.onended = () => URL.revokeObjectURL(a.src); a.play().catch(() => {}); return; }
+  }
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'ko-KR'; u.rate = 0.9;
+  speechSynthesis.speak(u);
+}
+
+function questionsPage(params) {
+  const d = getData(), me = currentAccount();
+  const tab = Q_TABS.some(([k]) => k === params.get('tab')) ? params.get('tab') : 'script';
+  const bank = normalizeBank(d.questionBank);
+  const stat = qStats(d);
+  const today = todayStr();
+  const commit = msg => { // 저장 + 최종 수정 기록
+    bank.edited = { by: me ? displayName(me) : '', at: nowStamp() };
+    d.questionBank = bank;
+    save(); render(); toast(msg);
+  };
+  const enabled = k => bank[k].filter(x => x.on !== false).length;
+
+  const tabs = `<nav class="tabs subtabs" aria-label="문항 영역">${Q_TABS.map(([k, t]) =>
+    `<a href="#/admin/questions?tab=${k}" ${k === tab ? 'aria-selected="true" aria-current="page"' : ''}>${t}${['orientation', 'attention', 'language', 'executive'].includes(k) ? ` <span class="cnt">${enabled(k)}</span>` : k === 'memory' ? ` <span class="cnt">${bank.memory.words.length}</span>` : ''}</a>`).join('')}</nav>`;
+  const rowBtns = (k, x) => `<td class="end"><div class="row" style="justify-content:flex-end">
+    ${btn(icon('play', 16), `data-act="qSpeak" data-text="${esc(x.q + (x.sentence ? ' ' + x.sentence : ''))}" aria-label="미리 듣기"`, 'ghost', 'sm btn-icon')}
+    ${btn('수정', `data-act="qEdit" data-k="${k}" data-id="${x.id}"`)}
+    ${btn(icon('trash', 16), `data-act="qDel" data-k="${k}" data-id="${x.id}" aria-label="삭제"`, 'danger', 'sm btn-icon')}</div></td>`;
+  const toggleCell = (k, x) => `<td class="first"><label class="check"><input type="checkbox" data-change="qOn" data-k="${k}" data-id="${x.id}" ${x.on !== false ? 'checked' : ''}> <span class="small">${x.on !== false ? '사용' : '쉼'}</span></label></td>`;
+  const answerText = (k, x) => k === 'orientation' ? `자동 (${ORIENT_PART[x.part]})`
+    : x.type === 'forward' || x.type === 'backward' ? `숫자 ${x.len}개 무작위`
+    : x.type === 'wordBackward' ? `낱말 ${x.words.length}개 중 하나`
+    : x.type === 'repeat' ? `"${esc(x.sentence)}"` : esc((x.answers || []).join(', '));
+  const typeText = (k, x) => k === 'orientation' ? ORIENT_PART[x.part] : k === 'attention' ? ATTENTION_TYPE[x.type] : k === 'language' ? LANGUAGE_TYPE[x.type] : '공통점';
+  const domainTab = k => `
+    <section class="card">
+      <div class="card-head"><h2>${DOMAIN_LABEL_MAP[k]} 문항</h2>${btn('문항 추가', `data-act="qAdd" data-k="${k}"`, 'primary', '')}</div>
+      <p class="muted small" style="margin-bottom:var(--s3)">사용 중 ${enabled(k)}개 · 통화마다 한 문항 · 같은 문항이 다시 나오기까지 ${enabled(k)}일 · 정답률은 5회 이상 쓰인 문항만</p>
+      <div class="table-wrap"><table class="table compact rtable">
+        <thead><tr><th>사용</th><th>유형</th><th>질문</th><th>정답 기준</th><th class="n">쓰인 횟수</th><th>정답률</th><th><span class="sr-only">관리</span></th></tr></thead>
+        <tbody>${bank[k].map(x => { const st = stat(x.id); return `
+          <tr>${toggleCell(k, x)}<td data-label="유형">${typeText(k, x)}</td><td data-label="질문">${esc(x.q)}</td>
+            <td data-label="정답 기준" class="small">${answerText(k, x)}</td><td data-label="쓰인 횟수" class="n">${st.n}</td>
+            <td data-label="정답률">${rateChip(st)}</td>${rowBtns(k, x)}</tr>`; }).join('')}</tbody>
+      </table></div>
+    </section>`;
+
+  const ws = wordStats(d);
+  const parts = {
+    script: () => `
+      <form class="card stack" data-submit="qScript">
+        <div class="card-head"><h2>통화 대본</h2><span class="sub">{호칭} 자리에 대상자 호칭이 들어감 (예: 윤병훈 어르신)</span></div>
+        ${Object.entries(SCRIPT_LABEL).map(([k, t]) => `
+          <label class="field">${t}<span class="row" style="flex-wrap:nowrap"><input name="${k}" value="${esc(bank.script[k])}" style="flex:1">
+            ${btn(icon('play', 16), `data-act="qSpeak" data-text="${esc(fillTitleLocal(bank.script[k]))}" aria-label="미리 듣기"`, 'ghost', 'sm btn-icon')}</span></label>`).join('')}
+        <p class="muted small">⑤ 인지검사(6개 영역) → ⑥ 자기보고(수면·기분, 대상자별 켬/끔) → ⑦ 안부 대화 순서는 고정</p>
+        <div class="row"><button class="btn btn-primary" type="submit">저장</button></div>
+      </form>`,
+    orientation: () => domainTab('orientation'),
+    attention: () => domainTab('attention'),
+    language: () => domainTab('language'),
+    executive: () => domainTab('executive'),
+    memory: () => `
+      <form class="card stack" data-submit="qMemory">
+        <div class="card-head"><h2>기억 등록 · 지연 회상</h2><span class="sub">통화마다 아래 단어 중 세 개를 무작위로 (전날 단어와 겹치지 않게)</span></div>
+        <label class="field">기억 등록 질문 (뒤에 단어 세 개가 붙음)<input name="register" value="${esc(bank.memory.register)}"></label>
+        <label class="field">지연 회상 질문<input name="recall" value="${esc(bank.memory.recall)}"></label>
+        <div class="row"><button class="btn btn-primary" type="submit">저장</button></div>
+      </form>
+      <section class="card">
+        <div class="card-head"><h2>단어 목록 <span class="cnt muted small">${bank.memory.words.length}개</span></h2>
+          <form class="row" data-submit="qWordAdd"><input name="w" placeholder="단어 (쉼표로 여러 개)" aria-label="추가할 단어" style="width:220px"><button class="btn btn-secondary btn-sm" type="submit">추가</button></form></div>
+        <p class="muted small" style="margin-bottom:var(--s3)">6개 이상 필요 · 지연 회상 기억률은 5회 이상 나온 단어만</p>
+        <div class="chips">${bank.memory.words.map(w => { const x = ws(w); const r = x.n >= 5 ? Math.round((x.hit / x.n) * 100) : null; return `
+          <span class="chip ${r != null && r <= 30 ? 'chip-mid' : 'chip-neutral'}" title="${x.n}회 출제${r != null ? ` · 기억 ${r}%` : ''}">${esc(w)}${r != null ? ` <small class="num">${r}%</small>` : ''}
+            <button type="button" class="btn btn-ghost btn-sm btn-icon" style="height:20px;width:20px" data-act="qWordDel" data-w="${esc(w)}" aria-label="${esc(w)} 빼기">${icon('x', 16)}</button></span>`; }).join('')}</div>
+      </section>`,
+    preview: () => {
+      const date = params.get('date') || today;
+      const plan = planForDate(date, bank);
+      const week = [...Array(7)].map((_, k) => addDays(date, k));
+      const S = plan.script;
+      return `
+      <section class="card">
+        <div class="card-head"><h2>통화 미리보기</h2>
+          <label class="row small">날짜 <input type="date" value="${date}" data-change="qDate"></label></div>
+        <ol class="stack" style="padding-left:20px;margin:0">
+          <li>${esc(fillTitleLocal(S.greeting))}</li><li>${esc(S.condition)}</li><li>${esc(S.recent)}</li><li>${esc(S.intro)}</li>
+          ${plan.items.map(it => `<li><b>${esc(it.domain)}</b> · ${esc(it.question)} <span class="muted small">정답: ${esc(it.expected)}</span></li>`).join('')}
+          <li>${esc(SELF_QUESTIONS.sleep)} · ${esc(SELF_QUESTIONS.mood)} <span class="muted small">(자기보고 켬일 때)</span></li>
+          <li>안부 대화 <span class="muted small">(AI 대화 또는 고정 질문: ${esc(SCRIPT.chatFixed.join(' · '))})</span></li>
+          <li>${esc(S.closing)}</li>
+        </ol>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>앞으로 7일 문항</h2><span class="sub">같은 문항이 이어서 나오지 않는지 확인</span></div>
+        <div class="table-wrap"><table class="table compact rtable">
+          <thead><tr><th>날짜</th>${['지남력', '단어', '주의력', '언어기능', '집행기능'].map(t => `<th>${t}</th>`).join('')}</tr></thead>
+          <tbody>${week.map(dt => { const p = planForDate(dt, bank); const by = k => p.items.find(i => i.key === k || i.domain === k); return `
+            <tr><td class="first num">${fmtMDW(dt)}</td>
+              <td data-label="지남력" class="small">${esc(ORIENT_PART[by('orientation').part])}</td>
+              <td data-label="단어" class="small">${esc(by('register').words.join(', '))}</td>
+              <td data-label="주의력" class="small">${esc(by('주의력').expected)}</td>
+              <td data-label="언어기능" class="small clip" title="${esc(by('언어기능').question)}">${esc(by('언어기능').question)}</td>
+              <td data-label="집행기능" class="small">${esc(by('집행기능').question)}</td></tr>`; }).join('')}</tbody>
+        </table></div>
+      </section>`;
+    }
+  };
+
+  // ---- 문항 추가·수정 창 ----
+  const openEditor = (k, x) => {
+    const isNew = !x;
+    x = x || { on: true, ...(k === 'orientation' ? { part: 'season' } : k === 'attention' ? { type: 'backward', len: 3 } : k === 'language' ? { type: 'naming', answers: [] } : { answers: [] }) };
+    const sel = (name, map, v) => `<select name="${name}" data-change="qType">${Object.entries(map).map(([a, t]) => `<option value="${a}" ${a === v ? 'selected' : ''}>${t}</option>`).join('')}</select>`;
+    const typeRow = k === 'orientation' ? `<label class="field">물어볼 것${sel('part', ORIENT_PART, x.part)}<span class="help">정답은 통화 날짜로 자동</span></label>`
+      : k === 'attention' ? `<label class="field">유형${sel('type', ATTENTION_TYPE, x.type)}</label>`
+      : k === 'language' ? `<label class="field">유형${sel('type', LANGUAGE_TYPE, x.type)}</label>` : '';
+    const body = `
+      <form class="stack" id="q-form" data-submit="qSave" data-k="${k}" data-id="${x.id || ''}" novalidate>
+        ${typeRow}
+        <label class="field"><span>질문 <span class="req" aria-hidden="true">*</span></span><input name="q" value="${esc(x.q || '')}" aria-required="true"><small class="err" id="err-q" data-err="q"></small></label>
+        <div data-show="len" ${k === 'attention' && x.type !== 'wordBackward' ? '' : 'hidden'}><label class="field">숫자 개수 (2~7)<input name="len" type="number" min="2" max="7" value="${x.len || 3}"></label><span class="help">통화마다 겹치지 않는 숫자를 무작위로 읽어 줌</span></div>
+        <div data-show="words" ${k === 'attention' && x.type === 'wordBackward' ? '' : 'hidden'}><label class="field">거꾸로 말할 낱말 (쉼표로 구분)<textarea name="words" rows="3">${esc((x.words || []).join(', '))}</textarea><small class="err" id="err-words" data-err="words"></small></label></div>
+        <div data-show="sentence" ${k === 'language' && x.type === 'repeat' ? '' : 'hidden'}><label class="field">따라 말할 문장<input name="sentence" value="${esc(x.sentence || '')}"><small class="err" id="err-sentence" data-err="sentence"></small></label><span class="help">낱말마다 앞 두 글자가 대답에 모두 있으면 맞음</span></div>
+        <div data-show="answers" ${(k === 'language' && x.type !== 'repeat') || k === 'executive' ? '' : 'hidden'}><label class="field">정답으로 볼 말 (쉼표로 구분, 하나라도 들어 있으면 맞음)<input name="answers" value="${esc((x.answers || []).join(', '))}"><small class="err" id="err-answers" data-err="answers"></small></label><span class="help">사투리·줄임말도 함께 적으면 받아쓰기 오류에 강함 (예: 열쇠, 키, 쇳대)</span></div>
+        <div class="chk note-box" data-show="test">채점 시험: <input name="try" placeholder="어르신 대답 예시" style="width:60%"> ${btn('확인', 'data-act="qTry"')} <b id="q-try"></b></div>
+      </form>`;
+    const m = modal({ title: isNew ? `${DOMAIN_LABEL_MAP[k]} 문항 추가` : `${DOMAIN_LABEL_MAP[k]} 문항 수정`, size: 'md', body,
+      foot: `<button type="button" class="btn btn-secondary" data-close>취소</button><button type="submit" form="q-form" class="btn btn-primary">저장</button>`,
+      dirty: () => m && m.el.dataset.dirty === '1' });
+    m.el.addEventListener('input', () => { m.el.dataset.dirty = '1'; });
+    qModal = m;
+  };
+  let qModal = null;
+  const readForm = f => {
+    const k = f.dataset.k, v = n => f.querySelector(`[name="${n}"]`)?.value.trim() || '';
+    const x = { id: f.dataset.id || k[0] + Date.now().toString(36), on: true, q: v('q') };
+    const old = bank[k].find(y => y.id === f.dataset.id);
+    if (old) x.on = old.on;
+    if (k === 'orientation') x.part = v('part');
+    if (k === 'attention') { x.type = v('type'); if (x.type === 'wordBackward') x.words = splitList(v('words')); else x.len = Math.max(2, Math.min(7, +v('len') || 3)); }
+    if (k === 'language') { x.type = v('type'); if (x.type === 'repeat') x.sentence = v('sentence'); else x.answers = splitList(v('answers')); }
+    if (k === 'executive') x.answers = splitList(v('answers'));
+    return x;
+  };
+  const toItem = (k, x) => { // 채점 시험용 문항 (오늘 날짜)
+    if (k === 'orientation') return { key: 'orientation', part: x.part, date: today };
+    if (k === 'attention') return x.type === 'wordBackward' ? { key: 'wordBackward', word: x.words[0] || '' } : { key: x.type, digits: '1234567'.slice(0, x.len) };
+    if (k === 'language') return x.type === 'repeat' ? { key: 'repeat', sentence: x.sentence } : { key: 'naming', answers: x.answers };
+    return { key: 'similarity', answers: x.answers };
+  };
+
+  actions.qSpeak = el => previewSpeak(el.dataset.text);
+  actions.qDate = el => { location.hash = `#/admin/questions?tab=preview&date=${el.value}`; };
+  actions.qOn = el => {
+    const x = bank[el.dataset.k].find(y => y.id === el.dataset.id);
+    if (!el.checked && enabled(el.dataset.k) <= 1) { el.checked = true; toast('영역마다 사용 중인 문항이 하나 이상 필요', { error: true }); return; }
+    x.on = el.checked;
+    commit(el.checked ? '문항 사용' : '문항 쉼 (출제 안 함)');
+  };
+  actions.qAdd = el => openEditor(el.dataset.k, null);
+  actions.qEdit = el => openEditor(el.dataset.k, bank[el.dataset.k].find(y => y.id === el.dataset.id));
+  actions.qType = el => {
+    const f = el.closest('form'), k = f.dataset.k, t = el.value;
+    const show = { len: k === 'attention' && t !== 'wordBackward', words: k === 'attention' && t === 'wordBackward', sentence: k === 'language' && t === 'repeat', answers: (k === 'language' && t !== 'repeat') || k === 'executive' };
+    for (const [n, on] of Object.entries(show)) f.querySelector(`[data-show="${n}"]`).hidden = !on;
+    if (k === 'orientation' && !f.q.value.trim()) f.q.value = { year: '지금은 몇 년도인가요?', month: '지금은 몇 월인가요?', day: '오늘은 며칠인가요?', weekday: '오늘은 무슨 요일인가요?', season: '지금 계절을 말씀해 주실 수 있나요?' }[t];
+  };
+  actions.qTry = el => {
+    const f = el.closest('form'), k = f.dataset.k;
+    const x = readForm(f), it = toItem(k, x), ans = f.querySelector('[name=try]').value;
+    const ok = scoreItem(it, ans) >= 1;
+    document.getElementById('q-try').textContent = ok ? '맞음' : '틀림';
+  };
+  actions.qSave = f => {
+    const k = f.dataset.k, x = readForm(f), errs = {};
+    if (!x.q) errs.q = '질문 입력 필요';
+    if (x.words && x.words.length < 3) errs.words = '낱말 3개 이상';
+    if (x.type === 'repeat' && !x.sentence) errs.sentence = '문장 입력 필요';
+    if (x.answers && !x.answers.length) errs.answers = '정답으로 볼 말 하나 이상';
+    showErrors(f, errs);
+    if (Object.keys(errs).length) return;
+    const i = bank[k].findIndex(y => y.id === x.id);
+    if (i >= 0) bank[k][i] = x; else bank[k].push(x);
+    qModal?.close(true);
+    commit(i >= 0 ? '문항 수정됨 · 다음 통화부터 적용' : '문항 추가됨 · 다음 통화부터 적용');
+  };
+  actions.qDel = async el => {
+    const k = el.dataset.k, x = bank[k].find(y => y.id === el.dataset.id);
+    if (x.on !== false && enabled(k) <= 1) { toast('영역마다 사용 중인 문항이 하나 이상 필요', { error: true }); return; }
+    if (!(await confirmBox({ title: '문항 삭제', text: `"${x.q}" 문항이 목록에서 지워짐 (지난 통화 기록은 그대로)`, ok: '삭제', danger: true }))) return;
+    bank[k] = bank[k].filter(y => y.id !== x.id);
+    commit('문항 삭제됨');
+  };
+  actions.qScript = f => {
+    for (const k of Object.keys(SCRIPT_LABEL)) { const v = f[k].value.trim(); if (v) bank.script[k] = v; }
+    commit('대본 저장됨');
+  };
+  actions.qMemory = f => {
+    bank.memory.register = f.register.value.trim() || DEFAULT_BANK.memory.register;
+    bank.memory.recall = f.recall.value.trim() || DEFAULT_BANK.memory.recall;
+    commit('기억 문항 저장됨');
+  };
+  actions.qWordAdd = f => {
+    const add = splitList(f.w.value).filter(w => !bank.memory.words.includes(w));
+    if (!add.length) return;
+    bank.memory.words.push(...add);
+    commit(`단어 ${add.length}개 추가됨`);
+  };
+  actions.qWordDel = el => {
+    if (bank.memory.words.length <= 6) { toast('단어는 6개 이상 필요', { error: true }); return; }
+    bank.memory.words = bank.memory.words.filter(w => w !== el.dataset.w);
+    commit(`'${el.dataset.w}' 뺌`);
+  };
+  actions.qExport = () => {
+    const blob = new Blob([JSON.stringify(bank, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `I-ME_문항_${today.replace(/-/g, '')}.json`;
+    a.click();
+    toast('문항 파일 내보냄');
+  };
+  actions.qImport = async el => {
+    const file = el.files[0];
+    if (!file) return;
+    let raw;
+    try { raw = JSON.parse(await file.text()); } catch { toast('문항 파일 형식 오류', { error: true }); return; }
+    const nb = normalizeBank(raw);
+    const n = ['orientation', 'attention', 'language', 'executive'].reduce((t, k) => t + nb[k].length, 0);
+    if (!(await confirmBox({ title: '문항 가져오기', text: `지금 문항이 파일의 문항 ${n}개 · 단어 ${nb.memory.words.length}개로 바뀜`, ok: '가져오기', danger: true }))) return;
+    d.questionBank = { ...nb, edited: { by: me ? displayName(me) : '', at: nowStamp() } };
+    save(); render(); toast('문항 가져옴');
+  };
+  actions.qReset = async () => {
+    if (!(await confirmBox({ title: '기본 문항으로 되돌리기', text: '고친 문항·단어·대본이 모두 기본값으로 바뀜 (지난 통화 기록은 그대로)', ok: '되돌리기', danger: true }))) return;
+    delete d.questionBank;
+    save(); render(); toast('기본 문항으로 되돌림');
+  };
+
+  return {
+    title: '문항 관리',
+    sub: `영역마다 통화 한 번에 한 문항 · 다음 통화에는 다른 문항${bank.edited ? ` · 최종 수정: ${esc(bank.edited.by)} · ${fmtStamp(bank.edited.at)}` : ' · 기본 문항'}`,
+    head: `${btn('내보내기', 'data-act="qExport"', 'secondary', '')}
+      <label class="btn btn-secondary">가져오기<input type="file" accept=".json,application/json" data-change="qImport" hidden></label>
+      ${btn('기본값으로', 'data-act="qReset"', 'danger', '')}`,
+    html: tabs + parts[tab]()
+  };
+}
+const DOMAIN_LABEL_MAP = { orientation: '지남력', attention: '주의력', language: '언어기능', executive: '집행기능' };
+const fillTitleLocal = t => t.replaceAll('{호칭}', '윤병훈 어르신');
 
 // ---------- 대상자 추가·전체 수정 ----------
 const REFERRALS = ['보건소 의뢰', '방문간호 연계', '본인 신청', '보호자 신청', '기타'];

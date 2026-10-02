@@ -1,58 +1,79 @@
 // 문항 뱅크, 오늘의 문항 선택(로테이션), 자동 채점
 
-// ---------- 평행형 문항 세트 (설정의 N은 최대 10) ----------
-export const MAX_SETS = 10;
-
-const WORD_SETS = [
-  ['사과', '기차', '모자'], ['나무', '자동차', '시계'], ['연필', '바다', '우산'],
-  ['의자', '구름', '장갑'], ['호수', '신발', '가방'], ['자전거', '꽃병', '양말'],
-  ['책상', '하늘', '냄비'], ['거울', '단풍', '수건'], ['비행기', '접시', '목도리'],
-  ['안경', '시냇물', '베개']
-];
-
-// [3자리, 4자리]
-const DIGIT_SETS = [
-  ['382', '4179'], ['518', '2946'], ['736', '8251'], ['294', '6817'], ['853', '3162'],
-  ['461', '7394'], ['627', '5183'], ['915', '2468'], ['348', '9725'], ['572', '1836']
-];
-
-// 공통점 문항: 핵심어 중 하나라도 들어가면 1점
-const SIM_SETS = [
-  [['사과', '배', ['과일']], ['기차', '버스', ['교통', '탈것', '타는', '운송']]],
-  [['셔츠', '바지', ['옷', '의류', '입는']], ['망치', '톱', ['연장', '도구', '공구']]],
-  [['눈', '귀', ['감각', '얼굴', '신체', '몸']], ['책상', '의자', ['가구']]],
-  [['장미', '튤립', ['꽃']], ['연필', '볼펜', ['필기', '쓰는', '문구']]],
-  [['피아노', '바이올린', ['악기', '음악']], ['시금치', '배추', ['채소', '야채', '나물']]],
-  [['숟가락', '젓가락', ['식기', '수저', '먹는']], ['봄', '가을', ['계절']]],
-  [['강', '바다', ['물']], ['신문', '라디오', ['소식', '뉴스', '언론', '매체']]],
-  [['칼', '가위', ['자르', '자른']], ['산', '언덕', ['높', '땅']]],
-  [['편지', '전화', ['연락', '소식', '전하']], ['할머니', '손자', ['가족', '식구']]],
-  [['소나무', '대나무', ['나무', '식물']], ['달', '해', ['하늘', '빛', '밝']]]
-];
-
-// 언어유창성 채점용 동물 목록
-export const ANIMALS = `개 강아지 고양이 소 송아지 황소 젖소 말 망아지 당나귀 노새 돼지 멧돼지 닭 병아리 오리 거위 염소 흑염소 양
-토끼 쥐 햄스터 다람쥐 청설모 호랑이 사자 표범 치타 퓨마 재규어 스라소니 삵 늑대 여우 너구리 오소리 수달 족제비 담비
-곰 판다 코끼리 기린 하마 코뿔소 얼룩말 낙타 사슴 노루 고라니 순록 캥거루 코알라 원숭이 고릴라 침팬지 오랑우탄 박쥐
-두더지 고슴도치 들소 버팔로 물소 알파카 라마 나무늘보 개미핥기 하이에나 스컹크 미어캣 비버 물개 물범 바다표범 바다사자
-고래 돌고래 범고래 상어 참새 비둘기 까치 까마귀 제비 독수리 매 부엉이 수리부엉이 올빼미 갈매기 백조 두루미 학 황새
-왜가리 공작 앵무새 펭귄 타조 딱따구리 꿩 메추리 칠면조 기러기 원앙 뻐꾸기 꾀꼬리 종달새 카나리아 벌새 뱀 구렁이 도마뱀
-악어 거북 거북이 자라 이구아나 카멜레온 개구리 두꺼비 도롱뇽 올챙이 붕어 잉어 메기 미꾸라지 금붕어 연어 참치 고등어
-꽁치 멸치 갈치 복어 가오리 해마 장어 뱀장어 오징어 문어 낙지 새우 게 가재 조개 전복 해파리 불가사리 성게 나비 나방
-벌 꿀벌 개미 잠자리 메뚜기 귀뚜라미 매미 모기 파리 무당벌레 사마귀 거미 지렁이 달팽이 반딧불이 풍뎅이 사슴벌레
-장수풍뎅이 쇠똥구리 벼룩`.split(/\s+/);
-
-const ANIMAL_SET = new Set(ANIMALS);
-const PARTICLES = ['', '요', '이요', '랑', '이랑', '하고', '도', '이', '가', '는', '은', '나', '이나', '고'];
-
-// ---------- 도우미 ----------
-const DOMAINS = ['attention', 'fluency', 'executive'];
-export const DOMAIN_LABEL = { attention: '주의력', fluency: '언어유창성', executive: '집행기능' };
-// 문항별 영역 이름 (통화 기록의 items[].domain)
-export const ITEM_DOMAIN = {
-  orientation: '지남력', register: '기억 등록', backward3: '주의력', backward4: '주의력',
-  fluency: '언어유창성', similarity1: '공통점', similarity2: '공통점', recall: '지연 회상'
+// ---------- 기본 문항 뱅크 ----------
+// 관리자 화면 '문항 관리'에서 고친 뱅크는 data.questionBank에 저장된다. 없으면 이 기본값을 쓴다.
+// 영역마다 통화 한 번에 한 문항만 묻고, 다음 통화에는 다른 문항이 나오도록 날짜 순서로 돌린다 (학습 방지).
+// 통화 기록에는 그날 문항의 정답 정보(단어·숫자·핵심어)를 함께 저장하므로, 뱅크를 고쳐도 지난 기록의 채점은 그대로다.
+const q = (id, fields) => ({ id, on: true, ...fields });
+export const DEFAULT_BANK = {
+  script: {
+    greeting: '안녕하세요, {호칭}. 통화 가능하신가요?',
+    condition: '그럼 오늘 몸 상태는 좀 어떠세요?',
+    recent: '최근 며칠 동안 불편하거나 잊어버리신 게 있나요?',
+    intro: '알려 주셔서 감사합니다. 이제 기억과 집중에 관한 짧은 질문 몇 가지 드릴게요.',
+    closing: '질문에 답변해 주셔서 감사합니다. 다음에도 전화드릴게요. 좋은 하루 보내세요.'
+  },
+  orientation: [
+    q('o1', { part: 'year', q: '지금은 몇 년도인가요?' }),
+    q('o2', { part: 'month', q: '지금은 몇 월인가요?' }),
+    q('o3', { part: 'day', q: '오늘은 며칠인가요?' }),
+    q('o4', { part: 'weekday', q: '오늘은 무슨 요일인가요?' }),
+    q('o5', { part: 'season', q: '지금 계절을 말씀해 주실 수 있나요?' })
+  ],
+  memory: {
+    register: '지금 단어 세 개를 말씀드릴게요. 따라 말씀하시고, 잠시 후에 다시 여쭤볼 테니 기억해 주세요.',
+    recall: '처음에 기억해 달라고 말씀드린 세 단어는 무엇인가요?',
+    // 문서의 15개 + 추가 10개 (구체적이고 소리가 서로 겹치지 않는 두 글자 낱말)
+    words: ['사과', '버스', '모자', '사자', '우산', '연필', '바다', '시계', '감자', '나무', '구두', '당근', '기차', '수박', '수건',
+      '거울', '장갑', '호박', '오리', '편지', '양말', '라디오', '안경', '비누', '참새']
+  },
+  attention: [
+    q('a1', { type: 'forward', q: '숫자를 듣고 그대로 말씀해 주세요.', len: 4 }),
+    q('a2', { type: 'backward', q: '숫자를 듣고 거꾸로 말씀해 주세요.', len: 3 }),
+    q('a3', { type: 'wordBackward', q: '단어를 듣고 거꾸로 말씀해 주세요.',
+      words: ['고양이', '지우개', '컵라면', '컴퓨터', '핸드폰', '모니터', '대학교', '중학교', '소나무', '대나무', '선생님', '보리차', '강아지',
+        '송아지', '소방관', '경찰관', '키보드', '야구공', '농구공', '축구공', '배구공', '기억력', '태극기'] })
+  ],
+  language: [
+    q('l1', { type: 'naming', q: '시간을 확인하려고 손목에 차는 물건은 무엇인가요?', answers: ['시계'] }),
+    q('l2', { type: 'naming', q: '비가 올 때 머리 위에 펼쳐 쓰는 물건은 무엇인가요?', answers: ['우산', '양산'] }),
+    q('l3', { type: 'naming', q: '종이를 자를 때 사용하는 도구는 무엇인가요?', answers: ['가위', '칼'] }),
+    q('l4', { type: 'naming', q: '크다의 반대말은 무엇인가요?', answers: ['작다', '작은', '작아', '쪼깐', '쪼그만'] }),
+    q('l5', { type: 'naming', q: '짧다의 반대말은 무엇인가요?', answers: ['길다', '긴거', '길어', '기다란'] }),
+    q('l6', { type: 'naming', q: '자물쇠를 열려면 무엇이 필요한가요?', answers: ['열쇠', '키', '쇳대'] }),
+    q('l7', { type: 'repeat', q: '제가 하는 말을 그대로 따라 해 주세요.', sentence: '아침에 고양이가 세수합니다.' }),
+    q('l8', { type: 'repeat', q: '제가 하는 말을 그대로 따라 해 주세요.', sentence: '마당에서 아이가 놀고 있습니다.' }),
+    q('l9', { type: 'repeat', q: '제가 하는 말을 그대로 따라 해 주세요.', sentence: '밤에 부엉이가 웁니다.' }),
+    q('l10', { type: 'repeat', q: '제가 하는 말을 그대로 따라 해 주세요.', sentence: '점심에 새가 날아다닙니다.' }),
+    q('l11', { type: 'repeat', q: '제가 하는 말을 그대로 따라 해 주세요.', sentence: '남자가 커피를 마십니다.' }),
+    q('l12', { type: 'repeat', q: '제가 하는 말을 그대로 따라 해 주세요.', sentence: '여자가 버스를 탑니다.' }),
+    q('l13', { type: 'repeat', q: '제가 하는 말을 그대로 따라 해 주세요.', sentence: '덜컹덜컹 달려간다 시골버스야.' })
+  ],
+  executive: [
+    q('e1', { q: '버스와 기차는 어떤 점이 비슷한가요?', answers: ['타는', '탄다', '탈것', '이동', '교통', '사람', '태우'] }),
+    q('e2', { q: '자동차와 택시는 어떤 점이 비슷한가요?', answers: ['타는', '탄다', '탈것', '이동', '교통', '사람', '태우', '차'] }),
+    q('e3', { q: '사과와 배는 어떤 점이 비슷한가요?', answers: ['과일', '깎아', '까서', '먹는'] }),
+    q('e4', { q: '수박과 참외는 어떤 점이 비슷한가요?', answers: ['과일', '여름', '먹는', '깎아'] }),
+    q('e5', { q: '바나나와 귤은 어떤 점이 비슷한가요?', answers: ['과일', '까서', '까먹', '먹는', '껍질'] }),
+    q('e6', { q: '참치와 고등어는 어떤 점이 비슷한가요?', answers: ['생선', '물고기', '바다', '고기', '어류'] }),
+    q('e7', { q: '굴비와 연어는 어떤 점이 비슷한가요?', answers: ['생선', '물고기', '바다', '고기', '어류'] }),
+    q('e8', { q: '개와 고양이는 어떤 점이 비슷한가요?', answers: ['동물', '애완', '반려', '네발', '네 발', '짐승', '키우'] }),
+    q('e9', { q: '돼지와 소는 어떤 점이 비슷한가요?', answers: ['동물', '가축', '짐승', '키우', '고기', '네발'] }),
+    q('e10', { q: '닭과 오리는 어떤 점이 비슷한가요?', answers: ['동물', '가축', '날개', '새', '알', '조류', '키우'] }),
+    q('e11', { q: '피아노와 기타는 어떤 점이 비슷한가요?', answers: ['악기', '소리', '연주', '음악'] }),
+    q('e12', { q: '북과 장구는 어떤 점이 비슷한가요?', answers: ['악기', '치는', '타악기', '소리', '연주', '두드리', '음악'] })
+  ]
 };
+
+// 통화 순서와 영역 이름 (통화 기록의 items[].domain)
+export const DOMAINS = [
+  ['orientation', '지남력'], ['register', '기억 등록'], ['attention', '주의력'],
+  ['language', '언어기능'], ['recall', '지연 회상'], ['executive', '집행기능']
+];
+export const DOMAIN_LABEL = Object.fromEntries(DOMAINS);
+export const ORIENT_PART = { year: '연도', month: '월', day: '일', weekday: '요일', season: '계절' };
+export const ATTENTION_TYPE = { forward: '숫자 바로 따라 말하기', backward: '숫자 거꾸로 말하기', wordBackward: '단어 거꾸로 말하기' };
+export const LANGUAGE_TYPE = { naming: '이름 대기', repeat: '문장 따라 말하기' };
 // 자기보고(켬/끔 설정)와 안부 대화(채점 안 함) 질문
 export const SELF_QUESTIONS = { sleep: '어젯밤 잠은 잘 주무셨어요?', mood: '오늘 기분은 어떠세요?' };
 export const CHAT_QUESTION = '요즘 지내시기는 어떠세요? 불편하신 건 없으세요?';
@@ -60,67 +81,127 @@ export const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
 const KDIGIT = '공일이삼사오육칠팔구';
 
 const dayIndex = date => Math.floor(Date.UTC(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8, 10)) / 864e5);
-const hasBatchim = w => (w.charCodeAt(w.length - 1) - 0xac00) % 28 !== 0;
 const nospace = t => (t || '').replace(/\s+/g, '');
+const clean = t => nospace(t).replace(/[.,?!…~"'“”]/g, '');
+const seeded = seed => () => { // mulberry32: 날짜가 같으면 같은 문항
+  seed = (seed + 0x6d2b79f5) | 0;
+  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+};
 
-// 1~31을 한글 숫자 읽기로 (예: 27 → 이십칠)
+// 한글 숫자 읽기 (예: 27 → 이십칠, 2026 → 이천이십육)
 export function korNum(n) {
-  const tens = Math.floor(n / 10), ones = n % 10;
-  return (tens ? (tens > 1 ? KDIGIT[tens] : '') + '십' : '') + (ones ? KDIGIT[ones] : '');
+  const units = [[1000, '천'], [100, '백'], [10, '십']];
+  let out = '';
+  for (const [u, w] of units) {
+    const k = Math.floor(n / u) % 10;
+    if (k) out += (k > 1 ? KDIGIT[k] : '') + w;
+  }
+  return out + (n % 10 ? KDIGIT[n % 10] : '');
+}
+
+// 뱅크 정리: 빠진 칸은 기본값으로, 켜진 문항이 하나도 없는 영역은 기본값을 쓴다 (통화가 멈추지 않게)
+export function normalizeBank(b) {
+  const d = DEFAULT_BANK, src = b && typeof b === 'object' ? b : {};
+  const list = (k, ok) => {
+    const l = Array.isArray(src[k]) ? src[k].filter(x => x && typeof x.q === 'string' && x.q.trim() && ok(x)) : [];
+    return l.some(x => x.on !== false) ? l : d[k];
+  };
+  const words = [...new Set((src.memory?.words || []).map(w => String(w).trim()).filter(Boolean))];
+  return {
+    script: { ...d.script, ...Object.fromEntries(Object.entries(src.script || {}).filter(([k, v]) => k in d.script && typeof v === 'string' && v.trim())) },
+    orientation: list('orientation', x => x.part in ORIENT_PART),
+    memory: {
+      register: src.memory?.register?.trim() || d.memory.register,
+      recall: src.memory?.recall?.trim() || d.memory.recall,
+      words: words.length >= 6 ? words : d.memory.words
+    },
+    attention: list('attention', x => x.type in ATTENTION_TYPE && (x.type !== 'wordBackward' || x.words?.length)),
+    language: list('language', x => (x.type === 'naming' && x.answers?.length) || (x.type === 'repeat' && x.sentence?.trim())),
+    executive: list('executive', x => x.answers?.length),
+    edited: src.edited || null
+  };
+}
+
+const SEASON = m => (m >= 3 && m <= 5 ? '봄' : m >= 6 && m <= 8 ? '여름' : m >= 9 && m <= 11 ? '가을' : '겨울');
+
+// 그날의 단어 세 개: 날짜로 섞되, 전날 단어와 겹치지 않게
+export function wordsForDate(date, pool) {
+  const pick = d => {
+    const r = seeded(dayIndex(d) * 7919 + 17);
+    return [...pool].map(w => [r(), w]).sort((a, b) => a[0] - b[0]).map(x => x[1]);
+  };
+  const prev = new Set(pick(new Date(Date.UTC(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8, 10) - 1)).toISOString().slice(0, 10)).slice(0, 3));
+  const order = pick(date);
+  const fresh = order.filter(w => !prev.has(w));
+  return (fresh.length >= 3 ? fresh : order).slice(0, 3);
 }
 
 // ---------- 오늘의 문항 ----------
-// 단어 세트는 매일 → 같은 세트가 다시 나오는 간격 D = N일
-// 로테이션 과제는 3일마다 같은 과제 → D = 3N일
-export function planForDate(date, sets = 6) {
-  const n = Math.max(1, Math.min(MAX_SETS, Math.round(sets)));
+// 영역마다 켜진 문항을 날짜 순서로 하나씩: 같은 문항이 다시 나오기까지의 간격 = 그 영역의 켜진 문항 수(일)
+export function planForDate(date, bank = DEFAULT_BANK) {
+  const B = normalizeBank(bank);
   const day = dayIndex(date);
-  const setIndex = day % n;
-  const rot = Math.floor(day / 3) % n;
-  const rotationDomain = DOMAINS[day % 3];
-  const words = WORD_SETS[setIndex];
-
-  let rotation;
-  if (rotationDomain === 'attention') {
-    const [d3, d4] = DIGIT_SETS[rot];
-    const say = d => [...d].map(x => KDIGIT[x]).join(', ');
-    rotation = [
-      { key: 'backward3', question: `제가 부르는 숫자를 거꾸로 말해 주세요. ${say(d3)}.`, maxScore: 1, maxSec: 20, digits: d3 },
-      { key: 'backward4', question: `이번에는 네 개입니다. 거꾸로 말해 주세요. ${say(d4)}.`, maxScore: 1, maxSec: 20, digits: d4 }
-    ];
-  } else if (rotationDomain === 'fluency') {
-    rotation = [{ key: 'fluency', question: '지금부터 1분 동안 생각나는 동물 이름을 되도록 많이 말해 주세요.', maxScore: 5, maxSec: 60 }];
-  } else {
-    rotation = SIM_SETS[rot].map(([a, b, keys], i) => ({
-      key: 'similarity' + (i + 1),
-      question: `${a}${hasBatchim(a) ? '과' : '와'} ${b}${hasBatchim(b) ? '은' : '는'} 어떤 점이 같을까요?`,
-      maxScore: 1, maxSec: 20, keys
-    }));
-  }
-
-  return {
-    rotationDomain,
-    setIndex,
-    items: [
-      { key: 'orientation', question: '오늘은 몇 월 며칠, 무슨 요일인가요?', maxScore: 3, maxSec: 20, date },
-      { key: 'register', question: `제가 말하는 세 단어를 잘 듣고 따라 말해 주세요. ${words.join(', ')}.`, maxScore: 3, maxSec: 20, words },
-      ...rotation,
-      { key: 'recall', question: '아까 따라 하신 세 단어를 다시 한 번 말해 주세요.', maxScore: 3, maxSec: 20, words }
-    ].map(it => ({ ...it, domain: ITEM_DOMAIN[it.key], expected: expectedText(it) }))
+  const r = seeded(day * 104729 + 3);
+  // 켜진 문항을 건너뛰며 고른다 (보폭이 문항 수와 서로소라 n일 동안 모든 문항이 한 번씩 나온다)
+  const rot = (list, offset) => {
+    const on = list.filter(x => x.on !== false), len = on.length;
+    const gcd = (x, y) => (y ? gcd(y, x % y) : x);
+    const step = [5, 7, 3, 2, 1].find(k => k < len && gcd(k, len) === 1) || 1;
+    return on[(day * step + offset) % len];
   };
+  const words = wordsForDate(date, B.memory.words);
+  const digits = len => { let s = ''; while (s.length < len) { const d = String(Math.floor(r() * 9) + 1); if (!s.includes(d)) s += d; } return s; };
+  const say = d => [...d].map(x => KDIGIT[x]).join(', ');
+
+  const o = rot(B.orientation, 0);
+  const a = rot(B.attention, 1);
+  const l = rot(B.language, 2);
+  const e = rot(B.executive, 3);
+  let att;
+  if (a.type === 'wordBackward') {
+    const w = a.words[Math.floor(r() * a.words.length)];
+    att = { key: 'wordBackward', qid: a.id, question: `${a.q} ${w}.`, word: w };
+  } else {
+    const ds = digits(Math.max(2, Math.min(7, +a.len || 3)));
+    att = { key: a.type, qid: a.id, question: `${a.q} ${say(ds)}.`, digits: ds };
+  }
+  const lang = l.type === 'repeat'
+    ? { key: 'repeat', qid: l.id, question: `${l.q} ${l.sentence}`, sentence: l.sentence }
+    : { key: 'naming', qid: l.id, question: l.q, answers: l.answers };
+
+  const items = [
+    { key: 'orientation', qid: o.id, question: o.q, part: o.part, date, maxScore: 1, domain: '지남력' },
+    { key: 'register', qid: 'words', question: `${B.memory.register} ${words.join(', ')}.`, words, maxScore: 3, domain: '기억 등록' },
+    { ...att, maxScore: 1, domain: '주의력' },
+    { ...lang, maxScore: 1, domain: '언어기능' },
+    { key: 'recall', qid: 'words', question: B.memory.recall, words, maxScore: 3, domain: '지연 회상' },
+    { key: 'similarity', qid: e.id, question: e.q, answers: e.answers, maxScore: 1, domain: '집행기능' }
+  ];
+  return { script: B.script, items: items.map(it => ({ ...it, maxSec: 20, expected: expectedText(it) })) };
 }
+
+// 통화 기록에 남길 문항 정보: 채점에 필요한 정답 정보까지 함께 (뱅크를 고쳐도 지난 기록 채점이 그대로)
+export const itemSpec = it => Object.fromEntries(['key', 'qid', 'domain', 'part', 'date', 'words', 'digits', 'word', 'sentence', 'answers']
+  .filter(k => it[k] !== undefined).map(k => [k, it[k]]));
 
 // 정답 문구 (통화 기록에 함께 저장)
 export function expectedText(item) {
   switch (item.key) {
     case 'orientation': {
-      const m = +item.date.slice(5, 7), d = +item.date.slice(8, 10);
-      return `${m}월 ${d}일 ${WEEKDAYS[new Date(Date.UTC(+item.date.slice(0, 4), m - 1, d)).getUTCDay()]}요일`;
+      const y = +item.date.slice(0, 4), m = +item.date.slice(5, 7), d = +item.date.slice(8, 10);
+      return { year: `${y}년`, month: `${m}월`, day: `${d}일`, season: SEASON(m),
+        weekday: `${WEEKDAYS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]}요일` }[item.part] ||
+        `${m}월 ${d}일 ${WEEKDAYS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]}요일`; // 예전 기록 (월·일·요일)
     }
     case 'register': case 'recall': return item.words.join(', ');
-    case 'backward3': case 'backward4': return [...item.digits].reverse().join(' ');
+    case 'forward': return [...item.digits].join(' ');
+    case 'backward': case 'backward3': case 'backward4': return [...item.digits].reverse().join(' ');
+    case 'wordBackward': return [...item.word].reverse().join('');
+    case 'repeat': return item.sentence;
     case 'fluency': return '동물 이름 15개 이상 (3개당 1점)';
-    default: return item.keys.join(' / ');
+    default: return (item.answers || item.keys || []).join(' / ');
   }
 }
 
@@ -139,22 +220,42 @@ export function findRequests(text) {
 }
 
 // ---------- 자동 채점 ----------
+// 받아쓰기 글자에서 숫자만 (한글 숫자 '일 이 삼'도 숫자로)
+const digitsOf = t => [...t].map(c => (KDIGIT.includes(c) ? KDIGIT.indexOf(c) : c)).join('').replace(/\D/g, '');
 export function scoreItem(item, transcript) {
   const t = nospace(transcript);
   switch (item.key) {
-    case 'orientation': return scoreOrientation(item.date, t);
+    case 'orientation': return item.part ? (orientationPart(item.date, item.part, t) ? 1 : 0) : scoreOrientation(item.date, t);
     case 'register':
     case 'recall': return item.words.filter(w => t.includes(w)).length;
+    case 'forward': return digitsOf(t).includes(item.digits) ? 1 : 0;
+    case 'backward':
     case 'backward3':
-    case 'backward4': {
-      const digits = [...t].map(c => (KDIGIT.includes(c) ? KDIGIT.indexOf(c) : c)).join('').replace(/\D/g, '');
-      return digits.includes([...item.digits].reverse().join('')) ? 1 : 0;
-    }
-    case 'fluency': return Math.min(5, Math.round((countAnimals(transcript) / 3) * 10) / 10); // 15개 = 5점
+    case 'backward4': return digitsOf(t).includes([...item.digits].reverse().join('')) ? 1 : 0;
+    case 'wordBackward': return clean(t).includes([...item.word].reverse().join('')) ? 1 : 0;
+    case 'naming': return item.answers.some(k => t.includes(nospace(k))) ? 1 : 0;
+    case 'repeat': return repeatOk(item.sentence, transcript) ? 1 : 0;
+    case 'fluency': return Math.min(5, Math.round((countAnimals(transcript) / 3) * 10) / 10); // 예전 기록
+    case 'similarity':
     case 'similarity1':
-    case 'similarity2': return item.keys.some(k => t.includes(k)) ? 1 : 0;
+    case 'similarity2': return (item.answers || item.keys).some(k => t.includes(nospace(k))) ? 1 : 0;
     default: return 0;
   }
+}
+
+// 문장 따라 말하기: 낱말마다 앞 두 글자(어간)가 대답에 모두 있으면 맞음 (끝말 '-다/-요'·사투리 어미는 봐준다)
+export function repeatOk(sentence, answer) {
+  const a = clean(answer);
+  return sentence.split(/\s+/).map(w => clean(w).slice(0, 2)).filter(w => w.length >= 2).every(w => a.includes(w));
+}
+
+// 지남력 한 가지 (연도·월·일·요일·계절)
+export function orientationPart(date, part, answer) {
+  const t = nospace(answer);
+  const y = +date.slice(0, 4), m = +date.slice(5, 7);
+  if (part === 'year') return [String(y), String(y).slice(2) + '년', korNum(y), korNum(y % 100) + '년'].some(w => t.includes(w));
+  if (part === 'season') return t.includes(SEASON(m));
+  return orientationParts(date, answer)[part === 'weekday' ? 'weekday' : part];
 }
 
 // 월·일·요일 각 1점. 숫자("9월 27일")와 한글("구월 이십칠일") 모두 받는다.
@@ -204,16 +305,16 @@ export function scorePct(items) {
 // 검사 문항·채점은 위 코드 그대로다. AI(LLM)는 인사·안부 대화·통화 후 정리만 맡는다.
 // =========================================================
 export const SCRIPT = {
-  greetTail: '오늘도 몇 가지 여쭤볼게요.',
-  greetFixed: '{호칭}, 안녕하세요. 보건소 안부 전화예요.',
   bridges: ['잘하셨어요. 다음 거 여쭤볼게요.', '네, 좋습니다. 이번에는요.', '고맙습니다. 하나 더 여쭤볼게요.'],
   offTopic: '네, 그 얘기는 조금 있다가 더 들을게요. 먼저 이것부터 여쭤볼게요.',
   acks: ['네, 그러셨구나.', '아이고, 네.'],
-  chatFixed: ['식사는 잘 하셨어요?', '요즘 불편하신 데는 없으세요?'],  // AI 대화를 못 쓸 때 안부 질문 2개
+  chatFixed: ['식사는 잘 하셨어요?', '요즘 필요하신 건 없으세요?'],  // AI 대화를 못 쓸 때 안부 질문 2개 (불편한 점은 앞에서 이미 묻는다)
+  declined: '네, 알겠습니다. 편하실 때 다시 전화드릴게요.',
   chatClose: '말씀 잘 들었어요. 담당 간호사님께도 전해 드릴게요.',
   emergency: '지금 많이 불편하시면 바로 119에 전화하세요. 담당 간호사님께도 바로 알릴게요.',
-  goodbye: '오늘도 통화해 주셔서 감사합니다.'
 };
+// 첫 질문('통화 가능하신가요?')에 어렵다고 하면 검사 없이 끝낸다
+export const isDecline = a => /안\s*돼|안\s*되|바빠|바쁘|나중에|못\s*하|곤란|지금은\s*좀|안\s*할/.test(a || '');
 
 // 응급 표현 목록: 이 두 줄만 고치면 된다. 띄어쓰기는 무시하고 찾는다.
 export const EMERGENCY_PHRASES = ['가슴이 아파', '가슴이 답답', '숨이 차', '숨을 못', '쓰러', '넘어졌', '피가', '어지러워서 못', '죽고 싶', '살기 싫'];

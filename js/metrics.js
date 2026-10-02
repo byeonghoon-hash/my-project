@@ -14,8 +14,7 @@ export const DEFAULT_SETTINGS = {
   spo2AlertNights: 3,      //   최근 7일 중 3밤 이상 → 수면무호흡 의심 알림
   hearingRepeatAsks: 2,    // 통화당 재질문 2회 이상이
   hearingCalls: 3,         //   최근 5통화 중 3회 이상 → 난청 의심 알림
-  parallelSets: 6,         // 평행형 문항 세트 수 N
-  maxCallSec: 180,
+  maxCallSec: 240,         // 인사·최근 문제·6개 영역·자기보고·안부 대화가 들어가는 4분
   sdMinScore: 5,           // 변화 추이: 표준편차 최솟값 (점수 %p)
   sdMinSpo2: 1,            //   SpO2 %p
   sdMinHr: 3,              //   심박 bpm
@@ -492,8 +491,8 @@ export const TREND_METRICS = [
   { key: 'd_register', group: '인지 (통화)', label: '기억 등록', unit: '%', dir: 1, sdMin: s => s.sdMinScore, kind: 'call', domain: '기억 등록' },
   { key: 'd_recall', group: '인지 (통화)', label: '지연 회상', unit: '%', dir: 1, sdMin: s => s.sdMinScore, kind: 'call', domain: '지연 회상' },
   { key: 'd_attention', group: '인지 (통화)', label: '주의력', unit: '%', dir: 1, sdMin: s => s.sdMinScore, kind: 'call', domain: '주의력' },
-  { key: 'd_fluency', group: '인지 (통화)', label: '언어유창성', unit: '개', dir: 1, sdMin: () => 1, kind: 'call', domain: '언어유창성' },
-  { key: 'd_similarity', group: '인지 (통화)', label: '공통점', unit: '%', dir: 1, sdMin: s => s.sdMinScore, kind: 'call', domain: '공통점' },
+  { key: 'd_language', group: '인지 (통화)', label: '언어기능', unit: '%', dir: 1, sdMin: s => s.sdMinScore, kind: 'call', domain: '언어기능' },
+  { key: 'd_executive', group: '인지 (통화)', label: '집행기능', unit: '%', dir: 1, sdMin: s => s.sdMinScore, kind: 'call', domain: '집행기능' },
   { key: 'latency', group: '통화 반응', label: '응답 지연', unit: '초', dir: -1, sdMin: s => s.sdMinLatency, kind: 'call' },
   { key: 'repeats', group: '통화 반응', label: '재질문', unit: '회/통화', dir: -1, sdMin: () => 0.3, kind: 'call' },
   { key: 'completion', group: '통화 반응', label: '통화 완료율', unit: '%', dir: 1, sdMin: () => 10, kind: 'call' },
@@ -543,8 +542,7 @@ function dailyValues(data, person, m, today, getV, st) {
     else if (m.key === 'z' && done) value = zBy.get(c.id) ?? null;
     else if (m.domain && done) {
       const its = c.items.filter(i => i.domain === m.domain && i.score != null);
-      if (its.length) value = m.domain === '언어유창성' ? Math.round(its[0].score * 3)
-        : (its.reduce((t, i) => t + i.score, 0) / its.reduce((t, i) => t + i.maxScore, 0)) * 100;
+      if (its.length) value = (its.reduce((t, i) => t + i.score, 0) / its.reduce((t, i) => t + i.maxScore, 0)) * 100;
     } else if (m.key === 'latency') {
       const l = c.items.map(i => i.latencySec).filter(v => v != null);
       if (l.length) value = mean(l);

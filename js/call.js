@@ -4,7 +4,7 @@
 // 서버가 없거나 키·크레딧·동의가 없으면 기본 음성 + 고정 대본으로 끝까지 간다.
 
 import {
-  planForDate, scoreItem, isRepeatAsk, scorePct, SELF_QUESTIONS, classifySleep, classifyMood, findRequests,
+  planForDate, scoreItem, isDecline, itemSpec, isRepeatAsk, scorePct, SELF_QUESTIONS, classifySleep, classifyMood, findRequests,
   SCRIPT, detectEmergency, checkChatReply, fillTitle, useAiVoice, useAiChat, ttsOutcome, isOffTopic
 } from './items.js';
 import { todayStr, nowStamp } from './metrics.js';
@@ -181,7 +181,7 @@ async function prefetch(texts) {
 // 끝나면 { call, blob, talk } (화면을 떠나 중단되면 null). 마이크를 못 쓰면 예외.
 // ui: { time(초), question(글자), level(0~1), emergency(발화, 표현) }
 // person.info.call: 호칭(title), 말 속도(rate), 질문 다시 읽기 허용 횟수(rereads), 자기보고 질문(selfReport)
-export async function runCall(settings, ui, person, prep) {
+export async function runCall(settings, ui, person, prep, bank) {
   aborted = false;
   const cfg = person?.info?.call || {};
   rate = cfg.rate || 0.9;
@@ -190,7 +190,7 @@ export async function runCall(settings, ui, person, prep) {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   const date = todayStr();
   const startedAt = nowStamp();
-  const plan = planForDate(date, settings.parallelSets);
+  const plan = planForDate(date, bank); // 관리자 '문항 관리'에서 고친 뱅크
 
   // AI 사용 여부: 서버 상태 × 대상자 동의
   const health = (await prep?.health) || { tts: false, llm: false, voices: [] };
@@ -201,11 +201,13 @@ export async function runCall(settings, ui, person, prep) {
     tempo: Math.min(1, Math.max(0.7, Math.round(rate * 100) / 100))
   };
   const aiChat = useAiChat(health, person);
-  const greetFixed = fillTitle(SCRIPT.greetFixed, title);
+  const S = plan.script;
+  const greetLine = fillTitle(S.greeting, title);
   if (voice.ai) {
-    prefetch([greetFixed, SCRIPT.greetTail, ...plan.items.flatMap((it, n) => (n ? [SCRIPT.bridges[(n - 1) % 3], it.question] : [it.question])),
-      ...SCRIPT.acks, SCRIPT.offTopic, SCRIPT.emergency, SELF_QUESTIONS.sleep, SELF_QUESTIONS.mood,
-      ...(aiChat ? [] : SCRIPT.chatFixed), SCRIPT.chatClose, SCRIPT.goodbye]);
+    prefetch([greetLine, ...(aiChat ? [] : [S.condition]), S.recent, S.intro,
+      ...plan.items.flatMap((it, n) => (n ? [SCRIPT.bridges[(n - 1) % 3], it.question] : [it.question])),
+      ...SCRIPT.acks, SCRIPT.offTopic, SCRIPT.emergency, SCRIPT.declined, SELF_QUESTIONS.sleep, SELF_QUESTIONS.mood,
+      ...(aiChat ? [] : SCRIPT.chatFixed), SCRIPT.chatClose, S.closing]);
   }
 
   // 통화 전체를 한 파일로 녹음. 통화 녹음 미동의면 녹음하지 않고 채점만 한다 (마이크는 받아쓰기·음량 감지에 쓴다)
@@ -262,12 +264,12 @@ export async function runCall(settings, ui, person, prep) {
   };
 
   // 한 문항 묻고 듣기 (재질문이면 허용 횟수만큼 천천히 다시 읽는다, 딴 이야기면 한 번 다시 묻는다)
-  const ask = async (question, item, phase = 'item') => {
+  const ask = async (question, item, phase = 'item', opts = {}) => {
     const r = { answer: '', latencySec: null, repeatAsked: 0, startMs: Math.round(performance.now() - t0), endMs: null, emergency: false };
     let left = rereads, offLeft = phase === 'item' ? 1 : 0, slow = false;
     const said = [];
     for (;;) {
-      await say(question, { slow, phase });
+      await say(question, { slow, phase, ...opts });
       if (aborted) break;
       const ans = await hear(item, left > 0);
       r.repeatAsked += ans.asks;
@@ -285,11 +287,22 @@ export async function runCall(settings, ui, person, prep) {
     return r;
   };
 
-  // ① 인사: AI 한 문장(전화가 울리는 동안 받아 둔 것) + 고정 틀. 늦거나 안 되면 고정 인사.
-  const greet = aiChat ? await Promise.race([prep?.greet, wait(1500).then(() => null)]).catch(() => null) : null;
-  const greeting = greet ? { text: fillTitle(greet.say, title), ai: true } : { text: greetFixed, ai: false };
-  await say(greeting.text, { cache: !greeting.ai, ai: greeting.ai, phase: 'greeting' });
-  await say(SCRIPT.greetTail, { phase: 'greeting' });
+  // ① 인사: '안녕하세요, {호칭}. 통화 가능하신가요?' → 어렵다고 하시면 다음에 다시 전화
+  const free = { key: 'free', maxSec: 20 };
+  const hello = await ask(greetLine, free, 'greeting');
+  const declined = !endNow && isDecline(hello.answer);
+  if (declined) { await say(SCRIPT.declined, { phase: 'goodbye' }); endNow = true; }
+  // ② 몸 상태: AI 한 문장(지난 안부를 잇는 질문, 전화가 울리는 동안 받아 둔 것) 또는 고정 문장
+  let opening = null;
+  if (!endNow && !timeUp()) {
+    const greet = aiChat ? await Promise.race([prep?.greet, wait(1500).then(() => null)]).catch(() => null) : null;
+    const condQ = greet ? fillTitle(greet.say, title) : S.condition;
+    const cond = await ask(condQ, free, 'greeting', greet ? { cache: false, ai: true } : {});
+    // ③ 최근 문제 (채점 안 함, 요청·관찰 메모로 쓴다)
+    const recent = !endNow && !timeUp() ? await ask(S.recent, free, 'recent') : null;
+    opening = { hello: hello.answer, condition: { question: condQ, answer: cond.answer, ai: !!greet }, recent: recent ? { question: S.recent, answer: recent.answer } : null };
+    if (!endNow) await say(S.intro);
+  }
 
   // ② 인지검사: 고정 문항 · 고정 연결 멘트(정답 여부와 상관없이 같은 말) · 기존 채점
   const results = [];
@@ -299,7 +312,7 @@ export async function runCall(settings, ui, person, prep) {
     if (timeUp()) break;
     const r = await ask(item.question, item);
     results.push({
-      key: item.key, domain: item.domain, question: item.question, answer: r.answer, expected: item.expected,
+      ...itemSpec(item), question: item.question, answer: r.answer, expected: item.expected,
       score: ctx.useSR ? scoreItem(item, r.answer) : null, // 받아쓰기가 없으면 관리자가 채점
       maxScore: item.maxScore, latencySec: r.latencySec, repeatAsked: r.repeatAsked, startMs: r.startMs, endMs: r.endMs
     });
@@ -308,7 +321,6 @@ export async function runCall(settings, ui, person, prep) {
   const go = () => allDone && !endNow && !timeUp();
 
   // ③ 자기보고 (수면·기분, 켬/끔 설정) — 채점하지 않는다
-  const free = { key: 'free', maxSec: 20 };
   let selfReport = null;
   if (go() && cfg.selfReport !== false) {
     const sleep = await ask(SELF_QUESTIONS.sleep, free, 'self');
@@ -363,7 +375,7 @@ export async function runCall(settings, ui, person, prep) {
   const chatTurns = turns.slice(chatStart).filter(t => t.phase === 'chat' || t.phase === 'emergency');
 
   // ⑤ 끝인사
-  if (!aborted) await say(SCRIPT.goodbye, { phase: 'goodbye' });
+  if (!aborted && !declined) await say(S.closing, { phase: 'goodbye' });
   clearInterval(clock);
   if (recorder) await new Promise(resolve => { recorder.onstop = resolve; recorder.stop(); });
   stream.getTracks().forEach(t => t.stop());
@@ -376,21 +388,19 @@ export async function runCall(settings, ui, person, prep) {
   return {
     blob: new Blob(chunks, { type: recorder?.mimeType || 'audio/webm' }), // 녹음하지 않았으면 빈 파일 → 저장 안 함
     // 통화 후 정리에 보내는 문장: 인사·딴 이야기·자기보고·안부 대화 (검사 문항과 대답은 보내지 않는다)
-    talk: turns.filter(t => ['greeting', 'offtopic', 'self', 'chat'].includes(t.phase)).map(t => ({ ...t, text: anon(t.text) })),
+    talk: turns.filter(t => ['greeting', 'recent', 'offtopic', 'self', 'chat'].includes(t.phase)).map(t => ({ ...t, text: anon(t.text) })),
     aiChat,
     call: {
       date, startedAt, time: startedAt.slice(11, 16), source: 'real',
-      status: allDone ? 'completed' : 'partial',
+      status: allDone ? 'completed' : 'partial', declined,
       durationSec: Math.round((performance.now() - t0) / 1000),
-      rotationDomain: plan.rotationDomain,
-      setIndex: plan.setIndex,
       items: results,
       scorePct: scorePct(results),
       selfReport, chat,
-      greeting, chatTurns: chatTurns.map(({ role, text, ai }) => ({ role, text, ai: !!ai })),
+      greeting: { text: greetLine, ai: false }, opening, chatTurns: chatTurns.map(({ role, text, ai }) => ({ role, text, ai: !!ai })),
       voice: voice.used ? 'ai' : 'basic', chatMode: aiChat ? 'ai' : 'fixed',
       emergencies,
-      requests: [...chatTurns.filter(t => t.role === 'elder').map(t => t.text), selfReport?.sleep?.answer, selfReport?.mood?.answer,
+      requests: [opening?.condition.answer, opening?.recent?.answer, ...chatTurns.filter(t => t.role === 'elder').map(t => t.text), selfReport?.sleep?.answer, selfReport?.mood?.answer,
         ...turns.filter(t => t.phase === 'offtopic').map(t => t.text)].flatMap(findRequests)
     }
   };

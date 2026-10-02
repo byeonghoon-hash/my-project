@@ -6,12 +6,12 @@ import {
   DEFAULT_SETTINGS, addDays, todayStr, nowStamp, personStatus, updateAlerts, riskOf, refreshZ, journalDraft
 } from './metrics.js';
 import {
-  planForDate, scorePct, scoreItem, korNum, WEEKDAYS, SELF_QUESTIONS, CHAT_QUESTION, classifySleep, classifyMood, findRequests, ANIMALS
+  planForDate, scorePct, scoreItem, korNum, WEEKDAYS, SELF_QUESTIONS, CHAT_QUESTION, classifySleep, classifyMood, findRequests, itemSpec, DEFAULT_BANK
 } from './items.js';
 import { pickVitals, recomputeRing } from './vitals.js';
 
 // 시드 버전. 올리면 저장된 시연 데이터를 새로 만든다 (회원 계정·링 실측 데이터는 유지).
-export const SEED_VERSION = 4;
+export const SEED_VERSION = 5;
 
 // 전화번호는 모두 가짜(010-0000-), 보호자 이름은 지어낸 것, 의료기관명은 '○○내과의원'.
 const phone = n => `010-0000-${n}`;
@@ -239,29 +239,30 @@ export function makeSeed(settings = DEFAULT_SETTINGS, today = todayStr()) {
 }
 
 // 대화록 만들기 --------------------------------------------------------
+// 대답을 경상도 말투로 먼저 만들고, 점수는 그 대답을 자동 채점한 값이다 (대답과 점수가 항상 맞는다)
 const pick = (rand, a) => a[Math.floor(rand() * a.length)];
-const DISTRACT = ['포도', '바나나', '구두', '달력', '수박', '주전자'];
-const COMMON_ANIMALS = ANIMALS.slice(0, 60);
+const DISTRACT = ['포도', '바나나', '달력', '주전자', '빗자루', '냄비'];
+const swap2 = s => { const w = [...s]; [w[0], w[1]] = [w[1], w[0]]; return w.join(''); };
 
 function answerFor(item, score, rand, tone) {
   const sfx = ['요', '예', '다'][tone];
   switch (item.key) {
     case 'orientation': {
-      const m = +item.date.slice(5, 7), d = +item.date.slice(8, 10);
-      const wdi = new Date(Date.UTC(+item.date.slice(0, 4), m - 1, d)).getUTCDay();
-      if (score === 0 && rand() < 0.4) return '아이고… 날짜는 잘 모르겠다.';
-      // 맞힐 부분을 무작위로 고른다
-      const parts = ['m', 'd', 'w'].sort(() => rand() - 0.5).slice(0, score);
-      const mm = parts.includes('m') ? m : (m % 12) + 1;
-      const dd = parts.includes('d') ? d : d > 2 ? d - 1 - Math.floor(rand() * 2) : d + 1;
-      const ww = WEEKDAYS[parts.includes('w') ? wdi : (wdi + 1 + Math.floor(rand() * 2)) % 7];
+      const y = +item.date.slice(0, 4), m = +item.date.slice(5, 7), d = +item.date.slice(8, 10);
+      const wdi = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
       const kor = rand() < 0.35;
-      const M = kor ? (mm === 6 ? '유' : mm === 10 ? '시' : korNum(mm)) : mm, D = kor ? korNum(dd) : dd;
-      return pick(rand, [
-        `오늘이… ${M}월 ${D}일 아이가. 요일은… ${ww}요일이제?`,
-        `${M}월 ${D}일인가? ${ww}요일.`,
-        `음… ${M}월 ${D}일, ${ww}요일입니더.`
-      ]);
+      const MM = mm => (kor ? (mm === 6 ? '유' : mm === 10 ? '시' : korNum(mm)) : mm);
+      if (score === 0 && rand() < 0.4) return pick(rand, ['아이고… 그건 잘 모르겠다.', '글쎄… 생각이 안 나네.']);
+      switch (item.part) {
+        case 'year': return score ? pick(rand, [`${y}년 아이가.`, `이천${korNum(y % 100)}년이지${sfx}.`]) : `${y - 1}년… 맞나?`;
+        case 'month': return score ? `${MM(m)}월이지.` : `${MM((m % 12) + 1)}월… 아이가?`;
+        case 'day': return score ? `${kor ? korNum(d) : d}일 아이가.` : `${kor ? korNum(d > 2 ? d - 2 : d + 2) : d > 2 ? d - 2 : d + 2}일인가?`;
+        case 'weekday': return score ? `${WEEKDAYS[wdi]}요일이제.` : `${WEEKDAYS[(wdi + 2) % 7]}요일… 맞나?`;
+        default: {
+          const s = ['겨울', '겨울', '봄', '봄', '봄', '여름', '여름', '여름', '가을', '가을', '가을', '겨울'][m - 1];
+          return score ? `요새는 ${s} 아이가.` : `${{ 봄: '여름', 여름: '가을', 가을: '여름', 겨울: '봄' }[s]}인가?`;
+        }
+      }
     }
     case 'register':
     case 'recall': {
@@ -272,29 +273,33 @@ function answerFor(item, score, rand, tone) {
       if (score === 1) return `${ws[0]}… 그라고… 아이고 뭐였더라, 모르겠다.`;
       return miss ? `${miss}… 였나? 잘 모르겠다.` : '모르겠다… 다 까먹었다.';
     }
-    case 'backward3':
-    case 'backward4': {
-      const rev = [...item.digits].reverse();
-      if (score) return `음… ${rev.join(' ')}.`;
-      if (rand() < 0.3) return '거꾸로는 잘 모르겠다.';
-      const w = [...rev];
-      [w[0], w[1]] = [w[1], w[0]];
-      return `${w.join(' ')}… 맞나?`;
+    case 'forward':
+    case 'backward': {
+      const right = item.key === 'forward' ? item.digits : [...item.digits].reverse().join('');
+      if (score) return `음… ${[...right].join(' ')}.`;
+      if (rand() < 0.3) return item.key === 'forward' ? '숫자가 빨라가 잘 못 들었다.' : '거꾸로는 잘 모르겠다.';
+      return `${[...swap2(right)].join(' ')}… 맞나?`;
     }
-    case 'fluency': {
-      const n = score >= 5 ? 15 + Math.floor(rand() * 3) : Math.round(score * 3);
-      const as = [...COMMON_ANIMALS].sort(() => rand() - 0.5).slice(0, n);
-      let out = '';
-      as.forEach((a, k) => { out += a + (k % 4 === 3 ? '… 음… 또 ' : ', '); });
-      return (out || '음… 동물이… 잘 안 떠오르네 ').replace(/[, ]+$/, '') + '.';
+    case 'wordBackward': {
+      const rev = [...item.word].reverse().join('');
+      if (score) return pick(rand, [`${rev}.`, `음… ${rev} 아이가.`]);
+      return rand() < 0.4 ? '거꾸로 말하는 건 어렵다.' : `${swap2(rev)}… 맞나?`;
     }
-    default: { // 공통점
-      if (score) return pick(rand, [`둘 다 ${item.keys[0]} 아이가.`, `${item.keys[0]}이제.`, `그거는 ${item.keys[0]}지${sfx}.`]);
-      return pick(rand, ['글쎄… 잘 모르겠네.', '같은 기 뭐 있노… 모르겠다.']);
+    case 'naming':
+      return score ? pick(rand, [`${item.answers[0]} 아이가.`, `그거는 ${item.answers[0]}지${sfx}.`]) : pick(rand, ['글쎄… 뭐더라.', '아이고 이름이 생각이 안 나네.']);
+    case 'repeat': {
+      const s = item.sentence.replace(/[.?!]$/, '');
+      if (score) return pick(rand, [`${s}.`, `음… ${s}.`]);
+      return `${s.split(' ')[0]}… 뭐라 캤노, 잘 못 따라 하겠다.`;
     }
+    default: // 집행기능 (공통점)
+      if (score) return pick(rand, [`둘 다 ${item.answers[0]} 아이가.`, `${item.answers[0]} 거지.`, `그거는 둘 다 ${item.answers[0]}지${sfx}.`]);
+      return pick(rand, ['글쎄… 잘 모르겠네.', '비슷한 기 뭐 있노… 모르겠다.']);
   }
 }
 
+const CONDITION = ['괜찮다, 별일 없다.', '그럭저럭 지낸다.', '오늘은 몸이 좀 가뿐하다.', '무릎이 좀 쑤시네.'];
+const RECENT = ['별거 없다.', '요새 깜빡깜빡한다, 안경을 어디 뒀는지 몰라가.', '딱히 없다.', '약 먹는 걸 한 번 잊어뿟다.'];
 const SLEEP = { good: ['잘 잤다.', '푹 잤지예.', '그럭저럭 잤다.'], poor: ['어젯밤엔 잠을 좀 설쳤다.', '새벽에 자꾸 깼다 아이가.', '잠이 안 와가 뒤척였다.'] };
 const MOOD = { good: ['기분 좋다.', '오늘은 괜찮다, 기분 좋네.'], normal: ['그냥 그렇다.', '뭐 별일 없다.'], bad: ['좀 적적하다.', '기분이 안 좋다.'] };
 const CHAT = ['별일 없다. 텃밭에 나가 있었다.', '경로당 댕겨왔다.', '아들이 전화 왔더라.', '날이 좀 선선해졌네.'];
@@ -327,9 +332,9 @@ function generate(person, pf, i, attempt, start, settings) {
       : kind === 'mild' || kind === 'hearing' ? fromEnd > 2 && rand() < 0.06
       : rand() < 0.06 && fromEnd > 0;
     if (missed) {
-      calls.push({ ...base, status: 'missed', durationSec: 0, scorePct: null, z: null, rotationDomain: null, setIndex: null, items: [], selfReport: null, chat: null, requests: [] });
+      calls.push({ ...base, status: 'missed', durationSec: 0, scorePct: null, z: null, items: [], selfReport: null, chat: null, requests: [] });
     } else {
-      const plan = planForDate(date, settings.parallelSets);
+      const plan = planForDate(date, DEFAULT_BANK);
       let mean = 80, sd = 6;
       if (kind === 'decline') { mean = 80 - 0.6 * Math.max(0, dayNo - 35); sd = 4; }
       if (kind === 'hypoxia' || kind === 'hearing') mean = 78;
@@ -354,7 +359,7 @@ function generate(person, pf, i, attempt, start, settings) {
         const repeatAsked = askAt.has(j) ? (kind === 'hearing' && rand() < 0.4 ? 2 : 1) : 0;
         if (repeatAsked) answer = (kind === 'hearing' ? '네? 뭐라꼬예? ' : '예? 다시 한번 말해 주이소. ') + answer;
         return {
-          key: it.key, domain: it.domain, question: it.question, answer, expected: it.expected,
+          ...itemSpec(it), question: it.question, answer, expected: it.expected,
           score: scoreItem(it, answer), maxScore: it.maxScore,
           latencySec: r1(1.2 + rand() * 2.2 + slow), repeatAsked
         };
@@ -371,11 +376,14 @@ function generate(person, pf, i, attempt, start, settings) {
       }
       const chatAnswer = rand() < 0.08 ? pick(rand, CHAT_REQ) : pick(rand, CHAT);
       const chat = { question: CHAT_QUESTION, answer: chatAnswer };
-      const requests = [chat.answer, selfReport?.sleep.answer, selfReport?.mood.answer].flatMap(findRequests);
+      const S = plan.script;
+      const opening = { hello: '네, 됩니다.', condition: { question: S.condition, answer: pick(rand, CONDITION), ai: false },
+        recent: { question: S.recent, answer: kind === 'decline' && rand() < 0.5 ? RECENT[1] : pick(rand, RECENT) } };
+      const requests = [opening.condition.answer, opening.recent.answer, chat.answer, selfReport?.sleep.answer, selfReport?.mood.answer].flatMap(findRequests);
       calls.push({
         ...base, status: 'completed',
-        durationSec: Math.round(120 + rand() * 40 + (plan.rotationDomain === 'fluency' ? 25 : 0)),
-        rotationDomain: plan.rotationDomain, setIndex: plan.setIndex, items, scorePct: scorePct(items), z: null,
+        durationSec: Math.round(150 + rand() * 40),
+        items, scorePct: scorePct(items), z: null, opening,
         selfReport, chat, requests
       });
     }
@@ -398,9 +406,15 @@ function generate(person, pf, i, attempt, start, settings) {
 }
 
 // 시연 데이터 다시 만들기: 회원 계정·설정·링 실측 데이터는 그대로 둔다
+// 직접 한 통화(source 'real')와 그 응급 표현 알림, 문항 관리에서 고친 뱅크도 남긴다
 export function reseed(old) {
   const d = makeSeed(old?.settings ? { ...DEFAULT_SETTINGS, ...old.settings } : DEFAULT_SETTINGS);
   d.accounts = old?.accounts || [];
+  if (old?.questionBank) d.questionBank = old.questionBank;
+  if ((old?.seedVersion ?? 0) < 5 && d.settings.maxCallSec === 180) d.settings.maxCallSec = 240; // 새 문항 구성(인사·최근 문제·6개 영역)에 맞춰 4분
+  const ids = new Set(d.people.map(p => p.id));
+  d.calls.push(...(old?.calls || []).filter(c => c.source === 'real' && ids.has(c.personId)));
+  d.alerts.push(...(old?.alerts || []).filter(a => a.type === 'emergency' && ids.has(a.personId)));
   d.ringImports = (old?.ringImports || []).filter(r => d.people.some(p => p.id === r.personId));
   for (const pid of new Set(d.ringImports.map(r => r.personId))) recomputeRing(d, pid);
   return d;

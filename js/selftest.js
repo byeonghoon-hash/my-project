@@ -1,11 +1,10 @@
 // 채점·지표 계산 검사. 실행: node js/selftest.js
 import assert from 'node:assert/strict';
-import { planForDate, scoreItem, countAnimals, isRepeatAsk, scorePct } from './items.js';
+import { planForDate, scoreItem, isRepeatAsk, scorePct, DEFAULT_BANK, normalizeBank, isDecline } from './items.js';
 import { DEFAULT_SETTINGS as S, baseline, zScore, cognitionLevel, dashboard, addDays, riskOf, filterPeople, aiSummary } from './metrics.js';
 import { makeSalt, hashPassword, verifyPassword } from './store.js';
 import { completion7, autoChecklist, validPhone, personStatus, trendAll, trendCsv, journalDraft } from './metrics.js';
 import { parseRingCsv, toMinutes, nightsFromMinutes, pickVitals, importRing, recomputeRing } from './vitals.js';
-import { planForDate as plan2 } from './items.js';
 import { readFileSync } from 'node:fs';
 import ungchon from './ungchon.js';
 import { visitConflicts, visitChecks, ageFrom, findDuplicates, dashboard as dash2, aiSummary as ai2, trendAll as tall2, journalDraft as jd2 } from './metrics.js';
@@ -14,38 +13,68 @@ import { detectEmergency, checkChatReply, keepQuoted, checkSummary, fillTitle, u
 import { fmtDate, fmtMD, fmtMDW, fmtTime, fmtStamp, fmtDur, fmtNum, fmtUnit, timelineRange, layoutLabels, completionDelta, completionAvg } from './metrics.js';
 
 const DATE = '2026-09-27'; // 일요일
-const item = key => planForDate(DATE, 6).items.find(i => i.key === key)
-  || [...Array(3)].map((_, k) => planForDate(addDays(DATE, k), 6)).flatMap(p => p.items).find(i => i.key === key);
 
-// ---- 채점: 지남력 ----
-const ori = item('orientation');
-assert.equal(scoreItem(ori, '9월 27일 일요일이요'), 3);
-assert.equal(scoreItem(ori, '구월 이십칠일 일요일'), 3);
-assert.equal(scoreItem(ori, '8월 27일 월요일'), 1);
-assert.equal(scoreItem({ ...ori, date: '2026-12-07' }, '이월 칠일'), 1); // 일만 맞음 ('이월'은 12월이 아님)
-assert.equal(scoreItem({ ...ori, date: '2026-12-07' }, '십이월 칠일 월요일'), 3);
+// ---- 문항 뱅크: 영역마다 한 문항, 다음 날은 다른 문항 (학습 방지) ----
+const p1 = planForDate(DATE), p2 = planForDate('2026-09-28');
+assert.deepEqual(p1.items.map(i => i.domain), ['지남력', '기억 등록', '주의력', '언어기능', '지연 회상', '집행기능']);
+assert.equal(p1.items.reduce((t, i) => t + i.maxScore, 0), 10);
+for (const k of [0, 2, 3, 5]) assert.notEqual(p1.items[k].qid, p2.items[k].qid);                 // 이어지는 날 같은 문항 없음
+assert.ok(!p1.items[1].words.some(w => p2.items[1].words.includes(w)));                           // 단어도 전날과 겹치지 않음
+assert.deepEqual(p1.items[1].words, p1.items[4].words);                                           // 등록 = 회상 단어
+assert.ok(DEFAULT_BANK.memory.words.length >= 25 && new Set(DEFAULT_BANK.memory.words).size === DEFAULT_BANK.memory.words.length);
+{ // n일 동안 지남력 문항 5개가 모두 한 번씩
+  const qs = [...Array(5)].map((_, k) => planForDate(addDays(DATE, k)).items[0].qid);
+  assert.equal(new Set(qs).size, 5);
+}
+assert.ok(!p1.script.greeting.includes('보건소') && p1.script.greeting.includes('통화 가능'));     // 첫마디에 '보건소 안부전화' 없음
+// 뱅크를 고치면 그 문항만 나오고, 켜진 문항이 없으면 기본값
+const custom = { ...DEFAULT_BANK, executive: [{ id: 'x1', on: true, q: '연필과 볼펜은 어떤 점이 비슷한가요?', answers: ['쓰는', '필기'] }] };
+assert.equal(planForDate(DATE, custom).items[5].qid, 'x1');
+assert.equal(normalizeBank({ executive: [{ id: 'x', on: false, q: '끔', answers: ['a'] }] }).executive, DEFAULT_BANK.executive);
+assert.equal(normalizeBank({ memory: { words: ['가', '나'] } }).memory.words, DEFAULT_BANK.memory.words); // 단어 6개 미만이면 기본값
+
+// ---- 채점: 지남력 (한 가지씩) ----
+const ori = part => ({ key: 'orientation', part, date: DATE });
+assert.equal(scoreItem(ori('year'), '2026년이요'), 1);
+assert.equal(scoreItem(ori('year'), '이천이십육년'), 1);
+assert.equal(scoreItem(ori('year'), '2025년'), 0);
+assert.equal(scoreItem(ori('month'), '구월이요'), 1);
+assert.equal(scoreItem(ori('month'), '팔월'), 0);
+assert.equal(scoreItem(ori('day'), '이십칠일'), 1);
+assert.equal(scoreItem(ori('weekday'), '일요일이제'), 1);
+assert.equal(scoreItem(ori('season'), '가을 아이가'), 1);
+assert.equal(scoreItem(ori('season'), '여름'), 0);
+assert.equal(scoreItem({ key: 'orientation', part: 'month', date: '2026-12-07' }, '이월'), 0); // '이월'은 12월이 아님
+assert.equal(scoreItem({ key: 'orientation', date: DATE }, '9월 27일 일요일이요'), 3);           // 예전 기록 (월·일·요일)
 
 // ---- 채점: 단어 따라 말하기·회상 ----
-const reg = item('register');
+const reg = p1.items[1];
 assert.equal(scoreItem(reg, reg.words.join(' ')), 3);
 assert.equal(scoreItem(reg, `음 ${reg.words[0]}하고 ${reg.words[2]}`), 2);
 
-// ---- 채점: 숫자 거꾸로 ----
-const b3 = item('backward3');
-const rev = [...b3.digits].reverse().join('');
-assert.equal(scoreItem(b3, rev.split('').join(' ')), 1);
-assert.equal(scoreItem(b3, [...rev].map(d => '공일이삼사오육칠팔구'[d]).join(' ')), 1);
-assert.equal(scoreItem(b3, b3.digits), 0);
+// ---- 채점: 주의력 ----
+assert.equal(scoreItem({ key: 'forward', digits: '6472' }, '육 사 칠 이'), 1);
+assert.equal(scoreItem({ key: 'forward', digits: '6472' }, '2 7 4 6'), 0);
+assert.equal(scoreItem({ key: 'backward', digits: '831' }, '일 삼 팔'), 1);
+assert.equal(scoreItem({ key: 'backward', digits: '831' }, '8 3 1'), 0);
+assert.equal(scoreItem({ key: 'wordBackward', word: '고양이' }, '이양고'), 1);
+assert.equal(scoreItem({ key: 'wordBackward', word: '고양이' }, '이 양 고.'), 1);
+assert.equal(scoreItem({ key: 'wordBackward', word: '고양이' }, '고양이'), 0);
+assert.equal(scoreItem({ key: 'backward3', digits: '382' }, '이 팔 삼'), 1);                       // 예전 기록
 
-// ---- 채점: 동물 이름 ----
-assert.equal(countAnimals('개 고양이 호랑이요 사자랑 개 소나무'), 4);
-assert.equal(scoreItem(item('fluency'), '개 고양이 호랑이 사자'), 1.3);
-assert.equal(scoreItem(item('fluency'), '개 고양이 소 말 돼지 닭 오리 양 염소 토끼 쥐 곰 여우 늑대 사슴 기린'), 5);
+// ---- 채점: 언어기능 ----
+assert.equal(scoreItem({ key: 'naming', answers: ['열쇠', '키', '쇳대'] }, '쇳대 아이가'), 1);
+assert.equal(scoreItem({ key: 'naming', answers: ['시계'] }, '반지'), 0);
+assert.equal(scoreItem({ key: 'repeat', sentence: '아침에 고양이가 세수합니다.' }, '아침에 고양이가 세수한다'), 1);  // 어미는 봐줌
+assert.equal(scoreItem({ key: 'repeat', sentence: '아침에 고양이가 세수합니다.' }, '아침에 강아지가 세수한다'), 0);
+assert.equal(scoreItem({ key: 'repeat', sentence: '덜컹덜컹 달려간다 시골버스야.' }, '덜컹덜컹 달려간다 시골버스'), 1);
 
-// ---- 채점: 공통점 ----
-const sim = item('similarity1');
-assert.equal(scoreItem(sim, `둘 다 ${sim.keys[0]}이에요`), 1);
-assert.equal(scoreItem(sim, '잘 모르겠어요'), 0);
+// ---- 채점: 집행기능 (공통점) ----
+assert.equal(scoreItem({ key: 'similarity', answers: ['악기', '소리'] }, '둘 다 악기 아이가'), 1);
+assert.equal(scoreItem({ key: 'similarity', answers: ['악기', '소리'] }, '잘 모르겠어요'), 0);
+
+// ---- 통화 어려움 ----
+assert.ok(isDecline('지금은 좀 바쁘다') && isDecline('나중에 해라') && !isDecline('네 됩니다'));
 
 // ---- 재질문 감지 ----
 assert.ok(isRepeatAsk('네? 뭐라고요'));
@@ -159,11 +188,11 @@ assert.equal(personStatus(rp2, [], rd.settings, today, rgetV).levels.spo2, null)
 
 // ======== 통화 기록: 10명 대화록과 점수가 맞는지 ========
 for (const c of seed.calls.filter(c => c.status === 'completed')) {
-  const items = plan2(c.date, S.parallelSets).items;
+  const plan = planForDate(c.date).items;
   for (const it of c.items) {
-    const pi = items.find(x => x.key === it.key);
-    assert.equal(scoreItem(pi, it.answer), it.score, `${c.id} ${it.key}: ${it.answer}`);
-    if (it.key === 'recall') assert.equal(pi.words.filter(w => it.answer.replace(/\s+/g, '').includes(w)).length, it.score); // 지연 회상 점수 = 대답에 나온 정답 단어 수
+    assert.equal(scoreItem(it, it.answer), it.score, `${c.id} ${it.key}: ${it.answer}`);   // 기록에 저장된 정답 정보로 채점
+    assert.equal(it.qid, plan.find(x => x.domain === it.domain).qid);                       // 그날 뱅크 문항과 같음
+    if (it.key === 'recall') assert.equal(it.words.filter(w => it.answer.replace(/\s+/g, '').includes(w)).length, it.score); // 지연 회상 점수 = 대답에 나온 정답 단어 수
   }
 }
 assert.ok(seed.people.every(p => seed.calls.some(c => c.personId === p.id && c.date >= addDays(today, -13) && c.items.every(i => i.answer)))); // 최근 14일 대화록
@@ -360,7 +389,7 @@ assert.equal(checkSummary(null, elder), null);
 
 assert.equal(fillTitle('{호칭}, 오늘은 좀 어떠세요?', '윤병훈 어르신'), '윤병훈 어르신, 오늘은 좀 어떠세요?');
 assert.equal(fillTitle('{호칭}, 안녕하세요.', ''), '어르신, 안녕하세요.');
-assert.ok(!fillTitle(SCRIPT.greetFixed, '김말순 어르신').includes('{'));
+assert.ok(!fillTitle(DEFAULT_BANK.script.greeting, '김말순 어르신').includes('{'));
 
 const agreed = { info: { consent: { ai: true } } }, refused = { info: { consent: { ai: false } } };
 assert.equal(useAiVoice({ tts: true }, agreed), true);
@@ -373,7 +402,7 @@ assert.equal(ttsOutcome({ status: 200, elapsedMs: 8500 }), 'fallback'); // 시�
 assert.equal(ttsOutcome({ status: 0, elapsedMs: 8000 }), 'fallback');   // 연결 실패
 assert.equal(ttsOutcome({ status: 502, elapsedMs: 300 }), 'fallback');
 assert.equal(ttsOutcome({ status: 402, elapsedMs: 300 }), 'credits');   // 크레딧 부족 → 이후 기본 음성
-const regItem = plan2('2026-09-28', 6).items.find(i => i.key === 'register');
+const regItem = planForDate('2026-09-28').items.find(i => i.key === 'register');
 assert.equal(isOffTopic(regItem, '아이고 요새 허리가 계속 쑤시가 밭에도 못 나가요'), true);
 assert.equal(isOffTopic(regItem, '잘 모르겠는데 기억이 하나도 안 나요 미안해요'), false);
 
