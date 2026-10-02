@@ -4,6 +4,7 @@
 
 import hashlib
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -15,7 +16,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-CACHE = ROOT / 'cache' / 'tts'
+# Vercel에서는 쓸 수 있는 폴더가 /tmp뿐이다 (함수가 다시 뜨면 비워진다)
+CACHE = Path('/tmp/ime-tts') if os.environ.get('VERCEL') else ROOT / 'cache' / 'tts'
 HOST, PORT = '127.0.0.1', 8000  # 이 컴퓨터에서만 열린다
 
 TYPECAST_URL = 'https://api.typecast.ai/v1/text-to-speech'
@@ -46,6 +48,16 @@ def load_env(path):
             continue
         k, v = line.split('=', 1)
         env[k.strip()] = v.strip().strip('"').strip("'")
+    return env
+
+
+KEYS = ('TYPECAST_API_KEY', 'TYPECAST_VOICES', 'ANTHROPIC_API_KEY', 'LLM_MODEL')
+
+
+def env_config():
+    """앱 폴더의 .env + 환경 변수(Vercel의 Environment Variables). 둘 다 있으면 환경 변수가 우선."""
+    env = load_env(ROOT / '.env')
+    env.update({k: os.environ[k] for k in KEYS if os.environ.get(k)})
     return env
 
 
@@ -245,7 +257,14 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return None
 
+    def same_origin(self):
+        """API는 이 앱 화면에서만 부른다 (다른 사이트·주소창에서 크레딧을 쓰지 못하게). Origin이 없거나 다르면 거절."""
+        origin = self.headers.get('Origin') or ''
+        return bool(origin) and urllib.parse.urlparse(origin).netloc == (self.headers.get('X-Forwarded-Host') or self.headers.get('Host'))
+
     def do_POST(self):
+        if not self.same_origin():
+            return self.send(403, {'error': 'forbidden'})
         path, body = self.path.split('?')[0], self.read_json()
         if path == '/api/tts':
             return self.tts(body)
@@ -343,7 +362,7 @@ def selftest():
     def call(path, data=None):
         req = urllib.request.Request(f'http://127.0.0.1:{port}{path}', method='POST' if data is not None else 'GET',
                                      data=json.dumps(data).encode('utf-8') if data is not None else None,
-                                     headers={'Content-Type': 'application/json'})
+                                     headers={'Content-Type': 'application/json', 'Origin': f'http://127.0.0.1:{port}'})
         try:
             with urllib.request.urlopen(req, timeout=15) as r:
                 return r.status, r.read()
@@ -361,6 +380,14 @@ def selftest():
         assert secret_tc.encode() not in b and secret_llm.encode() not in b, b
     assert call('/api/tts', {'text': '안녕하세요', 'voiceId': 'tc_1', 'tempo': 0.9})[0] == 502
     assert call('/api/tts', {'text': '안녕하세요', 'voiceId': 'tc_x', 'tempo': 0.9})[0] == 400
+    # 다른 사이트에서 부르면 거절
+    req = urllib.request.Request(f'http://127.0.0.1:{port}/api/tts', method='POST', data=b'{}',
+                                 headers={'Content-Type': 'application/json', 'Origin': 'https://evil.example'})
+    try:
+        urllib.request.urlopen(req, timeout=5)
+        assert False, 'origin'
+    except urllib.error.HTTPError as e:
+        assert e.code == 403
     srv.shutdown()
     print('server selftest 통과')
 
@@ -369,7 +396,7 @@ if __name__ == '__main__':
     if '--selftest' in sys.argv:
         selftest()
         sys.exit(0)
-    configure(load_env(ROOT / '.env'))
+    configure(env_config())
     h = health()
     print('I-ME 서버: http://localhost:%d' % PORT)
     print('AI 음성(Typecast): %s / AI 대화(Claude): %s' % ('사용' if h['tts'] else '미사용', '사용' if h['llm'] else '미사용'))

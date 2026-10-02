@@ -14,6 +14,7 @@
 - 서버·DB 없음. 모든 데이터는 브라우저에 저장된다. 로그인도 브라우저 안에서만 하는 시연용이다 (아래 '로그인').
 - 파일은 아래 구조보다 늘리지 않는다. 쓰이지 않는 설정, 미리 만든 확장 구조, 불필요한 추상화는 만들지 않는다.
 - 화면 문구·주석은 한국어로 쓴다.
+- 배포(Vercel): GitHub 저장소를 Vercel에 연결하면 푸시할 때마다 자동 배포. 키는 Vercel Settings > Environment Variables에 `.env`와 같은 이름으로. API는 같은 사이트 화면에서 온 요청(Origin)만 받는다. 데이터는 접속한 브라우저마다 따로 저장된다(서버 DB 없음).
 - 실행: 폴더에서 `python server.py` → 크롬에서 `http://localhost:8000` (127.0.0.1에만 열림, 마이크는 localhost에서만 허용된다). `python3 -m http.server 8000`으로 열어도 앱은 동작하고 통화는 기본 음성 + 고정 대본이 된다.
 - 검사: `python server.py --selftest` · `node js/selftest.js` (채점·지표 계산 함수를 assert로 확인한다. 테스트 프레임워크는 쓰지 않는다.)
 
@@ -22,7 +23,9 @@
 ```
 server.py         앱 파일 제공 + API 중계 (표준 라이브러리만). /api/health · /api/tts(Typecast) · /api/chat · /api/summarize(Claude)
 .env.example      키 칸 견본 (.env는 사용자가 복사해 키를 넣는다, git에 올리지 않음)
-.gitignore        .env · cache/
+.gitignore        .env · cache/ · public/ · .vercel
+vercel.json       Vercel 배포: 앱 파일만 public/으로 복사해 내보내고, api/*.py를 함수로
+api/              Vercel 함수 (health·tts·chat·summarize). 처리 코드는 server.py 것을 그대로 쓰고 키는 Vercel 환경 변수에서
 cache/tts/        고정 문장 mp3 캐시 (server.py가 만든다)
 index.html        단일 페이지. 해시 라우팅: #/ (첫 화면) · #/user · #/login · #/signup
                   · #/admin (전체 현황) · #/admin/people[?view=requests|journals] (대상자 관리) · #/admin/people/new[?id=] (대상자 추가·전체 수정)
