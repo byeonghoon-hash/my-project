@@ -374,6 +374,12 @@ if __name__ == '__main__':
     print('I-ME 서버: http://localhost:%d' % PORT)
     print('AI 음성(Typecast): %s / AI 대화(Claude): %s' % ('사용' if h['tts'] else '미사용', '사용' if h['llm'] else '미사용'))
     try:
-        make_server().serve_forever()
+        srv = make_server()
+    except OSError:
+        print('8000번 포트를 다른 프로그램이 쓰고 있음. 열려 있는 다른 서버 창(python -m http.server 등)을 닫고 다시 실행.')
+        sys.exit(1)
+    print('이 창을 닫으면 서버가 꺼짐 (끄기: Ctrl+C)')
+    try:
+        srv.serve_forever()
     except KeyboardInterrupt:
         pass
