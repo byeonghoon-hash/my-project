@@ -335,6 +335,7 @@ const WD = '일월화수목금토';
 export const fmtDate = s => (s ? s.slice(0, 10).replace(/-/g, '.') : '-');                       // 상세: YYYY.MM.DD
 export const fmtMD = s => (s ? `${s.slice(5, 7)}.${s.slice(8, 10)}` : '-');                       // 목록: MM.DD
 export const fmtMDW = s => (s ? `${fmtMD(s)}(${WD[new Date(utc(s)).getUTCDay()]})` : '-');         // 09.28(월)
+export const fmtYMDW = s => (s ? `${fmtDate(s)}(${WD[new Date(utc(s)).getUTCDay()]})` : '-');      // 2026.09.28(월)
 export const fmtTime = s => (s ? (s.length > 5 ? s.slice(11, 16) : s.slice(0, 5)) : '-');         // HH:MM
 export const fmtStamp = s => (s ? `${fmtDate(s)}${s.length > 10 ? ' ' + fmtTime(s) : ''}` : '-');  // YYYY.MM.DD HH:MM
 export const fmtDur = sec => (sec == null ? '-' : sec < 60 ? `${Math.round(sec)}초` : `${Math.floor(sec / 60)}분 ${Math.round(sec % 60)}초`);
@@ -975,4 +976,19 @@ export function cistModeNotes(session) {
   if (omitted.length) out.push(`미시행: ${omitted.join(', ')}`);
   if (session.autoSwitch) out.push(`자동 전환: ${session.autoSwitch}`);
   return out;
+}
+
+// 대면 인지선별검사 2단계 검사 의뢰 점수 (시행 매뉴얼 표). 이 점수 '미만'이면 의뢰. 만 나이, 90세 이상은 80~89세 기준.
+// 열: 비문해 · 무학/문해~5년 · 6~8년 · 9~11년 · 12~15년 · 16년~. null = 기준 없음.
+const REFERRAL_CUT = [
+  [50, [null, null, 22, 24, 26, 27]],
+  [60, [null, 16, 21, 23, 25, 26]],
+  [70, [13, 14, 19, 22, 22, 25]],
+  [80, [10, 11, 16, 18, 20, 22]]
+];
+export function cistReferralCut(age, eduYears, canRead) {
+  if (age == null || age < 50 || eduYears == null) return null;
+  const row = REFERRAL_CUT.filter(([a]) => age >= a).at(-1)[1];
+  const col = canRead === false ? 0 : eduYears <= 5 ? 1 : eduYears <= 8 ? 2 : eduYears <= 11 ? 3 : eduYears <= 15 ? 4 : 5;
+  return row[col];
 }

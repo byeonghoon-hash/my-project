@@ -413,6 +413,8 @@ export const isOffTopic = (item, answer) => item.key !== 'fluency' && nospace(an
 export { CIST };
 export const CIST_DOMAINS = CIST.domains;                    // [[key, 이름], …] 6개 영역
 export const CIST_DOMAIN_LABEL = Object.fromEntries(CIST.domains);
+export const CIST_DOMAIN_MAX = CIST.domainMax;   // 검사지 결과요약표 만점 (지남력 5 · 주의력 3 · 시공간 2 · 집행 6 · 기억 10 · 언어 4 = 30)
+export const CIST_ITEM_NAMES = CIST.itemNames;  // 검사지 문항 번호 → 이름
 export const FIDELITY_LABEL = CIST.fidelity;
 export const CIST_RESERVED = {
   words: [...new Set(Object.values(CIST.memory.forms).flatMap(f => f.keys.map(k => k.word.replace(/\d+시/, '')).filter(Boolean)))],
@@ -420,6 +422,7 @@ export const CIST_RESERVED = {
 };
 const FRUIT_VEG = new Set(CIST.executive.fluency.words);
 const FILLERS = new Set(CIST.executive.fluency.fillers);
+const FLU_EXCLUDE = new Set(CIST.executive.fluency.exclude); // 매뉴얼 '제외': 가공 음식·곡류·해조류
 
 // 방식 기본값(★)과 고를 수 있는지 (대체 문항 칸이 비어 있으면 고를 수 없다)
 export const DEFAULT_CIST_MODES = Object.fromEntries(Object.entries(CIST.modes).map(([k, m]) => [k, m.options.find(o => o.default).id]));
@@ -443,10 +446,15 @@ const sinoValue = w => {
   }
   return total + cur;
 };
+const NATIVE_DAYS = ['초하루', '초이틀', '초사흘', '초나흘', '초닷새', '초엿새', '초이레', '초여드레', '초아흐레', '열흘', '열하루', '열이틀', '열사흘', '열나흘', '보름',
+  '열엿새', '열이레', '열여드레', '열아흐레', '스무날', '스무하루', '스무이틀', '스무사흘', '스무나흘', '스무닷새', '스무엿새', '스무이레', '스무여드레', '스무아흐레'];
 const NATIVE = { 열두: 12, 열한: 11, 열: 10, 아홉: 9, 여덟: 8, 일곱: 7, 여섯: 6, 다섯: 5, 네: 4, 세: 3, 두: 2, 한: 1 };
 export function korToDigits(text) {
   let t = String(text || '');
   t = t.replace(/시\s*월/g, '10월').replace(/유\s*월/g, '6월');
+  // 매뉴얼: 정월·동짓달·섣달, 초하루~그믐 같은 순우리말 날짜도 정답으로 인정
+  t = t.replace(/정\s*월/g, '1월').replace(/동짓\s*달|동지\s*달/g, '11월').replace(/섣\s*달/g, '12월');
+  t = t.replace(/(초하루|초이틀|초사흘|초나흘|초닷새|초엿새|초이레|초여드레|초아흐레|열흘|열하루|열이틀|열사흘|열나흘|보름|열엿새|열이레|열여드레|열아흐레|스무날|스무하루|스무이틀|스무사흘|스무나흘|스무닷새|스무엿새|스무이레|스무여드레|스무아흐레)/g, w => `${NATIVE_DAYS.indexOf(w) + 1}일`);
   t = t.replace(/(열두|열한|열|아홉|여덟|일곱|여섯|다섯|네|세|두|한)\s*시/g, (_, w) => `${NATIVE[w]}시`);
   t = t.replace(/([일이삼사오육륙칠팔구십백천]+)\s*(년|월|일|시|분|번)/g, (m, w, unit) => `${sinoValue(w)}${unit}`);
   // 단위 없이 말한 연도: '이천이십육' → 2026 (세 글자 이상, '천'이 들어간 것만)
@@ -465,20 +473,31 @@ const numberAnswer = (t, want) => numbersIn(t, '').includes(want)
 
 const WEEK = ['일', '월', '화', '수', '목', '금', '토'];
 const weekdayOf = date => WEEK[new Date(Date.UTC(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8, 10))).getUTCDay()];
+const addDay1 = date => new Date(Date.UTC(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8, 10) + 1)).toISOString().slice(0, 10);
+const lastWeekday = t => [...nospace(t).matchAll(/([일월화수목금토])(요일|욜)/g)].at(-1)?.[1] ?? null;
+// 연도 대답 확인: 두 자리 숫자만 → '네 자리 숫자로…', 육십갑자만 → '숫자로 하면…' (한 번만 되묻는다)
+export function yearFollowUp(answer) {
+  const ns = numbersIn(answer, '년');
+  if (ns.some(n => n >= 1000)) return null;
+  if (ns.length) return CIST.orientation.yearFollow.short;
+  if (/[갑을병정무기경신임계][자축인묘진사오미신유술해]\s*년/.test(answer || '')) return CIST.orientation.yearFollow.ganji;
+  return null;
+}
 const hasWeekday = (t, date) => { const w = weekdayOf(date); return nospace(t).includes(w + '요일') || nospace(t).includes(w + '욜'); };
 
 // 의미 유창성: 과일·채소 목록과 대조, 중복 제외. 목록에 없는 말은 '확인 필요' 후보로.
 export function fluencyWords(answer) {
-  const found = [], candidates = [];
+  const found = [], candidates = [], excluded = [];
   for (const raw of String(answer || '').split(/[\s,.?!…·]+/)) {
     if (!raw) continue;
     let hit = null;
     for (const p of [...PARTICLES, '를', '을', '하고요', '도요']) if (raw.endsWith(p) && FRUIT_VEG.has(raw.slice(0, raw.length - p.length))) { hit = raw.slice(0, raw.length - p.length); break; }
     if (hit) { if (!found.includes(hit)) found.push(hit); continue; }
-    const w = raw.replace(/(요|예|도|하고|랑|이랑)$/, '');
+    const w = raw.replace(/(요|예|도|하고|랑|이랑|를|을)$/, '');
+    if (FLU_EXCLUDE.has(w) || FLU_EXCLUDE.has(raw)) { if (!excluded.includes(w)) excluded.push(w); continue; }
     if (/^[가-힣]{2,}$/.test(w) && !FILLERS.has(w) && !FILLERS.has(raw) && !candidates.includes(w)) candidates.push(w);
   }
-  return { found, candidates };
+  return { found, candidates, excluded };
 }
 export const fluencyPoints = (n, cut) => (n >= cut.two ? 2 : n >= cut.one ? 1 : 0);
 
@@ -491,12 +510,13 @@ export function scoreCist(item) {
   switch (item.type) {
     case 'time': {
       if (/음력/.test(a)) return { score: null, status: 'needs_review', note: '음력으로 답함' };
-      if (item.part === 'weekday') return { score: hasWeekday(a, item.date) ? 1 : 0, status: 'auto' };
+      // 답을 고치면 마지막 대답으로 채점한다 (매뉴얼)
+      if (item.part === 'weekday') return { score: lastWeekday(a) === weekdayOf(item.date) ? 1 : 0, status: 'auto' };
       const want = item.part === 'year' ? +item.date.slice(0, 4) : item.part === 'month' ? +item.date.slice(5, 7) : +item.date.slice(8, 10);
       const unit = { year: '년', month: '월', day: '일' }[item.part];
-      const ns = numbersIn(a, unit);
-      const ok = ns.includes(want) || (item.part === 'year' && ns.includes(want % 100));
-      return { score: ok ? 1 : 0, status: 'auto' };
+      if (item.part === 'day' && /그믐/.test(a) && +addDay1(item.date).slice(8, 10) === 1) return { score: 1, status: 'auto' }; // 그달의 마지막 날
+      const last = numbersIn(a, unit).at(-1);
+      return { score: last === want ? 1 : 0, status: 'auto', note: item.part === 'year' && last != null && last < 100 ? '두 자리 연도' : '' }; // 연도 일부·육십갑자만 말하면 오답
     }
     case 'place':
       if (item.mode === 'b') return { score: (item.areas || []).some(w => t.includes(nospace(w))) ? 1 : 0, status: 'auto' };
@@ -520,11 +540,11 @@ export function scoreCist(item) {
       return { score: ok ? 1 : 0, status: 'auto' };
     }
     case 'fluency': {
-      const { found, candidates } = fluencyWords(a);
+      const { found, candidates, excluded } = fluencyWords(a);
       const accepted = (item.accepted || []).filter(w => candidates.includes(w));
       const n = found.length + accepted.length;
       const pending = candidates.filter(w => !(item.decided || []).includes(w));
-      return { score: fluencyPoints(n, item.cut), status: pending.length ? 'needs_review' : 'auto', note: `${n}개`, found, candidates };
+      return { score: fluencyPoints(n, item.cut), status: pending.length ? 'needs_review' : 'auto', note: `${n}개${excluded.length ? ` · 제외 ${excluded.join(', ')}` : ''}`, found, candidates };
     }
     case 'comp': {
       if (item.variant === 'c') { // '하나, 둘' 다음 요일: 순서대로
@@ -532,7 +552,7 @@ export function scoreCist(item) {
         return { score: i1 >= 0 && i2 > i1 && i3 > i2 ? 1 : 0, status: 'auto' };
       }
       const said = item.variant === 'a' ? (item.words || []).some(w => t.includes(nospace(w))) : hasWeekday(a, item.date);
-      const sound = (item.segments || 0) >= 2; // 말소리 앞에 따로 난 소리
+      const sound = (item.segments || 0) >= (item.variant === 'a' ? 3 : 2); // 말소리 앞에 따로 난 소리 (박수 2번 · 기침 1번)
       return { score: said && sound ? 1 : 0, status: 'needs_review', note: `1점 후보 ${said && sound ? '있음' : '없음'} · 녹음으로 확정` };
     }
     case 'draw': return { score: null, status: 'needs_review', note: item.note || '담당자 채점 (0~2점)' };
@@ -551,10 +571,11 @@ export const reverseWordFor = (mode, prevCount) => {
 // 장소 '동네 이름' 채점용: 등록 주소에서 면·리 이름 ('웅촌면' → 웅촌, '대복리' → 대복)
 export const placeAreas = address => [...String(address || '').matchAll(/([가-힣]+?)(면|리|동|읍)(?![가-힣])/g)].flatMap(m => [m[1] + m[2], m[1]]).filter(w => w.length >= 2);
 
-// 정기 검사 한 회차의 문항 목록과 진행 순서 (call.js가 이 순서대로 읽고 듣는다).
-// 순서: 인사 → 지남력 → 기억 등록 → 주의력 → 시공간 → 집행(언어 추론 → 유창성 → 시각 추론) → 언어 → 지연 회상 → 재인 → 끝인사
-// opts: { date, modes, prevCount, title, place(평소 통화 장소), address }
-export function cistPlan({ date, modes, prevCount = 0, title = '', place = '집', address = '' }) {
+// 정기 검사 한 회차의 문항 목록과 진행 순서 (call.js가 이 순서대로 읽고 듣는다). 검사지(CIST) 번호와 순서를 따른다:
+// 인사 → 1 시간 → 2 장소 → 3 기억등록 → 4 숫자 → 5 거꾸로 → 6 도형모사 → 7·8 시각추론 → 9 언어추론
+// → 10 기억회상/재인 → 11 이름대기 → 12 이해력 → 13 유창성 → 끝인사
+// opts: { date, modes, prevCount, title(호칭), name(이름, 거꾸로 말하기 연습용), place(평소 통화 장소), address }
+export function cistPlan({ date, modes, prevCount = 0, title = '', name = '', place = '집', address = '' }) {
   const M = normalizeModes(modes);
   const form = cistForm(prevCount);
   const F = CIST.memory.forms[form];
@@ -562,54 +583,69 @@ export function cistPlan({ date, modes, prevCount = 0, title = '', place = '집'
   const q = t => fillTitle(t, title);
   const items = [], steps = [];
   const add = (it, step) => { items.push({ score: null, status: 'auto', note: '', answer: '', ...it }); if (step) steps.push(step); };
-  const omit = (id, domain, maxScore, note) => add({ id, domain, type: 'omitted', fidelity: 'omitted', maxScore, status: 'omitted', note });
+  const omit = (id, no, domain, maxScore, note) => add({ id, no, label: note.replace(/\s*미시행$/, ''), domain, type: 'omitted', fidelity: 'omitted', maxScore, status: 'omitted', note });
 
-  // 지남력: 시간 4문항(원형) + 장소 1문항(방식)
-  for (const t of CIST.orientation.time) add({ id: t.id, domain: 'orientation', type: 'time', part: t.part, date, fidelity: 'original', maxScore: 1, question: q(t.q) }, { kind: 'ask', id: t.id, reread: true });
-  if (M.place === 'c') omit('o_place', 'orientation', 1, '장소 미시행');
+  // 1 시간 지남력 (4점) · 2 장소 지남력 (1점)
+  steps.push({ kind: 'say', text: CIST.orientation.intro });
+  CIST.orientation.time.forEach((t, n) => add({ id: t.id, no: `1-(${n + 1})`, label: { year: '연도', month: '월', day: '일', weekday: '요일' }[t.part], domain: 'orientation', type: 'time', part: t.part, date, fidelity: 'original', maxScore: 1, question: q(t.q) },
+    { kind: 'ask', id: t.id, reread: true, follow: t.part === 'year' }));
+  if (M.place === 'c') omit('o_place', '2', 'orientation', 1, '장소 지남력 미시행');
   else {
     const P = CIST.orientation.place[M.place];
     const home = !place || place === '집' ? CIST.orientation.place.a.home : [place];
-    add({ id: 'o_place', domain: 'orientation', type: 'place', mode: M.place, fidelity: fid('place'), maxScore: 1, question: q(P.q),
+    add({ id: 'o_place', no: '2', label: '장소', domain: 'orientation', type: 'place', mode: M.place, fidelity: fid('place'), maxScore: 1, question: q(P.q),
       ...(M.place === 'a' ? { home } : { areas: placeAreas(address) }) }, { kind: 'ask', id: 'o_place', reread: true });
   }
-  // 기억 등록: 문장을 정확히 두 번 ('/'마다 0.4초 쉼), 따라 말하기는 채점하지 않는다
+  // 3 기억등록: 정확히 두 번 ('/'마다 0.4초), 채점 안 함
   steps.push({ kind: 'register', form, parts: F.speak, lines: [CIST.memory.intro, CIST.memory.again], remember: CIST.memory.remember, times: 2 });
-  // 주의력: 숫자는 한 번만 1초 간격, 단어 거꾸로
+  // 4 숫자 바로 따라 말하기: 한 번만, 1초 간격 · 5 거꾸로 말하기: 이름으로 연습 뒤 한 번 더 불러 줄 수 있음
   steps.push({ kind: 'say', text: CIST.attention.digits.intro });
-  for (const d of CIST.attention.digits.items) add({ id: d.id, domain: 'attention', type: 'digits', digits: d.digits, fidelity: 'original', maxScore: 1, question: [...d.digits].join(', ') }, { kind: 'digits', id: d.id, once: CIST.attention.digits.once });
+  CIST.attention.digits.items.forEach((d, n) => add({ id: d.id, no: `4-(${n + 1})`, label: [...d.digits].join('-'), domain: 'attention', type: 'digits', digits: d.digits, fidelity: 'original', maxScore: 1, question: [...d.digits].join(', ') },
+    { kind: 'digits', id: d.id, once: CIST.attention.digits.once }));
   const word = reverseWordFor(M.reverseWord, prevCount);
-  add({ id: 'a_reverse', domain: 'attention', type: 'reverse', word, fidelity: fid('reverseWord'), maxScore: 1, question: `${CIST.attention.reverseWord.q} '${word}'` }, { kind: 'ask', id: 'a_reverse', reread: false });
-  // 시공간: 화면 그리기(입력이 없으면 음성 대체로 자동 전환) · 음성 대체 · 미시행
-  const voiceVisuo = () => CIST.visuospatial.b.map(v => ({ id: v.id, domain: 'visuospatial', type: 'answers', answers: v.answers, fidelity: 'replaced', maxScore: 1, question: v.q }));
-  if (M.visuospatial === 'c') omit('v_draw', 'visuospatial', 2, '시공간 미시행');
+  const nm = String(name || '').trim();
+  const R = CIST.attention.reverseWord;
+  steps.push({ kind: 'say', text: R.q + (nm.length >= 2 ? ' ' + R.practice.replace('{이름}', nm).replace('{거꾸로}', [...nm].reverse().join('')) : ''), show: '단어를 거꾸로 말씀해 주세요' });
+  add({ id: 'a_reverse', no: '5', label: word, domain: 'attention', type: 'reverse', word, fidelity: fid('reverseWord'), maxScore: 1, question: word },
+    { kind: 'ask', id: 'a_reverse', rereads: 1, show: '단어를 거꾸로 말씀해 주세요' });
+  // 6 도형모사 (2점): 화면 그리기(입력이 없으면 음성 대체로 자동 전환) · 음성 대체 · 미시행
+  const voiceVisuo = () => CIST.visuospatial.b.map(v => ({ id: v.id, no: '6', label: v.id === 'v_clock' ? '시계 방향' : '방위', domain: 'visuospatial', type: 'answers', answers: v.answers, fidelity: 'replaced', maxScore: 1, question: v.q }));
+  if (M.visuospatial === 'c') omit('v_draw', '6', 'visuospatial', 2, '도형모사 미시행');
   else if (M.visuospatial === 'b') for (const v of voiceVisuo()) add(v, { kind: 'ask', id: v.id, reread: true });
-  else add({ id: 'v_draw', domain: 'visuospatial', type: 'draw', fidelity: 'adapted', maxScore: 2, question: CIST.visuospatial.a.q, maxSec: CIST.visuospatial.a.maxSec },
+  else add({ id: 'v_draw', no: '6', label: '도형모사', domain: 'visuospatial', type: 'draw', fidelity: 'adapted', maxScore: 2, question: CIST.visuospatial.a.q, maxSec: CIST.visuospatial.a.maxSec },
     { kind: 'draw', id: 'v_draw', figure: CIST.visuospatial.a.figure, fallback: voiceVisuo() });
-  // 집행기능: 언어 추론 2점(다시 읽기 한 번) → 유창성 → 시각 추론
+  // 7·8 시각추론 (각 1점)
+  const VR = CIST.executive.visual;
+  if (M.visualReasoning === 'a') omit('e_visual', '7·8', 'executive', 2, '시각추론 미시행');
+  else if (M.visualReasoning === 'b') VR.b.items.forEach((v, n) => add({ id: `e_visual${n + 1}`, no: String(7 + n), label: `시각추론${n + 1}`, domain: 'executive', type: 'choice', options: v.options, image: v.image, correct: v.correct, fidelity: 'adapted', maxScore: 1, question: v.q },
+    { kind: 'choice', id: `e_visual${n + 1}` }));
+  else {
+    for (const v of VR.c.items) add({ id: v.id, no: '7', label: v.label, domain: 'executive', type: 'answers', answers: v.answers, fidelity: 'adapted', maxScore: 1, question: v.q }, { kind: 'ask', id: v.id, reread: true });
+    omit(VR.c.omit.id, '8', 'executive', VR.c.omit.maxScore, VR.c.omit.note);
+  }
+  // 9 언어추론 (2점, 비문해 대상자용 읽어 주기 지시문)
   const V = CIST.executive.verbal;
-  for (const v of V.items) add({ id: v.id, domain: 'executive', type: 'answers', answers: v.answers, label: v.label, fidelity: 'original', maxScore: 1, question: V.q.join(' ') });
+  for (const v of V.items) add({ id: v.id, no: '9', label: v.label, domain: 'executive', type: 'answers', answers: v.answers, fidelity: 'original', maxScore: 1, question: V.q.join(' ') });
   steps.push({ kind: 'verbal', ids: V.items.map(v => v.id), lines: V.q });
-  const FL = CIST.executive.fluency, cut = FL[M.fluency];
-  add({ id: 'e_fluency', domain: 'executive', type: 'fluency', cut: { two: cut.two, one: cut.one }, sec: cut.sec, fidelity: fid('fluency'), maxScore: 2,
-    question: FL.q.replace('{시간}', cut.timeText) }, { kind: 'fluency', id: 'e_fluency', stop: FL.stop });
-  const VR = M.visualReasoning === 'a' ? null : CIST.executive.visual[M.visualReasoning].items;
-  if (!VR?.length) omit('e_visual', 'executive', 2, '시각 추론 미시행');
-  else VR.forEach((v, n) => add({ id: `e_visual${n + 1}`, domain: 'executive', fidelity: 'replaced', maxScore: 1, question: v.q,
-    ...(M.visualReasoning === 'b' ? { type: 'choice', options: v.options, image: v.image, correct: v.correct } : { type: 'answers', answers: v.answers }) },
-  { kind: M.visualReasoning === 'b' ? 'choice' : 'ask', id: `e_visual${n + 1}`, reread: true }));
-  // 언어기능: 이름 대기 3 · 이해력
-  for (const v of CIST.language.naming) add({ id: v.id, domain: 'language', type: 'answers', answers: v.answers, fidelity: 'original', maxScore: 1, question: v.q }, { kind: 'ask', id: v.id, reread: true });
-  const C = CIST.language.comprehension[M.comprehension];
-  add({ id: 'l_comp', domain: 'language', type: 'comp', variant: M.comprehension, words: C.words, date, fidelity: fid('comprehension'), maxScore: 1, question: C.q },
-    { kind: 'ask', id: 'l_comp', reread: false, segments: true });
-  // 지연 회상(등록 3분 뒤, 낱말마다 2점) → 못 떠올린 낱말만 재인(1점)
-  for (const k of F.keys) add({ id: k.id, domain: 'memory', type: 'recall', word: k.word, accept: k.accept, form, fidelity: 'original', maxScore: 2, question: CIST.memory.recall,
+  // 10 기억회상(낱말마다 2점) → 더 생각나는 것 확인 → 못 떠올린 낱말만 재인(1점)
+  for (const k of F.keys) add({ id: k.id, no: '10', label: k.word, domain: 'memory', type: 'recall', word: k.word, accept: k.accept, form, fidelity: 'original', maxScore: 2, question: CIST.memory.recall,
     recog: null, recogSpec: F.recognition.find(r => r.key === k.id) });
-  steps.push({ kind: 'recall', ids: F.keys.map(k => k.id), q: CIST.memory.recall, gapSec: 180, filler: CIST.script.filler });
+  steps.push({ kind: 'recall', ids: F.keys.map(k => k.id), q: CIST.memory.recall, more: CIST.memory.more, gapSec: 180, filler: CIST.script.filler });
   steps.push({ kind: 'recognition', ids: F.keys.map(k => k.id) });
+  // 11 이름대기 (3점, 그림 대신 말로 설명) · 12 이해력 (1점, 한 번 더 불러 줄 수 있음)
+  CIST.language.naming.forEach((v, n) => add({ id: v.id, no: `11-(${n + 1})`, label: v.answers[0], domain: 'language', type: 'answers', answers: v.answers, fidelity: 'adapted', maxScore: 1, question: v.q }, { kind: 'ask', id: v.id, reread: true }));
+  const C = CIST.language.comprehension[M.comprehension];
+  add({ id: 'l_comp', no: '12', label: '이해력', domain: 'language', type: 'comp', variant: M.comprehension, words: C.words, date, fidelity: fid('comprehension'), maxScore: 1, question: C.q },
+    { kind: 'ask', id: 'l_comp', rereads: 1, segments: true });
+  // 13 유창성 (2점, 1분 또는 30초)
+  const FL = CIST.executive.fluency, cut = FL[M.fluency];
+  add({ id: 'e_fluency', no: '13', label: `유창성 ${cut.timeText}`, domain: 'executive', type: 'fluency', cut: { two: cut.two, one: cut.one }, sec: cut.sec, fidelity: fid('fluency'), maxScore: 2, question: FL.q },
+    { kind: 'fluency', id: 'e_fluency', stop: FL.stop });
   return { form, modes: M, items, steps };
 }
+
+// 재인: 앞 재인 질문에 대답하면서 다른 핵심 낱말을 말했으면 그것도 재인으로 1점 (매뉴얼)
+export const recogInEarlier = (item, earlier) => (earlier || []).find(t => item.accept.some(w => nospace(korToDigits(t)).includes(nospace(korToDigits(w))))) ?? null;
 
 // 문항 하나 다시 채점 (담당자가 고친 점수는 그대로)
 export const rescoreCist = it => (it.status === 'reviewed' || it.status === 'omitted' ? it : { ...it, ...pickScore(scoreCist(it)) });

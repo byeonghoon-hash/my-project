@@ -801,3 +801,6 @@ a.stat:hover { background: var(--line); }
 .mode-opt input { margin-top: 3px; }
 .mode-opt.off { opacity: .55; cursor: not-allowed; }
 @media (max-width: 768px) { .cist-box .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.sumtable th[scope=row] { text-align: left; white-space: nowrap; }
+.sumtable td { white-space: nowrap; }
+.cist-head { color: var(--muted); }

@@ -6,7 +6,7 @@
 
 import {
   planForDate, scoreItem, isDecline, itemSpec, isRepeatAsk, scorePct, SELF_QUESTIONS, classifySleep, classifyMood, findRequests,
-  SCRIPT, detectEmergency, checkChatReply, fillTitle, useAiVoice, useAiChat, ttsOutcome, isOffTopic, CIST, rescoreCist, scoreCist
+  SCRIPT, detectEmergency, checkChatReply, fillTitle, useAiVoice, useAiChat, ttsOutcome, isOffTopic, CIST, rescoreCist, scoreCist, yearFollowUp, recogInEarlier
 } from './items.js';
 import { todayStr, nowStamp } from './metrics.js';
 
@@ -206,7 +206,7 @@ export async function runCall(settings, ui, person, prep, bank, cist = null) {
   const aiChat = useAiChat(health, person);
   const S = plan.script;
   const greetLine = fillTitle(S.greeting, title);
-  if (voice.ai && cist) prefetch([fillTitle(CIST.script.greeting, title), CIST.script.intro, CIST.memory.intro, CIST.memory.again, ...cist.items.filter(i => i.question && !['recall', 'digits'].includes(i.type)).map(i => i.question)]);
+  if (voice.ai && cist) prefetch([fillTitle(CIST.script.greeting, title), fillTitle(CIST.script.intro, title), CIST.memory.intro, CIST.memory.again, ...cist.items.filter(i => i.question && !['recall', 'digits'].includes(i.type)).map(i => i.question)]);
   else if (voice.ai) {
     prefetch([greetLine, ...(aiChat ? [] : [S.condition]), S.recent, S.intro,
       ...plan.items.flatMap((it, n) => (n ? [SCRIPT.bridges[(n - 1) % 3], it.question] : [it.question])),
@@ -328,14 +328,18 @@ export async function runCall(settings, ui, person, prep, bank, cist = null) {
     const hello = await ask(fillTitle(T.greeting, title), free, 'greeting');
     const declined = !endNow && isDecline(hello.answer);
     if (declined) { await say(SCRIPT.declined, { phase: 'goodbye' }); endNow = true; }
-    else await say(T.intro);
+    else await say(fillTitle(T.intro, title));
     for (const step of declined ? [] : cist.steps) {
       if (aborted || endNow || timeUp()) break;
       const it = step.id ? byId(step.id) : null;
-      if (step.kind === 'say') await say(step.text);
+      if (step.kind === 'say') await say(step.text, step.show ? { show: step.show } : {});
       else if (step.kind === 'ask') {
-        const r = await askItem(it, { rereads: step.reread ? rereads : 0 }, it.type === 'reverse' ? '단어를 거꾸로 말씀해 주세요' : undefined);
-        if (step.segments) it.segments = r.segments; // 말소리 앞에 따로 난 소리('후'·'콜록') 수
+        // 다시 읽기: 문항에 정해진 횟수(거꾸로 말하기·이해력 1번) 또는 대상자 설정
+        const r = await askItem(it, { rereads: step.rereads ?? (step.reread ? rereads : 0) }, step.show);
+        if (step.segments) it.segments = r.segments; // 말소리 앞에 따로 난 소리(박수·기침) 수
+        // 연도를 두 자리나 육십갑자로만 말하면 한 번 되묻는다 (마지막 대답으로 채점)
+        const follow = step.follow && !endNow && yearFollowUp(it.answer);
+        if (follow) { const f = await ask(follow, { key: 'cist', maxSec: 20 }, 'item', {}, { rereads: 0, noOff: true }); if (f.answer) it.answer += ' ' + f.answer; }
       } else if (step.kind === 'register') {
         // 정확히 두 번 읽는다. 따라 말하기는 채점하지 않는다.
         for (let n = 0; n < step.times && !aborted && !endNow; n++) {
@@ -405,14 +409,23 @@ export async function runCall(settings, ui, person, prep, bank, cist = null) {
         if (aborted || endNow || timeUp()) break;
         const r = await ask(step.q, { key: 'cist', maxSec: 30 }, 'item', {}, { rereads: 0, noOff: true });
         for (const id of step.ids) stamp(byId(id), r);
+        // 못 떠올린 낱말이 있으면 '더 생각나는 것은 없으신가요?'로 회상이 끝났는지 확인한 뒤 재인으로
+        if (r.answer && !endNow && step.ids.some(id => scoreCist(byId(id)).score < 2)) {
+          const more = await ask(step.more, { key: 'cist', maxSec: 20 }, 'item', {}, { rereads: 0, noOff: true });
+          if (more.answer) for (const id of step.ids) byId(id).answer += ' ' + more.answer;
+        }
         if (!r.answer && !r.emergency) await say(T.timeout);
       } else if (step.kind === 'recognition') {
-        // 떠올리지 못한 낱말만 보기를 들려준다 (1점)
+        // 떠올리지 못한 낱말만 보기를 들려준다 (1점). 앞 재인 대답에서 이미 말한 낱말은 묻지 않고 재인으로 인정
+        const said = [];
         for (const id of step.ids) {
           const k = byId(id);
           if (!k.asked || scoreCist(k).score === 2 || timeUp() || endNow || aborted) continue;
+          const early = recogInEarlier(k, said);
+          if (early) { k.recog = { ...k.recogSpec, response: k.recogSpec.answer, note: `앞 재인 대답에서 말함: "${early}"` }; continue; }
           const r = await ask(k.recogSpec.q, { key: 'cist', maxSec: 20 }, 'item', {}, { rereads, noOff: true });
           k.recog = { ...k.recogSpec, response: r.answer, startMs: r.startMs, endMs: r.endMs };
+          said.push(r.answer);
         }
       }
     }

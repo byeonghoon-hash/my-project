@@ -426,12 +426,54 @@ assert.equal(isOffTopic(regItem, '잘 모르겠는데 기억이 하나도 안 �
   assert.equal(T('day', '음력으로 팔월 열이틀').status, 'needs_review');   // 음력 → 확인 필요
   assert.deepEqual([T('day', '').score, T('day', '').note], [0, '무응답']); // 제한 시간 초과 → 0점 '무응답'
   // 순서·읽기 횟수: 숫자는 한 번, 문장은 두 번, 회상은 등록 3분 뒤, 재인은 회상 다음
-  const plan = cistPlan({ date: tdate, modes: {}, prevCount: 0, title: '윤병훈 어르신' });
+  const plan = cistPlan({ date: tdate, modes: {}, prevCount: 0, title: '윤병훈 어르신', name: '윤병훈' });
   const kinds = plan.steps.map(s => s.kind);
   assert.deepEqual(kinds.filter(k => k === 'digits').length, 2);
   assert.equal(plan.steps.find(s => s.kind === 'register').times, 2);
   assert.equal(plan.steps.find(s => s.kind === 'recall').gapSec, 180);
-  assert.ok(kinds.indexOf('register') < kinds.indexOf('digits') && kinds.indexOf('fluency') < kinds.indexOf('recall') && kinds.indexOf('recall') < kinds.indexOf('recognition'));
+  // 검사지 순서: 기억등록 → 숫자 → … → 언어추론 → 기억회상 → 재인 → 이름대기 → 이해력 → 유창성(마지막)
+  assert.ok(kinds.indexOf('register') < kinds.indexOf('digits') && kinds.indexOf('verbal') < kinds.indexOf('recall') && kinds.indexOf('recall') < kinds.indexOf('recognition'));
+  assert.equal(kinds.at(-1), 'fluency');
+  assert.deepEqual(plan.items.map(i => i.no).filter((v, n, a) => a.indexOf(v) === n),
+    ['1-(1)', '1-(2)', '1-(3)', '1-(4)', '2', '4-(1)', '4-(2)', '5', '6', '7', '8', '9', '10', '11-(1)', '11-(2)', '11-(3)', '12', '13']);
+  // 매뉴얼 채점: 마지막 대답, 두 자리 연도·육십갑자는 되묻고 그래도 그러면 오답, 순우리말 날짜 인정
+  const { yearFollowUp, recogInEarlier, CIST_DOMAIN_MAX } = await import('./items.js');
+  assert.equal(T('year', '26년').score, 0);
+  assert.ok(yearFollowUp('26년').includes('네 자리'));
+  assert.ok(yearFollowUp('병오년').includes('숫자로'));
+  assert.equal(yearFollowUp('2026년'), null);
+  assert.equal(T('year', '26년 이천이십육년').score, 1);
+  assert.equal(T('day', '사 일, 아니 삼 일').score, 1);                 // 고친 대답으로
+  assert.equal(T('day', '초사흘').score, 1);
+  assert.equal(scoreCist({ type: 'time', part: 'month', date: '2026-11-03', answer: '동짓달' }).score, 1);
+  assert.equal(scoreCist({ type: 'time', part: 'day', date: '2026-10-31', answer: '그믐' }).score, 1);
+  assert.equal(T('weekday', '금요일 아니 토요일').score, 1);
+  assert.equal(Object.values(CIST_DOMAIN_MAX).reduce((a, b) => a + b, 0), 30);
+  // 거꾸로 말하기 연습은 대상자 이름으로, 다시 불러 주기는 한 번
+  assert.ok(plan.steps.some(s => s.text?.includes('윤병훈님 이름을 거꾸로 하면 훈병윤')));
+  assert.equal(plan.steps.find(s => s.id === 'a_reverse').rereads, 1);
+  assert.equal(plan.steps.find(s => s.id === 'l_comp').rereads, 1);
+  // 재인: 앞 재인 대답에서 말한 낱말은 재인으로 인정
+  const pm = cistPlan({ date: tdate, modes: {}, prevCount: 0 });
+  assert.ok(recogInEarlier(pm.items.find(i => i.id === 'm3'), ['민수, 공원 갔지']));
+  assert.equal(recogInEarlier(pm.items.find(i => i.id === 'm5'), ['민수']), null);
+  // 시각추론1은 말로, 시각추론2는 미시행
+  assert.deepEqual(pm.items.filter(i => i.no === '7' || i.no === '8').map(i => i.status), ['auto', 'omitted']);
+  // 유창성 '제외'(가공 음식·곡류·해조류)는 세지도 후보로도 넣지 않는다, 견과류·뿌리채소는 인정
+  const fx = fluencyWords('곶감 콩 미역 호두 연근 옥수수');
+  assert.deepEqual(fx.found, ['호두', '연근', '옥수수']);
+  assert.deepEqual(fx.candidates, []);
+  assert.deepEqual(fx.excluded, ['곶감', '콩', '미역']);
+  // 이해력: 박수 두 번 + '다 했어요'면 1점 후보 (담당자 확정)
+  assert.equal(scoreCist({ type: 'comp', variant: 'a', words: CIST.language.comprehension.a.words, answer: '다 했어요', segments: 3 }).score, 1);
+  assert.equal(scoreCist({ type: 'comp', variant: 'a', words: CIST.language.comprehension.a.words, answer: '다 했어요', segments: 1 }).score, 0);
+  // 대면 검사 의뢰 점수표 (만 나이 × 교육 연수, 90세 이상은 80~89세)
+  const { cistReferralCut } = await import('./metrics.js');
+  assert.equal(cistReferralCut(78, 6, true), 19);
+  assert.equal(cistReferralCut(85, 0, false), 10);
+  assert.equal(cistReferralCut(92, 12, true), 20);
+  assert.equal(cistReferralCut(65, 0, false), null);
+  assert.equal(cistReferralCut(55, 16, true), 27);
   // 문장 A·B 회차 교대
   assert.deepEqual([cistForm(0), cistForm(1), cistForm(2)], ['A', 'B', 'A']);
   assert.equal(cistPlan({ date: tdate, modes: {}, prevCount: 1 }).items.find(i => i.id === 'm1').word, '영희');

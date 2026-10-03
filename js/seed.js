@@ -12,7 +12,7 @@ import {
 import { pickVitals, recomputeRing } from './vitals.js';
 
 // 시드 버전. 올리면 저장된 시연 데이터를 새로 만든다 (회원 계정·링 실측 데이터는 유지).
-export const SEED_VERSION = 6;
+export const SEED_VERSION = 7;
 
 // 전화번호는 모두 가짜(010-0000-), 보호자 이름은 지어낸 것, 의료기관명은 '○○내과의원'.
 const phone = n => `010-0000-${n}`;
@@ -126,6 +126,9 @@ const PEOPLE = [
     }) }
 ];
 
+// 교육 연수 · 한글 읽기 (대면 검사 의뢰 기준을 고를 때 쓴다)
+const EDU = [[6, '가능'], [3, '가능'], [9, '가능'], [0, '어려움'], [6, '가능'], [9, '가능'], [0, '가능'], [6, '가능'], [3, '가능'], [12, '가능']];
+
 // 성향별로 나와야 하는 판정
 const WANT = {
   stable: r => r.level === 'low',
@@ -149,12 +152,12 @@ export function makeSeed(settings = DEFAULT_SETTINGS, today = todayStr()) {
     info.call.title ||= `${pf.name} 어르신`;
     info.consent = { ...info.consent, date: start, renewDate: addDays(start, 365) };
     // 대면 인지검사 기록: 4명 (한복남·이상철·김말순·윤병훈)
-    const face = { 0: [26], 4: [22, 19], 6: [21], 9: [25] }[i];
+    const face = { 0: [26], 4: [22, 18], 6: [21], 9: [25] }[i];
     if (face) info.tests = face.map((score, k) => ({ kind: 'CIST', score, date: addDays(start, k * 35 + 3), examiner: pf.manager }));
     const birth = `${+today.slice(0, 4) - pf.age - 1}-${String(3 + i).padStart(2, '0')}-${String(10 + i).padStart(2, '0')}`;
     const person = {
       id: 'p' + (i + 1), name: pf.name, sex: pf.sex, birth, age: pf.age,
-      phone: phone(String(1001 + i)), phoneType: '휴대폰', education: null, canRead: null,
+      phone: phone(String(1001 + i)), phoneType: '휴대폰', education: EDU[i][0], canRead: EDU[i][1],
       guardianPhone: info.contacts[0]?.phone || '',
       preferredTime: pf.time, enrolledAt: start, active: true, closed: null,
       referral: ['보건소 의뢰', '방문간호 연계', '본인 신청', '보호자 신청'][i % 4], dementiaCenter: i === 4 ? '예' : '아니요',
@@ -249,19 +252,20 @@ export function makeSeed(settings = DEFAULT_SETTINGS, today = todayStr()) {
 // 정기 인지검사 회차 --------------------------------------------------------
 // 회차마다 '틀린 문항'만 정하고 나머지는 맞는 대답을 만든다. 점수는 그 대답을 자동 채점한 값이다.
 // 틀림 표기: m1~m5 'recog'(회상 못 하고 재인 맞힘, −1) · 'none'(재인도 틀림, −2) · 그 밖 문항 1(한 점 깎임)
+// 원형 유지 문항: 시간 4 · 숫자 2 · 거꾸로 1 · 언어추론 2 · 기억회상/재인 10 · 유창성 2 = 21점
 const CIST_PLAN = [
   [{ m4: 'recog' }, { m3: 'recog' }, { m4: 'recog' }],                                                    // 한복남
   [{}, { m5: 'recog' }, { m5: 'recog', o_place: '경로당' }],                                               // 이옥분: 마지막 회차 채점 대기
   [{ m2: 'recog' }, {}, { a_digit2: 1 }],                                                                 // 박순자
   [{ m4: 'recog' }, { m4: 'recog', e_fluency: 1 }],                                                       // 최영희: 9일 지연
   [{ m3: 'recog', m4: 'recog', e_fluency: 1, a_digit2: 1 }, { m3: 'recog', m4: 'recog', e_fluency: 1, a_digit2: 1, m2: 'none' },
-    { m3: 'recog', m4: 'recog', e_fluency: 1, a_digit2: 1, m2: 'none', m5: 'none', l_name3: 1 }],          // 이상철: 연속 하락 (20 → 18 → 15)
+    { m3: 'recog', m4: 'recog', e_fluency: 1, a_digit2: 1, m2: 'none', m5: 'none', l_name3: 1 }],          // 이상철: 연속 하락 (17 → 15 → 13)
   [{ m4: 'recog' }, { m4: 'recog', o_day: 1 }, { m4: 'recog' }],                                           // 서정길
   [{ m3: 'recog', m4: 'recog' }, { m3: 'recog', m4: 'recog', a_digit2: 1 }, { m3: 'recog', m4: 'recog' }], // 김말순
   [{}, { m4: 'recog' }, {}],                                                                              // 정두만
   [{ m4: 'recog' }, { m4: 'recog' }, {}],                                                                 // 오금례: 2회차부터 시공간 음성 대체
   [{ m4: 'recog', m5: 'recog', e_fluency: 1, a_digit2: 1, o_weekday: 1 }, { m4: 'recog', e_fluency: 1, a_digit2: 1, o_weekday: 1 },
-    { m4: 'recog', e_fluency: 1, a_digit2: 1, o_weekday: 1, m2: 'none', m5: 'recog' }]                      // 윤병훈: 지연 회상 하락 (19 → 20 → 17)
+    { m4: 'recog', e_fluency: 1, a_digit2: 1, o_weekday: 1, m2: 'none', m5: 'recog' }]                      // 윤병훈: 지연 회상 하락 (16 → 17 → 14)
 ];
 const FRUITS = CIST.executive.fluency.words.filter(w => w.length >= 2);
 function cistAnswer(it, miss, date) {
@@ -276,7 +280,7 @@ function cistAnswer(it, miss, date) {
     case 'reverse': return miss ? it.word : [...it.word].reverse().join('');
     case 'answers': return miss ? '모르겠다' : `${it.answers[0]} 아인교`;
     case 'fluency': return FRUITS.slice(0, miss ? 11 : 16).join(' ');
-    case 'comp': return '후 알겠습니다';
+    case 'comp': return '다 했어요';
     default: return '';
   }
 }
@@ -288,7 +292,7 @@ function seedCist(p, i, today) {
   return plan.map((miss, n) => {
     const date = dates[n];
     const modes = { ...DEFAULT_CIST_MODES, ...(i === 8 && n > 0 ? { visuospatial: 'b' } : {}) };
-    const P = cistPlan({ date, modes, prevCount: n, title: p.info.call.title, place: '집', address: p.address });
+    const P = cistPlan({ date, modes, prevCount: n, title: p.info.call.title, name: p.name, place: '집', address: p.address });
     const recallSaid = P.items.filter(it => it.type === 'recall' && !miss[it.id]).map(it => it.word);
     const items = P.items.map(it => {
       if (it.status === 'omitted') return it;

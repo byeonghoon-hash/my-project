@@ -12,15 +12,15 @@ import {
   riskOf, aiSummary, recommendAction, filterPeople, completion7, refreshZ, isCallDay, spo2Threshold,
   primaryContact, validPhone, autoChecklist, trendAll, TREND_METRICS, METRIC, trendCsv, trendSentence,
   personEvents, journalDraft, daysBetween, visitChecks, visitStart, visitEnd, minToTime, VISIT_TYPES,
-  ageFrom, findDuplicates, insideBoundary, cistStatus, cistScore, cistChange, cistSessionsOf, confirmedCist, syncCistAlerts, cistOps, cistModeNotes, cistDue,
-  fmtDate, fmtMD, fmtMDW, fmtStamp, fmtDur, fmtNum, fmtUnit, timelineRange, layoutLabels, completionDelta
+  ageFrom, findDuplicates, insideBoundary, cistStatus, cistScore, cistChange, cistSessionsOf, confirmedCist, syncCistAlerts, cistOps, cistModeNotes, cistDue, cistReferralCut,
+  fmtDate, fmtMD, fmtMDW, fmtYMDW, fmtStamp, fmtDur, fmtNum, fmtUnit, timelineRange, layoutLabels, completionDelta
 } from './metrics.js';
 import { getNightVitals, importRing, recomputeRing, deleteRingImport } from './vitals.js';
 import { startRing, runCall, nextItem, stopCall, prepareCall, summarizeCall, getHealth, fetchVoice } from './call.js';
 import {
   scorePct, scoreItem, orientationParts, countAnimals, SELF_QUESTIONS, checkSummary, AI_CONSENT_TEXT, SCRIPT,
   DEFAULT_BANK, normalizeBank, planForDate, DOMAINS, ORIENT_PART, ATTENTION_TYPE, LANGUAGE_TYPE,
-  CIST, CIST_DOMAINS, FIDELITY_LABEL, DEFAULT_CIST_MODES, normalizeModes, modeAvailable, modeOption, cistPlan, rescoreCist
+  CIST, CIST_DOMAINS, CIST_DOMAIN_MAX, CIST_ITEM_NAMES, FIDELITY_LABEL, DEFAULT_CIST_MODES, normalizeModes, modeAvailable, modeOption, cistPlan, rescoreCist
 } from './items.js';
 import ungchon from './ungchon.js';
 import { icon } from './icons.js';
@@ -473,7 +473,7 @@ async function inCall(p, prep) {
   const cst = cistStatus(p, d0, todayStr());
   const cist = cst.isDueToday ? cistPlan({
     date: todayStr(), modes: d0.cistModes, prevCount: cistSessionsOf(d0, p.id).length,
-    title: p.info?.call?.title || '', place: p.info?.call?.place || '집', address: p.address
+    title: p.info?.call?.title || '', name: p.name, place: p.info?.call?.place || '집', address: p.address
   }) : null;
   app.innerHTML = `
     <div class="phone">
@@ -1950,7 +1950,7 @@ function cistTab(p) {
       ${all.length ? `<div class="table-wrap" style="margin-top:var(--s4)"><table class="table compact rtable">
         <thead><tr><th>회차</th><th>시행일</th><th class="n">원형 유지</th><th class="n">30점 환산</th><th>상태</th><th>방식</th></tr></thead>
         <tbody>${all.map(row).join('')}</tbody></table></div>` : empty('기록 없음', 'list')}
-      <p class="muted small" style="margin-top:var(--s3)">원형 유지 = 원검사와 같은 문항만 · 영역 비교는 방식이 같은 회차끼리 · 점수 기준선(정상·이상)은 쓰지 않음</p>
+      <p class="muted small" style="margin-top:var(--s3)">원형 유지 = 검사지와 같은 방식으로 시행한 문항만 (시간 지남력 · 숫자 · 거꾸로 말하기 · 언어추론 · 기억회상/재인 · 유창성) · 영역 비교는 방식이 같은 회차끼리 · 전화형 점수에는 의뢰 점수를 적용하지 않음</p>
     </section>`;
 }
 function cistDetail(p, x, prev) {
@@ -1971,30 +1971,53 @@ function cistDetail(p, x, prev) {
     if (it.type === 'fluency') return `<div class="chips">${(it.found || []).map(w => `<span class="chip chip-low">${esc(w)}</span>`).join('')}</div>`;
     if (it.type === 'draw') return x.drawingId ? `${btn('그림 보기', `data-act="cistImg" data-s="${x.id}"`)}<div id="img-${x.id}"></div>` : '<span class="muted small">그림 없음</span>';
     if (it.type === 'comp' || it.type === 'place') return call?.audioId && it.startMs != null ? `${btn(`${icon('play', 16)}녹음 듣기`, `data-act="cistPlay" data-s="${x.id}" data-i="${k}"`)}<div id="pl-${x.id}-${k}"></div>` : '<span class="muted small">녹음 없음</span>';
-    if (it.type === 'recall' && it.recog) return `<span class="muted small">보기: ${esc(it.recog.q)} → "${esc(it.recog.response || '')}"</span>`;
+    if (it.type === 'recall' && it.recog) return `<span class="muted small">보기: ${esc(it.recog.options.join(' · '))}${it.recog.note ? ` · ${esc(it.recog.note)}` : ''}</span>`;
     return '';
   };
   const expect = it => esc(it.type === 'recall' ? it.word : it.type === 'digits' ? it.digits : it.type === 'reverse' ? [...it.word].reverse().join('') : it.type === 'time' ? { year: '연도', month: '월', day: '일', weekday: '요일' }[it.part] + ' (통화 날짜)'
     : it.type === 'answers' ? it.answers.join(' · ') : it.type === 'fluency' ? `${it.cut.two}개 이상 2점 · ${it.cut.one}개 이상 1점` : it.type === 'place' ? (it.mode === 'a' ? (it.home || []).slice(0, 4).join(' · ') : (it.areas || []).join(' · ')) : '');
-  const domains = CIST_DOMAINS.map(([k, label]) => {
-    const b = sc.byDomain[k], c = ch?.byDomain[k];
-    return `<div class="stat"><small>${label}</small><b>${b ? `${b.score}<small>/ ${b.max}</small>` : '<small>미시행</small>'}${c?.modeDiff ? ' <small>방식 다름</small>' : c ? ` <small>${diffText(c.diff)}</small>` : ''}</b></div>`;
-  }).join('');
-  const items = CIST_DOMAINS.map(([dk, label]) => {
-    const its = x.items.map((it, k) => [it, k]).filter(([it]) => it.domain === dk);
-    if (!its.length) return '';
-    return `<tr class="group-row"><td colspan="5">${label}</td></tr>` + its.map(([it, k]) => `
-      <tr><td class="first">${esc(it.type === 'recall' ? `지연 회상 · 문장 ${it.form}` : it.label || it.question || it.note || '')} <span class="chip chip-neutral">${FIDELITY_LABEL[it.fidelity] || ''}</span></td>
-        <td data-label="대답">${it.answer ? `"${esc(it.answer)}"` : '<span class="muted">대답 없음</span>'}</td>
+  // 결과요약표 (검사지 양식): 영역별 점수 / 이번에 시행한 만점, 아래 줄은 검사지 만점
+  const summary = `
+    <div class="table-wrap"><table class="table compact sumtable" aria-label="결과요약표">
+      <thead><tr><th>인지영역</th>${CIST_DOMAINS.map(([, l]) => `<th class="n">${l}</th>`).join('')}<th class="n">총점</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">점수</th>${CIST_DOMAINS.map(([k]) => { const b = sc.byDomain[k], c = ch?.byDomain[k];
+          return `<td class="n">${b ? `<b class="num">${b.score}</b> / ${b.max}` : '<span class="muted">미시행</span>'}${c?.modeDiff ? '<div class="muted small">방식 다름</div>' : c ? `<div class="small">${diffText(c.diff)}</div>` : ''}</td>`; }).join('')}
+          <td class="n"><b class="num">${sc.total.score}</b> / ${sc.total.max}</td></tr>
+        <tr class="muted small"><th scope="row">검사지 만점</th>${CIST_DOMAINS.map(([k]) => `<td class="n">/${CIST_DOMAIN_MAX[k]}</td>`).join('')}<td class="n">/30</td></tr>
+      </tbody></table></div>`;
+  const age = p.age, cut = cistReferralCut(age, p.education, p.canRead !== '어려움');
+  const head = `<p class="small cist-head">검사일자 ${fmtYMDW(x.date)} · 검사 장소 대상자 집 (전화) · 검사자 ${esc(x.confirmedBy || p.manager || '-')} · 문장 ${x.form}
+    · 만 ${age ?? '-'}세 · 학력 ${p.education ?? '-'}년${p.canRead === '어려움' ? ' (비문해)' : ''}</p>`;
+  const refLine = `<p class="muted small">원형 유지 ${sc.original.score}/${sc.original.max} · 30점 환산 ${fmtNum(sc.scaled30, 1)}점${cut != null ? ` · 참고: 대면 검사 2단계 검사 의뢰 점수 ${cut}점 미만 (전화형 점수에는 적용하지 않음)` : ''}</p>`;
+  // 문항 기록 (검사지 번호 순서). 기억회상은 낱말마다 회상 2점 / 재인 1점
+  const groupOf = it => (it.no ? it.no.split('-')[0] : it.domain);
+  const groupName = g => (CIST_ITEM_NAMES[g] ? `${g}. ${CIST_ITEM_NAMES[g]}` : CIST_DOMAINS.find(([k]) => k === g)?.[1] || g);
+  const recalled = it => it.type === 'recall' && rescoreCist({ ...it, recog: null, status: 'auto' }).score === 2;
+  let lastGroup = null;
+  const items = x.items.map((it, k) => {
+    const g = groupOf(it);
+    const recallHead = it.type === 'recall' && g !== lastGroup ? ` · 대답 "${esc(it.answer || '')}"` : '';
+    const headRow = g !== lastGroup ? `<tr class="group-row"><td colspan="5">${esc(groupName(g))}${recallHead}</td></tr>` : '';
+    lastGroup = g;
+    const ans = it.type === 'recall' ? (recalled(it) ? '회상함' : it.recog ? `재인 "${esc(it.recog.response || '')}"` : '회상 못 함')
+      : it.answer ? `"${esc(it.answer)}"` : '<span class="muted">대답 없음</span>';
+    return headRow + `
+      <tr><td class="first">${esc(it.no ? `${it.no} ${it.label || ''}` : it.label || it.question || it.note || '')} <span class="chip chip-neutral">${FIDELITY_LABEL[it.fidelity] || ''}</span></td>
+        <td data-label="대답">${ans}</td>
         <td data-label="정답 기준" class="muted small">${expect(it)}</td>
         <td data-label="점수">${scoreSel(it, k)}</td>
-        <td data-label="상태"><span class="chip chip-${STATUS_CIST[it.status][1]}">${STATUS_CIST[it.status][0]}</span>${it.note ? ` <span class="muted small">${esc(it.note)}</span>` : ''}<div class="small">${extra(it, k)}</div></td></tr>`).join('');
+        <td data-label="상태"><span class="chip chip-${STATUS_CIST[it.status][1]}">${STATUS_CIST[it.status][0]}</span>${it.note ? ` <span class="muted small">${esc(it.note)}</span>` : ''}<div class="small">${extra(it, k)}</div></td></tr>`;
   }).join('');
   const pending = sc.pending;
   return `
     <div class="cist-box">
-      <div class="stats">${domains}</div>
-      <p class="muted small">원형 유지 ${sc.original.score}/${sc.original.max} · 전체 ${sc.total.score}/${sc.total.max} · 30점 환산 ${fmtNum(sc.scaled30, 1)}점${x.register?.length ? ` · 문장 따라 말하기(채점 안 함): ${x.register.map(t => `"${esc(t || '대답 없음')}"`).join(' / ')}` : ''}</p>
+      ${head}
+      <h3>결과요약표</h3>
+      ${summary}
+      ${refLine}
+      ${x.register?.length ? `<p class="muted small">3. 기억등록 (점수 없음): ${x.register.map((t, n) => `${n + 1}차 "${esc(t || '대답 없음')}"`).join(' · ')}</p>` : ''}
+      <h3>문항 기록</h3>
       <div class="table-wrap"><table class="table compact rtable"><thead><tr><th>문항</th><th>대답</th><th>정답 기준</th><th>점수</th><th>상태</th></tr></thead><tbody>${items}</tbody></table></div>
       <div class="row" style="margin-top:var(--s4)">
         ${x.status === 'draft' ? btn('채점 확정', `data-act="cistConfirm" data-s="${x.id}" ${pending ? 'disabled' : ''}`, 'primary', '') + (pending ? ` <span class="muted small">확인 필요 ${pending}개 남음</span>` : '')
@@ -2273,8 +2296,9 @@ function infoTab(p, form = false) {
 `);
 
   const tests = i.tests || [];
-  const testSec = sec('tests', '⑥ 대면 인지검사 기록', tests.length ? `<table class="table compact rtable"><thead><tr><th>검사일</th><th>종류</th><th>점수</th><th>검사자</th></tr></thead><tbody>${tests.map(t => `
-      <tr><td class="first"><b>${fmtDate(t.date)}</b></td><td data-label="종류">${esc(TEST_KIND[t.kind] || t.kind)}</td><td data-label="점수">${esc(t.score)}</td><td data-label="검사자">${esc(t.examiner || '')}</td></tr>`).join('')}</tbody></table>` : empty('기록 없음'), `
+  const testSec = sec('tests', '⑥ 대면 인지검사 기록', tests.length ? `<table class="table compact rtable"><thead><tr><th>검사일</th><th>종류</th><th>점수</th><th>2단계 검사 의뢰 점수</th><th>검사자</th></tr></thead><tbody>${tests.map(t => { const cut = t.kind === 'CIST' ? cistReferralCut(p.age, p.education, p.canRead !== '어려움') : null; return `
+      <tr><td class="first"><b>${fmtDate(t.date)}</b></td><td data-label="종류">${esc(TEST_KIND[t.kind] || t.kind)}</td><td data-label="점수">${esc(t.score)}</td>
+        <td data-label="의뢰 점수">${cut == null ? '<span class="muted small">-</span>' : `${cut}점 미만${+t.score < cut ? ' <span class="chip chip-mid">의뢰 점수 미만</span>' : ''}`}</td><td data-label="검사자">${esc(t.examiner || '')}</td></tr>`; }).join('')}</tbody></table>` : empty('기록 없음'), `
       <h3>대면 인지검사 <span class="muted small">종류를 비우면 삭제</span></h3>
       ${[...tests, {}].map(t => `<div class="rowform" data-row="test">
         <select name="t-kind"><option value="">종류</option>${Object.entries(TEST_KIND).map(([v, l]) => `<option value="${v}" ${t.kind === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
@@ -2762,7 +2786,7 @@ function cistModesTab(d, me) {
       <p class="chk warn-box">검사 도중 방식을 바꾸면 이전 회차와 점수를 비교할 수 없게 됩니다.</p>
       <label class="field">검사 주기<select name="weeks">${[2, 4, 8].map(w => `<option value="${w}" ${(d.settings.cistIntervalWeeks || 4) === w ? 'selected' : ''}>${w}주마다${w === 4 ? ' ★' : ''}</option>`).join('')}</select>
         <span class="help">등록 직후 1회, 그 뒤 주기마다 · 검사일에는 매일 문항 대신 시행 (상한 ${Math.round((d.settings.cistMaxSec || 900) / 60)}분)</span></label>
-      <p class="muted small">고정: 지남력(시간 4문항) · 기억(문장 A/B 회차 교대, 두 번 읽기, 지연 회상·재인) · 숫자 따라 말하기 · 언어 추론 · 이름 대기 3문항 ${fid('original')}</p>
+      <p class="muted small">고정 ${fid('original')}: 1 시간 지남력 · 3 기억등록(문장 A/B 회차 교대, 두 번) · 4 숫자 바로 따라 말하기 · 9 언어추론 · 10 기억회상/재인 · 13 유창성(1분) · 고정 ${fid('adapted')}: 11 이름대기(그림 대신 말로 설명)</p>
       ${groups}
     </form>
     <section class="card" style="margin-top:var(--s5)">
