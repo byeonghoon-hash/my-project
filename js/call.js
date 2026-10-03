@@ -246,9 +246,10 @@ export async function runCall(settings, ui, person, prep, bank, cist = null) {
   const turns = [];
   const emergencies = [];
   let endNow = false; // '죽고 싶' 같은 표현: 안내 뒤 끝인사
-  const say = async (text, { cache = true, slow = false, ai = false, phase = 'item', show } = {}) => {
+  const say = async (text, { cache = true, slow = false, ai = false, phase = 'item', show, visual } = {}) => {
     if (aborted) return;
     ui.question(show ?? text); // show: 화면에 다른 글자 (숫자·외울 문장은 화면에 보이지 않게)
+    ui.visual?.(visual ?? null); // visual: 대본 대신 보여 줄 칸 (카드·모양·보기). 없으면 지운다
     turns.push({ role: 'app', text, ai, phase });
     await speak(text, { cache, slow });
   };
@@ -313,7 +314,7 @@ export async function runCall(settings, ui, person, prep, bank, cist = null) {
     const NUM = ['공', '일', '이', '삼', '사', '오', '육', '칠', '팔', '구'];
     const stamp = (it, r) => Object.assign(it, { answer: r.answer, latencySec: r.latencySec, repeatAsked: r.repeatAsked, startMs: r.startMs, endMs: r.endMs, asked: true });
     const askItem = async (it, limit, show) => {
-      const r = await ask(it.question, { key: 'cist', maxSec: 20 }, 'item', show ? { show } : {}, { noOff: true, ...limit });
+      const r = await ask(it.question, { key: 'cist', maxSec: 20 }, 'item', { show: show ?? it.show, visual: it.visual }, { noOff: true, ...limit });
       stamp(it, r);
       if (!r.answer && !r.emergency) await say(T.timeout); // 제한 시간 안에 대답이 없으면 0점 '무응답'
       return r;
@@ -328,7 +329,7 @@ export async function runCall(settings, ui, person, prep, bank, cist = null) {
     const hello = await ask(fillTitle(T.greeting, title), free, 'greeting');
     const declined = !endNow && isDecline(hello.answer);
     if (declined) { await say(SCRIPT.declined, { phase: 'goodbye' }); endNow = true; }
-    else await say(fillTitle(T.intro, title));
+    else await say(fillTitle(T.intro, title), { show: CIST.screen.intro });
     for (const step of declined ? [] : cist.steps) {
       if (aborted || endNow || timeUp()) break;
       const it = step.id ? byId(step.id) : null;
@@ -343,14 +344,14 @@ export async function runCall(settings, ui, person, prep, bank, cist = null) {
       } else if (step.kind === 'register') {
         // 정확히 두 번 읽는다. 따라 말하기는 채점하지 않는다.
         for (let n = 0; n < step.times && !aborted && !endNow; n++) {
-          await say(step.lines[n]);
+          await say(step.lines[n], { show: step.show });
           await sayParts(step.parts);
           const a = await hear(free, false);
           if (a.text) turns.push({ role: 'elder', text: a.text, phase: 'item' });
           register.push(a.text);
           await checkEmergency(a.text, 'item');
         }
-        await say(step.remember);
+        await say(step.remember, { show: step.showRemember });
         regEnd = performance.now();
       } else if (step.kind === 'digits') {
         // 숫자는 1초 간격으로 한 번만. 다시 불러 달라고 하시면 정해진 안내만 한다.
@@ -370,7 +371,7 @@ export async function runCall(settings, ui, person, prep, bank, cist = null) {
         const pad = step.figure ? ui.draw?.(step.figure) : null;
         let res = null;
         if (pad) {
-          await say(it.question);
+          await say(it.question, { show: it.show });
           const startMs = Math.round(performance.now() - t0);
           const a = await hear({ key: 'draw', maxSec: it.maxSec, stopOn: /다했|다그렸|끝났/ }, false);
           res = await pad.finish();
@@ -390,7 +391,7 @@ export async function runCall(settings, ui, person, prep, bank, cist = null) {
         stamp(b, { ...a });
       } else if (step.kind === 'fluency') {
         // 중간에 쉬어도 끊지 않고 정한 시간(1분 또는 30초)을 다 기다린다
-        const r = await ask(it.question, { key: 'fluency', maxSec: it.sec }, 'item', {}, { rereads: 0, noOff: true });
+        const r = await ask(it.question, { key: 'fluency', maxSec: it.sec }, 'item', { show: it.show }, { rereads: 0, noOff: true });
         stamp(it, r);
         await say(step.stop);
       } else if (step.kind === 'choice') {
@@ -423,7 +424,7 @@ export async function runCall(settings, ui, person, prep, bank, cist = null) {
           if (!k.asked || scoreCist(k).score === 2 || timeUp() || endNow || aborted) continue;
           const early = recogInEarlier(k, said);
           if (early) { k.recog = { ...k.recogSpec, response: k.recogSpec.answer, note: `앞 재인 대답에서 말함: "${early}"` }; continue; }
-          const r = await ask(k.recogSpec.q, { key: 'cist', maxSec: 20 }, 'item', {}, { rereads, noOff: true });
+          const r = await ask(k.recogSpec.q, { key: 'cist', maxSec: 20 }, 'item', { show: k.recogSpec.show, visual: k.recogSpec.visual }, { rereads, noOff: true });
           k.recog = { ...k.recogSpec, response: r.answer, startMs: r.startMs, endMs: r.endMs };
           said.push(r.answer);
         }

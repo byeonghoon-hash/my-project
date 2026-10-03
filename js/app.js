@@ -438,6 +438,24 @@ const dotGrid = () => Array.from({ length: 25 }, (_, i) => `<circle cx="${i % 5}
 const figureSvg = fig => (fig?.src ? `<img src="${esc(fig.src)}" alt="따라 그릴 그림">`
   : `<svg viewBox="-0.5 -0.5 5 5" class="figure" role="img" aria-label="따라 그릴 그림"><g class="dots">${dotGrid()}</g><polyline points="${FIGURE_PTS.map(p => p.join(',')).join(' ')}" /></svg>`);
 
+// 대본 대신 보여 주는 칸 (검사지 그림을 참고해 만든 것): 숫자·계절 카드 줄(그림4) · 모양 줄(그림2) · 재인 보기
+const SHAPE = {
+  square: '<rect x="3" y="3" width="18" height="18" />',
+  circle: '<circle cx="12" cy="12" r="9.5" />',
+  triangle: '<polygon points="12,2.5 22,21 2,21" />'
+};
+const SHAPE_NAME = { square: '네모', circle: '동그라미', triangle: '세모' };
+function stimHtml(v) {
+  if (v.type === 'cards') return `<ol class="stim-cards" aria-label="카드">${v.cards.map(c => c == null
+    ? '<li class="blank" aria-label="빈 카드"><span>?</span><i aria-hidden="true">▲</i></li>'
+    : `<li><span>${esc(c)}</span></li>`).join('')}</ol>`;
+  if (v.type === 'shapes') return `<ol class="stim-shapes" aria-label="모양 순서">${v.shapes.map(sh => sh == null
+    ? '<li class="blank" aria-label="빈칸"><span>( )</span></li>'
+    : `<li aria-label="${SHAPE_NAME[sh]}"><svg viewBox="0 0 24 24" aria-hidden="true">${SHAPE[sh]}</svg></li>`).join('')}</ol>`;
+  if (v.type === 'options') return `<ul class="stim-options" aria-label="보기">${v.options.map(o => `<li>${esc(o)}</li>`).join('')}</ul>`;
+  return '';
+}
+
 // 그림판: 점 배경 위에 손가락·마우스로 그린다. finish() → { blob(PNG), strokes }
 function drawPad(fig) {
   const host = document.getElementById('draw');
@@ -479,6 +497,7 @@ async function inCall(p, prep) {
     <div class="phone">
       <div class="call-top"><span class="live">통화 중</span><span class="timer" id="time">00:00</span></div>
       <div class="question" id="q" aria-live="polite">연결 중</div>
+      <div class="stim" id="stim" hidden></div>
       <div class="draw" id="draw" hidden></div>
       <div class="voice" id="lv" aria-hidden="true">${'<span></span>'.repeat(7)}</div>
       <button type="button" class="big-btn ghost" data-act="next">다음 ${icon('next', 20)}</button>
@@ -501,7 +520,8 @@ async function inCall(p, prep) {
       });
       save();
     },
-    draw: drawPad
+    draw: drawPad,
+    visual: v => { const el = $('stim'); if (!el) return; el.hidden = !v; el.innerHTML = v ? stimHtml(v) : ''; }
   };
   actions.next = nextItem;
   cleanup = stopCall;

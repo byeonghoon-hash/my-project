@@ -597,9 +597,9 @@ export function cistPlan({ date, modes, prevCount = 0, title = '', name = '', pl
       ...(M.place === 'a' ? { home } : { areas: placeAreas(address) }) }, { kind: 'ask', id: 'o_place', reread: true });
   }
   // 3 기억등록: 정확히 두 번 ('/'마다 0.4초), 채점 안 함
-  steps.push({ kind: 'register', form, parts: F.speak, lines: [CIST.memory.intro, CIST.memory.again], remember: CIST.memory.remember, times: 2 });
+  steps.push({ kind: 'register', form, parts: F.speak, lines: [CIST.memory.intro, CIST.memory.again], remember: CIST.memory.remember, times: 2, show: CIST.screen.register, showRemember: CIST.screen.remember });
   // 4 숫자 바로 따라 말하기: 한 번만, 1초 간격 · 5 거꾸로 말하기: 이름으로 연습 뒤 한 번 더 불러 줄 수 있음
-  steps.push({ kind: 'say', text: CIST.attention.digits.intro });
+  steps.push({ kind: 'say', text: CIST.attention.digits.intro, show: CIST.screen.digits });
   CIST.attention.digits.items.forEach((d, n) => add({ id: d.id, no: `4-(${n + 1})`, label: [...d.digits].join('-'), domain: 'attention', type: 'digits', digits: d.digits, fidelity: 'original', maxScore: 1, question: [...d.digits].join(', ') },
     { kind: 'digits', id: d.id, once: CIST.attention.digits.once }));
   const word = reverseWordFor(M.reverseWord, prevCount);
@@ -612,7 +612,7 @@ export function cistPlan({ date, modes, prevCount = 0, title = '', name = '', pl
   const voiceVisuo = () => CIST.visuospatial.b.map(v => ({ id: v.id, no: '6', label: v.id === 'v_clock' ? '시계 방향' : '방위', domain: 'visuospatial', type: 'answers', answers: v.answers, fidelity: 'replaced', maxScore: 1, question: v.q }));
   if (M.visuospatial === 'c') omit('v_draw', '6', 'visuospatial', 2, '도형모사 미시행');
   else if (M.visuospatial === 'b') for (const v of voiceVisuo()) add(v, { kind: 'ask', id: v.id, reread: true });
-  else add({ id: 'v_draw', no: '6', label: '도형모사', domain: 'visuospatial', type: 'draw', fidelity: 'adapted', maxScore: 2, question: CIST.visuospatial.a.q, maxSec: CIST.visuospatial.a.maxSec },
+  else add({ id: 'v_draw', no: '6', label: '도형모사', domain: 'visuospatial', type: 'draw', fidelity: 'adapted', maxScore: 2, question: CIST.visuospatial.a.q, show: CIST.screen.draw, maxSec: CIST.visuospatial.a.maxSec },
     { kind: 'draw', id: 'v_draw', figure: CIST.visuospatial.a.figure, fallback: voiceVisuo() });
   // 7·8 시각추론 (각 1점)
   const VR = CIST.executive.visual;
@@ -620,29 +620,35 @@ export function cistPlan({ date, modes, prevCount = 0, title = '', name = '', pl
   else if (M.visualReasoning === 'b') VR.b.items.forEach((v, n) => add({ id: `e_visual${n + 1}`, no: String(7 + n), label: `시각추론${n + 1}`, domain: 'executive', type: 'choice', options: v.options, image: v.image, correct: v.correct, fidelity: 'adapted', maxScore: 1, question: v.q },
     { kind: 'choice', id: `e_visual${n + 1}` }));
   else {
-    for (const v of VR.c.items) add({ id: v.id, no: '7', label: v.label, domain: 'executive', type: 'answers', answers: v.answers, fidelity: 'adapted', maxScore: 1, question: v.q }, { kind: 'ask', id: v.id, reread: true });
+    for (const v of VR.c.items) add({ id: v.id, no: '7', label: v.label, domain: 'executive', type: 'answers', answers: v.answers, fidelity: 'adapted', maxScore: 1, question: v.q,
+      show: v.show, visual: { type: 'shapes', shapes: v.shapes } }, { kind: 'ask', id: v.id, reread: true });
     omit(VR.c.omit.id, '8', 'executive', VR.c.omit.maxScore, VR.c.omit.note);
   }
   // 9 언어추론 (2점, 비문해 대상자용 읽어 주기 지시문)
   const V = CIST.executive.verbal;
-  for (const v of V.items) add({ id: v.id, no: '9', label: v.label, domain: 'executive', type: 'answers', answers: v.answers, fidelity: 'original', maxScore: 1, question: V.q.join(' ') });
+  // 화면: 대본 대신 검사지 그림4처럼 숫자·계절 카드 줄 (빈 카드는 '?')
+  for (const v of V.items) add({ id: v.id, no: '9', label: v.label, domain: 'executive', type: 'answers', answers: v.answers, fidelity: 'original', maxScore: 1, question: V.q.join(' '),
+    show: V.show, visual: { type: 'cards', cards: V.cards } });
   steps.push({ kind: 'verbal', ids: V.items.map(v => v.id), lines: V.q });
   // 10 기억회상(낱말마다 2점) → 더 생각나는 것 확인 → 못 떠올린 낱말만 재인(1점)
   for (const k of F.keys) add({ id: k.id, no: '10', label: k.word, domain: 'memory', type: 'recall', word: k.word, accept: k.accept, form, fidelity: 'original', maxScore: 2, question: CIST.memory.recall,
-    recog: null, recogSpec: F.recognition.find(r => r.key === k.id) });
+    recog: null, recogSpec: recogScreen(F.recognition.find(r => r.key === k.id)) });
   steps.push({ kind: 'recall', ids: F.keys.map(k => k.id), q: CIST.memory.recall, more: CIST.memory.more, gapSec: 180, filler: CIST.script.filler });
   steps.push({ kind: 'recognition', ids: F.keys.map(k => k.id) });
   // 11 이름대기 (3점, 그림 대신 말로 설명) · 12 이해력 (1점, 한 번 더 불러 줄 수 있음)
   CIST.language.naming.forEach((v, n) => add({ id: v.id, no: `11-(${n + 1})`, label: v.answers[0], domain: 'language', type: 'answers', answers: v.answers, fidelity: 'adapted', maxScore: 1, question: v.q }, { kind: 'ask', id: v.id, reread: true }));
   const C = CIST.language.comprehension[M.comprehension];
-  add({ id: 'l_comp', no: '12', label: '이해력', domain: 'language', type: 'comp', variant: M.comprehension, words: C.words, date, fidelity: fid('comprehension'), maxScore: 1, question: C.q },
+  add({ id: 'l_comp', no: '12', label: '이해력', domain: 'language', type: 'comp', variant: M.comprehension, words: C.words, date, fidelity: fid('comprehension'), maxScore: 1, question: C.q, show: CIST.screen.comp[M.comprehension] },
     { kind: 'ask', id: 'l_comp', rereads: 1, segments: true });
   // 13 유창성 (2점, 1분 또는 30초)
   const FL = CIST.executive.fluency, cut = FL[M.fluency];
-  add({ id: 'e_fluency', no: '13', label: `유창성 ${cut.timeText}`, domain: 'executive', type: 'fluency', cut: { two: cut.two, one: cut.one }, sec: cut.sec, fidelity: fid('fluency'), maxScore: 2, question: FL.q },
+  add({ id: 'e_fluency', no: '13', label: `유창성 ${cut.timeText}`, domain: 'executive', type: 'fluency', cut: { two: cut.two, one: cut.one }, sec: cut.sec, fidelity: fid('fluency'), maxScore: 2, question: FL.q, show: FL.show },
     { kind: 'fluency', id: 'e_fluency', stop: FL.stop });
   return { form, modes: M, items, steps };
 }
+
+// 재인 화면: 질문 앞부분만 글자로, 보기 세 개는 따로 칸으로 ('… 누구일까요? 영수, 민수, 진수?' → '… 누구일까요?' + [영수][민수][진수])
+const recogScreen = r => (r ? { ...r, show: r.q.slice(0, r.q.indexOf('?') + 1) || r.q, visual: { type: 'options', options: r.options } } : r);
 
 // 재인: 앞 재인 질문에 대답하면서 다른 핵심 낱말을 말했으면 그것도 재인으로 1점 (매뉴얼)
 export const recogInEarlier = (item, earlier) => (earlier || []).find(t => item.accept.some(w => nospace(korToDigits(t)).includes(nospace(korToDigits(w))))) ?? null;

@@ -804,3 +804,22 @@ a.stat:hover { background: var(--line); }
 .sumtable th[scope=row] { text-align: left; white-space: nowrap; }
 .sumtable td { white-space: nowrap; }
 .cist-head { color: var(--muted); }
+
+/* 어르신 통화 화면: 대본 대신 보여 주는 칸 (카드·모양·보기). 카드는 검사지 그림4처럼 6장씩 두 줄 */
+.stim { width: 100%; background: var(--panel); color: var(--ink); border-radius: var(--r-xl); padding: var(--s5) var(--s3); }
+.stim ol, .stim ul { list-style: none; margin: 0; padding: 0; }
+.stim .stim-cards, .stim .stim-shapes { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--s2); }
+.stim .stim-cards { row-gap: 36px; padding-bottom: 26px; }
+.stim-cards li { position: relative; height: 76px; display: grid; place-items: center; border: 3px solid var(--ink); border-radius: var(--r-md); font-size: 24px; font-weight: 700; letter-spacing: -1px; }
+.stim-cards li.blank { border-style: dashed; color: var(--muted); }
+.stim-cards li.blank i { position: absolute; bottom: -28px; font-style: normal; font-size: 20px; color: var(--ink); }
+.stim-shapes li { aspect-ratio: 1; display: grid; place-items: center; }
+.stim-shapes svg { width: 80%; height: 80%; fill: var(--ink); }
+.stim-shapes li.blank span { font-size: 28px; font-weight: 700; letter-spacing: 2px; }
+.stim .stim-options { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--s3); }
+.stim-options li { min-width: 100px; min-height: 64px; display: grid; place-items: center; border: 3px solid var(--ink); border-radius: var(--r-md); font-size: 28px; font-weight: 700; padding: 0 var(--s4); }
+@media (max-width: 400px) {
+  .stim { padding-inline: var(--s1); }
+  .stim .stim-cards, .stim .stim-shapes { gap: 4px; row-gap: 36px; }
+  .stim-cards li { border-width: 2px; letter-spacing: -2px; }
+}
