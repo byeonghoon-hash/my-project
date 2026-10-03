@@ -36,6 +36,8 @@ js/app.js         라우팅과 화면 그리기, 모달(modal·confirmBox)과 �
 js/icons.js       선 아이콘 SVG 모음 (16/18/20px)
 js/store.js       localStorage 읽기/쓰기, IndexedDB 녹음 저장·삭제, 회원 계정(비밀번호 해시·로그인 상태)
 js/items.js       문항 뱅크, 오늘의 문항 선택(로테이션), 자동 채점, 통화 고정 대본(SCRIPT)·응급 표현 목록·AI 응답 검사
+                  · 정기 인지검사: cistPlan(회차 문항·진행 순서) · scoreCist · korToDigits · fluencyWords · 방식 고르기
+js/cist_items.json 정기 인지검사(전화형) 문항 원문·대체 문항·방식 선택지 (도형·그림은 자리표시만)
 js/call.js        통화: speak()(AI 음성 또는 기본 음성) → 녹음 + 받아쓰기 → 다음 문항, AI 인사·안부 대화·통화 후 정리 요청
 js/metrics.js     지표, 개인 기저선, z-score, 알림 단계, riskOf, aiSummary, 검색 필터 (순수 함수만, DOM 사용 금지)
 js/vitals.js      생체신호 연계 지점: 모의/실측 선택, 링 CSV 읽기·하룻밤 요약 (아래 '웨어러블 연계')
@@ -116,6 +118,16 @@ I-ME 로고와 큰 버튼 두 개: **[대상자 화면]** **[관리자 화면]**
 - 대본 문장 편집({호칭}), 통화 미리보기(날짜별 전체 순서) · 앞으로 7일 문항표, 내보내기·가져오기(JSON, 다른 컴퓨터와 공유), 기본값으로 되돌리기, 최종 수정자
 - 시드를 다시 만들어도 문항 뱅크와 직접 한 통화(`source: 'real'`)·응급 표현 알림은 남는다.
 
+## 정기 인지검사(전화형) — 화면에 'CIST'라고 쓰지 않는다
+
+- 매일 통화와 별개. 등록 직후 1회, 그 뒤 `settings.cistIntervalWeeks`(2/4/8주, 기본 4)마다. 검사일(`cistDue`: 기본 정보 ③ '다음 정기 검사일' → 없으면 마지막 회차 + 주기)에는 매일 문항 대신 이것을 한다. 상한 `cistMaxSec` 900초. AI 대화는 끝에 한 번만.
+- 순서(`cistPlan`): 인사 → 지남력(시간 4 + 장소) → 기억 등록(문장 A/B 회차 교대, 정확히 두 번, '/'마다 0.4초, 채점 안 함) → 주의력(숫자 6-9-7-3 · 5-7-2-8-4 한 번만 1초 간격, 다시 요청하면 정해진 안내만 · 단어 거꾸로) → 시공간 → 집행(언어 추론 2점, 다시 읽기 1번 → 유창성 → 시각 추론) → 언어(이름 대기 3 · 이해력) → 지연 회상(등록 3분 뒤, 모자라면 잡담 한 문항) → 재인(못 떠올린 낱말만) → 끝인사 → 안부 한 번.
+- 방식(문항 관리 '정기 인지검사 방식' 탭): 영역마다 라디오, ★ 기본값, 원형 유지·방식만 바꿈·대체·미시행 표시. 대체 문항이 비면 고를 수 없다. 바꾸면 다음 검사부터, 변경 기록을 남긴다. 회차마다 방식과 문항을 함께 저장하므로 지난 회차 점수는 그대로.
+- 시공간 '화면 그리기'는 그림판(점 배경, 자리표시 도형)에 그리게 하고 PNG를 IndexedDB에 저장, 담당자가 0~2점. 그림판이 없거나 입력이 없으면 음성 대체로 자동 전환(`autoSwitch`).
+- 제한 시간 안에 대답이 없으면 0점 '무응답'. 장소 불일치·그림·이해력·목록에 없는 유창성 낱말·음력 대답은 '확인 필요'. [채점 확정]은 확인 필요가 남아 있으면 못 누른다. 확정 후 수정은 `edits`에 남는다.
+- 점수는 `cistScore`(total · original(원형 문항만) · byDomain(null=미시행) · scaled30('30점 환산') · pending)와 `cistChange`(확정 회차끼리, 원형 유지 점수, 방식이 다른 영역은 '방식 다름')만 쓴다. 초안은 어디에도 반영하지 않는다. 절단점(정상·이상)은 쓰지 않는다.
+- 반영: riskOf(같은 방식에서 `cistDropAlert`(3)점 이상 하락 → 주의 '정기검사 원형 유지 n점 하락', 두 번 연속 하락 합 4점 이상 → 높음 '정기검사 연속 하락') · aiSummary 한 줄 · 변화 추이 '정기검사' 묶음(기저선 = 처음 확정 2회 평균) · 일지 초안 O(최근 확정 결과)·A(방식 변경·미시행) · 알림 '채점 확인 대기'(확정하면 닫힘)·'정기검사 지연'(예정일 +7일) · 전체 현황(시간표 마름모, '채점 확인' 칩, 미조치 알림의 '채점 대기', 운영 지표 '정기검사 이행률'(±3일, 목표 90%)·'채점 확정까지 평균 일수') · 대상자 목록 '정기검사' 열·필터 · 상세 '최근 정기검사' 칸·'정기 인지검사' 탭(회차 표, 채점, 그림, 녹음, 원형 점수 + 대면 검사 그래프, 방식 바뀐 회차 점선).
+
 ## 웨어러블 연계 (js/vitals.js)
 
 앱의 나머지 부분은 **이 파일의 `getNightVitals` 하나만** 부른다. 대상자 기본 정보 ⑤의 데이터 출처가 '기기'면 링 실측(`ringNights`), '모의'면 seed가 만든 `vitals`를 돌려준다(`pickVitals`). 시드는 '기기'인 사람의 모의 생체신호를 만들지 않는다.
@@ -154,7 +166,7 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 ```js
 {
   settings: {...},                       // 아래 판정 파라미터
-  seedVersion: 5,                        // 올리면 시연 데이터를 새로 만든다 (accounts·settings·링 데이터는 유지)
+  seedVersion: 6,                        // 올리면 시연 데이터를 새로 만든다 (accounts·settings·링 데이터는 유지)
   people: [{ id, name, sex, birth, age, phone, phoneType, education, canRead, guardianPhone, preferredTime, enrolledAt,
              active, closed: { reason, date, by } | null,    // 삭제하지 않고 종결 (active=false)
              referral, dementiaCenter: '예'|'아니요'|'모름',
@@ -188,6 +200,11 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
                history: [{ by, at, prev: { date, type, S, O, A, P } }], confirmedBy, confirmedAt, createdAt }],
   accounts: [{ id, username, name, job, org, salt, hash, createdAt }]   // 비밀번호 원문은 저장하지 않는다,
   questionBank: { script, orientation, memory: { register, recall, words }, attention, language, executive, edited } // 문항 관리 (없으면 DEFAULT_BANK)
+  cistModes: { place, reverseWord, visuospatial, fluency, visualReasoning, comprehension },  // 정기 인지검사 방식 (없으면 ★ 기본값)
+  cistModeLog: [{ by, at, key, from, to }],                                                  // 방식·주기 변경 기록
+  cistSessions: [{ id, personId, date, dueDate, callId, audioId, drawingId, form: 'A'|'B', modes, autoSwitch, register,
+                   items: [{ id, domain, type, fidelity, maxScore, score, status: 'auto'|'needs_review'|'reviewed'|'omitted', note, answer, … }],
+                   status: 'draft'|'confirmed', confirmedBy, confirmedAt, edits: [{ itemId, from, to, by, at }] }]
 }
 ```
 
@@ -214,7 +231,10 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
   hearingCalls: 3,         //   최근 5통화 중 3회 이상 → 난청 의심 알림
   maxCallSec: 240,
   visitBufferMin: 20,      // 방문 사이 이동 여유 시간(분)
-  visitDailyLimit: 4       // 방문자 하루 방문 한도
+  visitDailyLimit: 4,      // 방문자 하루 방문 한도
+  cistIntervalWeeks: 4,    // 정기 인지검사 주기 (2/4/8주)
+  cistDropAlert: 3,        // 정기검사 원형 유지 점수 하락 기준 (점)
+  cistMaxSec: 900          // 정기검사 통화 상한 (초)
 }
 ```
 
@@ -351,6 +371,7 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 - 전화번호는 모두 `010-0000-` 가짜, 보호자 이름은 지어낸 것, 의료기관명은 '○○내과의원'. 생년월일·동의·일부 대면 검사(CIST) 기록 포함.
 - 방문 7건(예정 5 · 완료 1 · 취소 1, 시각·유형·방문자 포함), 어르신 요청사항(최근 10일 대화에서 찾은 요청), 대상자마다 확정 돌봄일지 1~3건, 과거 알림 몇 건(PPV·오경보율 계산용).
 - 시연 데이터에는 녹음 파일이 없다 ('녹음 없음').
+- 정기 인지검사: 10명 모두 2~3회(문장 A/B 교대). 윤병훈 최근 회차 지연 회상으로 −3(주의 사유), 이상철 연속 하락(20 → 18 → 15), 이옥분 마지막 회차 초안(확인 필요 2), 최영희 9일 지연, 오금례 2회차부터 시공간 음성 대체. 대면 검사 기록 4명.
 
 ## 완료 기준
 
@@ -361,3 +382,4 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 - selftest에 기본 정보 연결(일시중지 분모 제외, 자동 체크, 개인 SpO2 기준, 전화번호 형식), 대화록-점수 일치(10명), 링 요약·보정·모의/실측 선택, 변화 추이(데이터 부족·SD 최솟값·응답 지연 악화·링 기저선 7밤·CSV BOM), 일지 초안 인용 검증, 지도 좌표(범위·경계·윤병훈 고정값) 검사 포함.
 - selftest에 방문 겹침(이동 여유·경계값)·하루 한도, 나이·60세 미만, 중복 의심, 새 대상자 빈 상태(AI 분석·변화 추이·일지 초안), 종결 대상자 제외, 화면 문구 검사 포함.
 - 휴대폰 너비(390px)에서 가로 스크롤 없음.
+- selftest에 정기 인지검사(한글 숫자, 회상·재인, 유창성 중복·1분/30초 기준, 숫자 한 번·문장 두 번, cistScore·cistChange, riskOf 하락·연속 하락·초안 무시, 방식 변경이 지난 회차에 영향 없음, A/B 교대) 포함.

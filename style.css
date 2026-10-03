@@ -684,6 +684,12 @@ body.big p { text-align: center; }
 .question { width: 100%; font-size: 32px; font-weight: 600; line-height: 1.6; min-height: 5em; display: grid; place-items: center; padding: var(--s6); border-radius: var(--r-xl); background: var(--ink-2); border: 2px solid var(--panel); }
 .voice { display: flex; align-items: center; justify-content: center; gap: var(--s2); height: 80px; }
 .voice span { width: 14px; height: 14px; border-radius: 7px; background: var(--panel); transition: height .1s; }
+.draw { width: 100%; display: grid; gap: var(--s3); justify-items: center; }
+.draw-figure { width: min(100%, 220px); background: var(--panel); border-radius: var(--r-lg); padding: var(--s3); }
+.draw-figure .figure { width: 100%; height: auto; display: block; }
+.figure .dots circle { fill: var(--faint); }
+.figure polyline { fill: none; stroke: var(--ink); stroke-width: 0.08; stroke-linejoin: round; stroke-linecap: round; }
+.draw-pad { width: min(100%, 420px); aspect-ratio: 1; border-radius: var(--r-lg); border: 2px solid var(--panel); touch-action: none; background: var(--panel); }
 .done-mark { width: 120px; height: 120px; border-radius: 50%; background: var(--low-fg); color: var(--panel); display: grid; place-items: center; margin: 0 auto; }
 
 /* =========================================================
@@ -779,3 +785,19 @@ body.big p { text-align: center; }
   a { color: var(--text); text-decoration: none; }
   textarea { border: 0; padding: 0; min-height: 0; resize: none; field-sizing: content; }
 }
+
+/* 정기 인지검사(전화형) */
+a.stat { color: inherit; text-decoration: none; }
+a.stat:hover { background: var(--line); }
+.tl rect.c-done, .tl rect.c-miss, .tl rect.c-wait { stroke: var(--ink); stroke-width: 1.5; }
+.cist-detail > td { background: var(--panel-2); }
+.cist-box { display: grid; gap: var(--s3); padding: var(--s3) 0; }
+.cist-box .stats { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.cist-img { max-width: 240px; border: 1px solid var(--line); border-radius: var(--r-md); margin-top: var(--s2); display: block; }
+.cist-talk summary { cursor: pointer; font-weight: 600; }
+.mode-set { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3) var(--s4); display: grid; gap: var(--s2); }
+.mode-set legend { font-weight: 600; padding: 0 var(--s2); }
+.mode-opt { display: flex; gap: var(--s3); align-items: flex-start; padding: var(--s2) 0; cursor: pointer; }
+.mode-opt input { margin-top: 3px; }
+.mode-opt.off { opacity: .55; cursor: not-allowed; }
+@media (max-width: 768px) { .cist-box .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

@@ -1,5 +1,8 @@
 // 지표, 개인 기저선, z-score, 알림 단계, 위험도, AI 분석, 변화 추이, 돌봄일지 초안 계산.
 // 순수 함수만 둔다 (DOM 사용 금지).
+import { CIST_DOMAINS, CIST, DEFAULT_CIST_MODES as CIST_DEFAULTS } from './items.js';
+const CIST_MODE_LABEL = Object.fromEntries(Object.entries(CIST.modes).map(([k, m]) => [k, m.label]));
+const CIST_OPTION_LABEL = Object.fromEntries(Object.entries(CIST.modes).map(([k, m]) => [k, Object.fromEntries(m.options.map(o => [o.id, o.label]))]));
 
 // 판정 파라미터 기본값. 관리자 화면 '판정 설정'에서 모두 바꿀 수 있다.
 export const DEFAULT_SETTINGS = {
@@ -20,7 +23,10 @@ export const DEFAULT_SETTINGS = {
   sdMinHr: 3,              //   심박 bpm
   sdMinLatency: 0.3,       //   응답 지연 초
   visitBufferMin: 20,      // 방문 사이 이동 여유 시간(분). 웅촌면은 마을 간 이동 시간이 있다
-  visitDailyLimit: 4       // 방문자 하루 방문 한도(건)
+  visitDailyLimit: 4,      // 방문자 하루 방문 한도(건)
+  cistIntervalWeeks: 4,    // 정기 인지검사(전화형) 주기: 2 / 4 / 8주
+  cistDropAlert: 3,        //   원형 유지 점수가 직전 확정 회차보다 3점 이상 하락 → 주의
+  cistMaxSec: 900          //   정기 검사 통화 상한 15분
 };
 
 export const LEVEL_RANK = { watch: 1, caution: 2, refer: 3 };
@@ -290,7 +296,7 @@ export function dashboard(data, periodDays, today, getV) {
         if (v.wearHours >= 4) worn++;
       }
     }
-    for (const c of calls) if (c.status === 'completed') { durSum += c.durationSec; durN++; }
+    for (const c of calls) if (c.status === 'completed' && c.kind !== 'cist') { durSum += c.durationSec; durN++; } // 정기 검사 통화(최대 15분)는 빼고
   }
 
   const eligible = active.filter(p => daysBetween(p.enrolledAt, today) >= 56);
@@ -299,7 +305,7 @@ export function dashboard(data, periodDays, today, getV) {
     data.calls.some(c => c.personId === p.id && c.status === 'completed' && c.date >= recent && c.date <= today));
 
   const cogPeople = new Set(data.alerts.filter(a => a.type === 'cognition').map(a => a.personId));
-  const refers = data.alerts.filter(a => a.level === 'refer');
+  const refers = data.alerts.filter(a => a.type === 'cognition' && a.level === 'refer');
   const linked = refers.filter(a => a.referredAt && daysBetween(a.createdAt.slice(0, 10), a.referredAt.slice(0, 10)) <= 30);
   const withOutcome = data.alerts.filter(a => a.outcome);
 
@@ -430,14 +436,19 @@ export function riskOf(person, data, today, getV) {
     status: st, completion: comp, night, parts
   };
 
-  const high = signals.emergency || (score != null && score < 55) || signals.cognition === 'refer'
+  // 정기 인지검사: 확정 회차의 원형 유지 점수 변화 (같은 방식끼리만)
+  const cst = cistStatus(person, data, today);
+  const cr = cistRisk(cst, s);
+  signals.cist = { status: cst, risk: cr };
+  const high = signals.emergency || cr?.level === 'high' || (score != null && score < 55) || signals.cognition === 'refer'
     || signals.missedRun >= s.missedEscalateDays || signals.spo2;
   const mid = (score != null && score < 75) || signals.cognition === 'watch' || signals.cognition === 'caution'
-    || signals.missedRun >= 2 || signals.hearing;
+    || signals.missedRun >= 2 || signals.hearing || cr?.level === 'mid';
 
   const reasons = [];
   if (signals.emergency) reasons.push('응급 표현 · 즉시 확인');
   if (signals.cognition === 'refer') reasons.push('인지 기저선 이탈 · 연계 검토');
+  if (cr) reasons.push(cr.reason);
   if (signals.cognition === 'caution') reasons.push('인지 저하 신호 · 연속 이탈');
   if (signals.cognition === 'watch') reasons.push('인지 경미한 저하');
   if (signals.missedRun >= 2) reasons.push(`최근 ${signals.missedRun}일 미응답`);
@@ -499,6 +510,9 @@ export const TREND_METRICS = [
   { key: 'duration', group: '통화 반응', label: '통화 시간', unit: '분', dir: 0, sdMin: () => 0.3, kind: 'call' },
   { key: 'sleepPoor', group: '자기보고', label: '잠을 설쳤다고 답한 비율', unit: '%', dir: -1, sdMin: () => 10, kind: 'call' },
   { key: 'moodBad', group: '자기보고', label: "기분 '나쁨' 비율", unit: '%', dir: -1, sdMin: () => 10, kind: 'call' },
+  { key: 'c_original', group: '정기검사', label: '원형 유지 점수', unit: '점', dir: 1, sdMin: () => 2, kind: 'cist' },
+  { key: 'c_scaled', group: '정기검사', label: '30점 환산', unit: '점', dir: 1, sdMin: () => 2, kind: 'cist' },
+  ...CIST_DOMAINS.map(([k, label]) => ({ key: 'c_' + k, group: '정기검사', label, unit: '%', dir: 1, sdMin: () => 10, kind: 'cist', fold: true, cdomain: k })),
   { key: 'spo2Min', group: '링 (야간)', label: '야간 최저 SpO₂', unit: '%', dir: 1, sdMin: s => s.sdMinSpo2, kind: 'ring' },
   { key: 'spo2Below', group: '링 (야간)', label: 'SpO₂ 기준 미만 시간', unit: '분', dir: -1, sdMin: () => 3, kind: 'ring' },
   { key: 'hrRest', group: '링 (야간)', label: '안정 시 심박', unit: 'bpm', dir: 0, sdMin: s => s.sdMinHr, kind: 'ring' },
@@ -522,6 +536,23 @@ function dailyValues(data, person, m, today, getV, st) {
     }
     return out;
   }
+  if (m.kind === 'cist') { // 확정 회차만. 영역은 가장 최근 회차와 방식이 같은 회차만 (방식 다름은 비교하지 않는다)
+    const conf = confirmedCist(data, person.id).filter(x => x.date <= today);
+    const last = conf.at(-1);
+    for (const x of conf) {
+      const sc = cistScore(x);
+      let value;
+      if (m.key === 'c_original') value = sc.original.score;
+      else if (m.key === 'c_scaled') value = sc.scaled30;
+      else {
+        if (CIST_DOMAIN_MODES[m.cdomain].some(k => x.modes?.[k] !== last.modes?.[k])) continue;
+        const b = sc.byDomain[m.cdomain];
+        value = b && b.max ? (b.score / b.max) * 100 : null;
+      }
+      if (value != null) out.push({ date: x.date, value, source: 'demo', sessionId: x.id });
+    }
+    return out;
+  }
   const calls = data.calls.filter(c => c.personId === person.id && c.date <= today).sort(byTime);
   if (m.key === 'completion') {
     for (let d = person.enrolledAt; d <= today; d = addDays(d, 1)) {
@@ -535,7 +566,7 @@ function dailyValues(data, person, m, today, getV, st) {
   const zBy = new Map(st.zs.map(x => [x.callId, x.z]));
   const byDate = new Map();
   for (const c of calls) {
-    if (c.status === 'missed') continue;
+    if (c.status === 'missed' || c.kind === 'cist') continue; // 정기 검사 통화는 '정기검사' 지표로만
     let value = null;
     const done = c.status === 'completed';
     if (m.key === 'score' && done) value = c.scorePct;
@@ -565,6 +596,19 @@ export function trendAll(data, person, opts, today, getV) {
   const out = {};
   for (const m of TREND_METRICS) {
     const daily = dailyValues(data, person, m, today, getV, st);
+    if (m.kind === 'cist') { // 정기검사: 최근 회차 · 직전 회차 · 기저선 = 처음 2회 확정 회차 평균
+      const vals = daily.map(x => x.value);
+      const base = vals.length >= 2 ? { mean: mean(vals.slice(0, 2)), sd: sdOf(vals.slice(0, 2)), n: 2 } : null;
+      const sdEff = base ? Math.max(base.sd, m.sdMin(s)) : null;
+      const recent = vals.length ? vals.at(-1) : null;
+      const delta = base && vals.length >= 3 ? recent - base.mean : null;
+      out[m.key] = {
+        key: m.key, recent7: recent, recentN: vals.length, prev7: vals.length >= 2 ? vals.at(-2) : null, baseline: base, sdEff, delta,
+        status: delta == null ? '데이터 부족' : Math.abs(delta) >= sdEff ? (delta > 0 ? '개선' : '악화') : '유지',
+        series: daily, daily, alertLevel: null, real: false, cist: true, score: delta != null && sdEff ? Math.abs(delta) / sdEff : 0
+      };
+      continue;
+    }
     const inRange = (a, b) => daily.filter(x => x.date >= addDays(today, a) && x.date <= addDays(today, b)).map(x => x.value);
     const rec = inRange(-6, 0), prev = inRange(-13, -7);
     // 기저선: 인지·통화 지표는 처음 14회 통화, 링 지표는 처음 유효한 7밤
@@ -644,7 +688,7 @@ export function trendSentence(m, t, today) {
 export function trendCsv(data, person, today, getV) {
   const t = trendAll(data, person, { days: 9999 }, today, getV);
   const cell = v => { const x = String(v ?? ''); return /[",\n]/.test(x) ? `"${x.replace(/"/g, '""')}"` : x; };
-  const rows = [['date', 'source', ...TREND_METRICS.map(m => `${m.label}${m.unit ? ` (${m.unit})` : ''}`)]];
+  const rows = [['date', 'source', ...TREND_METRICS.map(m => `${m.kind === 'cist' ? '정기검사 ' : ''}${m.label}${m.unit ? ` (${m.unit})` : ''}`)]];
   for (let d = person.enrolledAt; d <= today; d = addDays(d, 1)) {
     const vals = TREND_METRICS.map(m => t[m.key].daily.find(x => x.date === d));
     const srcs = [...new Set(vals.filter(Boolean).map(x => x.source))];
@@ -704,6 +748,17 @@ export function aiSummary(person, data, today, getV) {
     const hr = t.hrRest;
     if (hr.delta != null && Math.abs(hr.delta) >= 5) items.push({ label: '안정 시 심박', text: `안정 시 심박 ${f1(hr.recent7)} bpm · 평소 대비 ${hr.delta > 0 ? '+' : ''}${f1(hr.delta)} bpm${tag}`, off: Math.abs(hr.delta) >= 8 });
   }
+
+  // 정기 인지검사(전화형): 확정 회차만
+  const cs = risk.signals.cist.status;
+  if (cs.latest) {
+    const o = cs.score.original, ch = cs.change;
+    const worst = ch && Object.entries(ch.byDomain).filter(([, v]) => v?.diff < 0).sort((a, b) => a[1].diff - b[1].diff)[0];
+    const label = worst ? CIST_DOMAINS.find(([k]) => k === worst[0])[1] : null;
+    items.push({ label: '정기 인지검사', text: `정기검사 원형 유지 ${o.score}/${o.max}`
+      + (ch?.original.comparable ? ` · 직전 대비 ${ch.original.diff > 0 ? '+' : ch.original.diff < 0 ? '−' : '±'}${Math.abs(ch.original.diff)}` : ch ? ' · 직전과 방식 다름' : ' · 첫 회차')
+      + (label ? ` · ${label} 하락` : ''), off: !!risk.signals.cist.risk });
+  } else if (cs.draft) items.push({ label: '정기 인지검사', text: '정기검사 채점 확인 대기', off: false });
 
   // 통화 응답
   const run = risk.signals.missedRun;
@@ -768,8 +823,10 @@ export function journalDraft(person, data, today, getV) {
   const target = [...new Set(calls.map(c => c.date))].length;
   const worst = TREND_METRICS.filter(m => m.domain).map(m => [m, t[m.key]]).filter(([, x]) => x.delta != null)
     .sort((a, b) => a[1].delta / a[1].sdEff - b[1].delta / b[1].sdEff)[0];
+  const cs = risk.signals.cist.status, csc = cs.score;
   const O = [
     `- 통화 완료 ${done}/${target} (${mmdd(from)}~${mmdd(today)})`,
+    cs.latest ? `- 정기 인지검사(전화형) ${mmdd(cs.latest.date)}: 원형 유지 ${csc.original.score}/${csc.original.max} · 30점 환산 ${f1(csc.scaled30)}점${cs.change?.original.comparable ? ` · 직전 대비 ${cs.change.original.diff > 0 ? '+' : ''}${cs.change.original.diff}` : ''}` : null,
     `- 인지검사 점수 최근 7일 ${f1(t.score.recent7)}%` + (st.base.ready ? ` · 최근 z ${f1(st.lastZ)} (기저선 ${f1(st.base.mean)}% ± ${f1(st.base.sd)})` : ` · 기저선 형성 중 (${st.base.n}/${data.settings.baselineDays}회)`),
     worst ? `- 가장 떨어진 영역: ${worst[0].label} 최근 7일 ${f1(worst[1].recent7)}${worst[0].unit} (기저선 ${f1(worst[1].baseline.mean)}${worst[0].unit})` : null,
     `- 응답 지연 ${f1(t.latency.recent7)}초 · 재질문 ${f1(t.repeats.recent7)}회/통화`,
@@ -798,11 +855,124 @@ export function journalDraft(person, data, today, getV) {
     `- 위험도 ${RISK_LABEL[risk.level]}${risk.reasons.length ? `: ${risk.reasons.join(', ')}` : ''}`,
     `- 감별 체크리스트: ${checked.length ? checked.join(', ') + ' 해당' : '해당 항목 없음'}`,
     other.length ? `- 인지 외 원인 가능성: ${other.join(', ')}` : '- 확인된 인지 외 원인 없음',
-    ...aiNotes.map(t => `- 통화 정리(AI 참고): ${t}`)
+    ...aiNotes.map(t => `- 통화 정리(AI 참고): ${t}`),
+    ...(cs.latest ? cistModeNotes(cs.latest).map(t => `- 정기검사 ${t}`) : [])
   ].join('\n');
 
   // P: 권장 조치와 다음 재평가 날짜
   const P = `- ${recommendAction(risk)}\n- 다음 재평가: ${nextReview(risk.level, today)}`;
 
   return { personId: person.id, date: today, type: '전화 상담', status: 'draft', auto: true, from, S, O, A, P };
+}
+
+// =========================================================
+// 정기 인지검사(전화형) — 점수는 cistScore·cistChange 두 함수만 계산한다. 모든 화면이 이것만 부른다.
+// 초안(draft)은 어디에도 점수로 쓰지 않는다: 회차 비교·위험도·변화 추이·AI 분석·일지 초안은 확정 회차만.
+// =========================================================
+// 영역마다 점수에 영향을 주는 방식 (이 방식이 두 회차에서 같아야 영역 점수를 비교한다)
+export const CIST_DOMAIN_MODES = { orientation: ['place'], memory: [], attention: ['reverseWord'], visuospatial: ['visuospatial'], executive: ['fluency', 'visualReasoning'], language: ['comprehension'] };
+const sumOf = items => ({ score: items.reduce((t, i) => t + (i.score ?? 0), 0), max: items.reduce((t, i) => t + i.maxScore, 0) });
+
+// → { total, scaled30, original, byDomain, pending, omitted }
+export function cistScore(session) {
+  const done = (session?.items || []).filter(i => i.status !== 'omitted');
+  const total = sumOf(done);
+  const original = sumOf(done.filter(i => i.fidelity === 'original'));
+  const byDomain = Object.fromEntries(CIST_DOMAINS.map(([k]) => {
+    const its = done.filter(i => i.domain === k);
+    return [k, its.length ? sumOf(its) : null]; // 시행 안 한 영역은 null ('미시행', 0점 아님)
+  }));
+  return {
+    total, original, byDomain,
+    scaled30: total.max ? Math.round((total.score / total.max) * 300) / 10 : null,
+    pending: done.filter(i => i.status === 'needs_review').length,
+    omitted: (session?.items || []).filter(i => i.status === 'omitted').map(i => i.domain)
+  };
+}
+
+// 회차 비교: 원형 유지 점수는 두 회차에 모두 있는 원형 문항만으로, 영역은 방식이 같을 때만.
+// → { original: { diff, comparable }, byDomain: { key: { diff } | { modeDiff: true } | null } }
+export function cistChange(prev, curr) {
+  if (!prev || !curr || prev.status !== 'confirmed' || curr.status !== 'confirmed') return null;
+  const ids = s => new Set(s.items.filter(i => i.fidelity === 'original' && i.status !== 'omitted').map(i => i.id));
+  const a = ids(prev), b = ids(curr);
+  const both = [...a].filter(x => b.has(x));
+  const part = s => s.items.filter(i => both.includes(i.id)).reduce((t, i) => t + (i.score ?? 0), 0);
+  const P = cistScore(prev), C = cistScore(curr);
+  const byDomain = Object.fromEntries(CIST_DOMAINS.map(([k]) => {
+    if (CIST_DOMAIN_MODES[k].some(m => prev.modes?.[m] !== curr.modes?.[m])) return [k, { modeDiff: true }];
+    if (!P.byDomain[k] || !C.byDomain[k]) return [k, null];
+    return [k, { diff: C.byDomain[k].score - P.byDomain[k].score }];
+  }));
+  return { original: { diff: part(curr) - part(prev), comparable: a.size === b.size && both.length === a.size }, byDomain };
+}
+
+export const cistSessionsOf = (data, personId) => (data.cistSessions || []).filter(x => x.personId === personId).sort((a, b) => a.date.localeCompare(b.date));
+export const confirmedCist = (data, personId) => cistSessionsOf(data, personId).filter(x => x.status === 'confirmed');
+
+// 다음 정기 검사일: 담당자가 정한 날(info.call.cistNext) → 없으면 등록일(첫 검사) 또는 마지막 회차 + 주기
+export function cistDue(person, data) {
+  if (person.info?.call?.cistNext) return person.info.call.cistNext;
+  const last = cistSessionsOf(data, person.id).at(-1);
+  return last ? addDays(last.date, (data.settings.cistIntervalWeeks || 4) * 7) : person.enrolledAt;
+}
+// 한 사람의 정기 검사 상태 (대시보드·목록·상세·알림·위험도가 같이 쓴다)
+export function cistStatus(person, data, today) {
+  const all = cistSessionsOf(data, person.id);
+  const conf = all.filter(x => x.status === 'confirmed');
+  const latest = conf.at(-1) || null, prev = conf.at(-2) || null, prev2 = conf.at(-3) || null;
+  const due = cistDue(person, data);
+  return {
+    latest, prev, draft: all.filter(x => x.status === 'draft').at(-1) || null, count: all.length,
+    score: latest ? cistScore(latest) : null,
+    change: cistChange(prev, latest), change2: cistChange(prev2, prev),
+    due, doneToday: all.some(x => x.date === today),
+    isDueToday: person.active && due <= today && !all.some(x => x.date === today),
+    delayed: person.active && daysBetween(due, today) >= 7 && !all.some(x => x.date >= due)
+  };
+}
+// 위험도 규칙: 확정 회차끼리, 원형 문항이 같은 비교만. 절단점(점수 자체로 정상·이상)은 쓰지 않는다.
+export function cistRisk(st, s) {
+  const d1 = st.change?.original.comparable ? -st.change.original.diff : null; // 하락하면 양수
+  const d2 = st.change2?.original.comparable ? -st.change2.original.diff : null;
+  if (d1 > 0 && d2 > 0 && d1 + d2 >= 4) return { level: 'high', reason: '정기검사 연속 하락', drop: d1 };
+  if (d1 != null && d1 >= (s.cistDropAlert ?? 3)) return { level: 'mid', reason: `정기검사 원형 유지 ${d1}점 하락`, drop: d1 };
+  return null;
+}
+// 알림 맞추기: '채점 확인 대기'(초안이 있으면 관찰, 확정하면 닫힘) · '정기검사 지연'(예정일 +7일, 시행하면 닫힘)
+export function syncCistAlerts(data, today, now) {
+  for (const p of data.people) {
+    const st = cistStatus(p, data, today);
+    const want = { cistReview: !!st.draft && p.active, cistOverdue: st.delayed };
+    for (const [type, on] of Object.entries(want)) {
+      const open = data.alerts.find(a => a.personId === p.id && a.type === type && a.status !== 'closed');
+      if (on && !open) data.alerts.push({ id: 'al' + type + p.id + now.replace(/\D/g, ''), personId: p.id, createdAt: now, type, level: 'watch', status: 'open',
+        referredAt: null, notifiedAt: null, notifiedTo: null, outcome: null, checklist: {}, note: type === 'cistOverdue' ? `예정일 ${st.due}` : '' });
+      if (!on && open) { open.status = 'closed'; open.note = (open.note ? open.note + ' · ' : '') + (type === 'cistReview' ? '채점 확정' : '검사 시행'); }
+    }
+  }
+}
+// 운영 지표: 이행률(예정일 ±3일 안에 시행) · 채점 확정까지 평균 일수
+export function cistOps(data, today, periodDays) {
+  const start = periodDays ? addDays(today, -(periodDays - 1)) : '0000-00-00';
+  const ses = (data.cistSessions || []).filter(x => x.date >= start && x.date <= today);
+  const onTime = ses.filter(x => x.dueDate && Math.abs(daysBetween(x.dueDate, x.date)) <= 3).length;
+  const late = data.people.filter(p => { const st = cistStatus(p, data, today); return p.active && st.due >= start && daysBetween(st.due, today) > 3 && !st.doneToday && !(data.cistSessions || []).some(x => x.personId === p.id && x.date >= st.due); }).length;
+  const conf = ses.filter(x => x.status === 'confirmed' && x.confirmedAt);
+  return {
+    onTimeRate: ses.length + late ? (onTime / (ses.length + late)) * 100 : null,
+    avgConfirmDays: conf.length ? mean(conf.map(x => daysBetween(x.date, x.confirmedAt.slice(0, 10)))) : null,
+    pending: (data.cistSessions || []).filter(x => x.status === 'draft').length
+  };
+}
+
+// 기본 방식과 다르게 한 영역·미시행 영역 (일지 초안 A, 상세 표의 칩)
+export function cistModeNotes(session) {
+  const out = [];
+  const changed = Object.entries(session.modes || {}).filter(([k, v]) => v !== CIST_DEFAULTS[k]).map(([k, v]) => `${CIST_MODE_LABEL[k]}(${CIST_OPTION_LABEL[k][v]})`);
+  if (changed.length) out.push(`방식 변경: ${changed.join(', ')}`);
+  const omitted = [...new Set((session.items || []).filter(i => i.status === 'omitted').map(i => (i.note || i.domain).replace(/\s*미시행$/, '')))];
+  if (omitted.length) out.push(`미시행: ${omitted.join(', ')}`);
+  if (session.autoSwitch) out.push(`자동 전환: ${session.autoSwitch}`);
+  return out;
 }

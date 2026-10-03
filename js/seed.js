@@ -3,15 +3,16 @@
 // 통화 대화록은 점수와 맞게 만든다: 대답을 먼저 만들고 점수는 그 대답을 자동 채점한 값이다.
 
 import {
-  DEFAULT_SETTINGS, addDays, todayStr, nowStamp, personStatus, updateAlerts, riskOf, refreshZ, journalDraft
+  DEFAULT_SETTINGS, addDays, todayStr, nowStamp, personStatus, updateAlerts, riskOf, refreshZ, journalDraft, syncCistAlerts
 } from './metrics.js';
 import {
-  planForDate, scorePct, scoreItem, korNum, WEEKDAYS, SELF_QUESTIONS, CHAT_QUESTION, classifySleep, classifyMood, findRequests, itemSpec, DEFAULT_BANK
+  planForDate, scorePct, scoreItem, korNum, WEEKDAYS, SELF_QUESTIONS, CHAT_QUESTION, classifySleep, classifyMood, findRequests, itemSpec, DEFAULT_BANK,
+  cistPlan, rescoreCist, DEFAULT_CIST_MODES, CIST
 } from './items.js';
 import { pickVitals, recomputeRing } from './vitals.js';
 
 // 시드 버전. 올리면 저장된 시연 데이터를 새로 만든다 (회원 계정·링 실측 데이터는 유지).
-export const SEED_VERSION = 5;
+export const SEED_VERSION = 6;
 
 // 전화번호는 모두 가짜(010-0000-), 보호자 이름은 지어낸 것, 의료기관명은 '○○내과의원'.
 const phone = n => `010-0000-${n}`;
@@ -147,7 +148,9 @@ export function makeSeed(settings = DEFAULT_SETTINGS, today = todayStr()) {
     const info = pf.info(today);
     info.call.title ||= `${pf.name} 어르신`;
     info.consent = { ...info.consent, date: start, renewDate: addDays(start, 365) };
-    if (i % 2 === 0) info.tests = [{ kind: 'CIST', score: 20 + (i % 7), date: start, examiner: pf.manager }];
+    // 대면 인지검사 기록: 4명 (한복남·이상철·김말순·윤병훈)
+    const face = { 0: [26], 4: [22, 19], 6: [21], 9: [25] }[i];
+    if (face) info.tests = face.map((score, k) => ({ kind: 'CIST', score, date: addDays(start, k * 35 + 3), examiner: pf.manager }));
     const birth = `${+today.slice(0, 4) - pf.age - 1}-${String(3 + i).padStart(2, '0')}-${String(10 + i).padStart(2, '0')}`;
     const person = {
       id: 'p' + (i + 1), name: pf.name, sex: pf.sex, birth, age: pf.age,
@@ -170,6 +173,10 @@ export function makeSeed(settings = DEFAULT_SETTINGS, today = todayStr()) {
     data.vitals.push(...made.vitals);
   });
 
+  // ---- 정기 인지검사(전화형): 등록 직후 1회 + 4주마다 ----
+  data.cistSessions = [];
+  data.people.forEach((p, i) => data.cistSessions.push(...seedCist(p, i, today)));
+
   // ---- 과거 알림 (연계·수검 결과가 있어 PPV·오경보율이 계산되게) ----
   const past = (personId, daysAgo, referredAfter, outcome, checklist) => {
     const created = addDays(today, -daysAgo);
@@ -190,6 +197,7 @@ export function makeSeed(settings = DEFAULT_SETTINGS, today = todayStr()) {
     updateAlerts(data.alerts, p.id, personStatus(p, data.calls, data.settings, today, getV).levels, nowStamp());
     refreshZ(data, p, today);
   }
+  syncCistAlerts(data, today, nowStamp()); // '채점 확인 대기' · '정기검사 지연'
 
   // ---- 방문 예정 (앞으로 7일 안, 위험도 높음 2명 포함) ----
   // [대상자, 며칠 뒤, 시각, 분, 유형, 목적, 상태]
@@ -236,6 +244,70 @@ export function makeSeed(settings = DEFAULT_SETTINGS, today = todayStr()) {
   });
 
   return data;
+}
+
+// 정기 인지검사 회차 --------------------------------------------------------
+// 회차마다 '틀린 문항'만 정하고 나머지는 맞는 대답을 만든다. 점수는 그 대답을 자동 채점한 값이다.
+// 틀림 표기: m1~m5 'recog'(회상 못 하고 재인 맞힘, −1) · 'none'(재인도 틀림, −2) · 그 밖 문항 1(한 점 깎임)
+const CIST_PLAN = [
+  [{ m4: 'recog' }, { m3: 'recog' }, { m4: 'recog' }],                                                    // 한복남
+  [{}, { m5: 'recog' }, { m5: 'recog', o_place: '경로당' }],                                               // 이옥분: 마지막 회차 채점 대기
+  [{ m2: 'recog' }, {}, { a_digit2: 1 }],                                                                 // 박순자
+  [{ m4: 'recog' }, { m4: 'recog', e_fluency: 1 }],                                                       // 최영희: 9일 지연
+  [{ m3: 'recog', m4: 'recog', e_fluency: 1, a_digit2: 1 }, { m3: 'recog', m4: 'recog', e_fluency: 1, a_digit2: 1, m2: 'none' },
+    { m3: 'recog', m4: 'recog', e_fluency: 1, a_digit2: 1, m2: 'none', m5: 'none', l_name3: 1 }],          // 이상철: 연속 하락 (20 → 18 → 15)
+  [{ m4: 'recog' }, { m4: 'recog', o_day: 1 }, { m4: 'recog' }],                                           // 서정길
+  [{ m3: 'recog', m4: 'recog' }, { m3: 'recog', m4: 'recog', a_digit2: 1 }, { m3: 'recog', m4: 'recog' }], // 김말순
+  [{}, { m4: 'recog' }, {}],                                                                              // 정두만
+  [{ m4: 'recog' }, { m4: 'recog' }, {}],                                                                 // 오금례: 2회차부터 시공간 음성 대체
+  [{ m4: 'recog', m5: 'recog', e_fluency: 1, a_digit2: 1, o_weekday: 1 }, { m4: 'recog', e_fluency: 1, a_digit2: 1, o_weekday: 1 },
+    { m4: 'recog', e_fluency: 1, a_digit2: 1, o_weekday: 1, m2: 'none', m5: 'recog' }]                      // 윤병훈: 지연 회상 하락 (19 → 20 → 17)
+];
+const FRUITS = CIST.executive.fluency.words.filter(w => w.length >= 2);
+function cistAnswer(it, miss, date) {
+  const [y, m, d] = [+date.slice(0, 4), +date.slice(5, 7), +date.slice(8, 10)];
+  switch (it.type) {
+    case 'time': {
+      const right = { year: `${y}년 아이가`, month: `${m}월`, day: `${d}일이지`, weekday: `${WEEKDAYS[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]}요일` }[it.part];
+      return miss ? { year: `${y - 1}년`, month: `${m === 12 ? 1 : m + 1}월`, day: `${d === 28 ? 1 : d + 2}일`, weekday: '모르겠다' }[it.part] : right;
+    }
+    case 'place': return typeof miss === 'string' ? `${miss}에 와 있다` : '집에 있다';
+    case 'digits': return miss ? [...it.digits].reverse().join(' ') : [...it.digits].join(' ');
+    case 'reverse': return miss ? it.word : [...it.word].reverse().join('');
+    case 'answers': return miss ? '모르겠다' : `${it.answers[0]} 아인교`;
+    case 'fluency': return FRUITS.slice(0, miss ? 11 : 16).join(' ');
+    case 'comp': return '후 알겠습니다';
+    default: return '';
+  }
+}
+function seedCist(p, i, today) {
+  const plan = CIST_PLAN[i];
+  const shift = i % 3;
+  // 회차 날짜: 등록일(60일 전) · 32일 전 · 4일 전 (최영희는 60·37일 전 → 오늘 9일 지연, 이옥분 마지막은 어제)
+  const dates = i === 3 ? [addDays(today, -60), addDays(today, -37)] : [addDays(today, -60), addDays(today, -32 + shift), i === 1 ? addDays(today, -1) : addDays(today, -4 - shift)];
+  return plan.map((miss, n) => {
+    const date = dates[n];
+    const modes = { ...DEFAULT_CIST_MODES, ...(i === 8 && n > 0 ? { visuospatial: 'b' } : {}) };
+    const P = cistPlan({ date, modes, prevCount: n, title: p.info.call.title, place: '집', address: p.address });
+    const recallSaid = P.items.filter(it => it.type === 'recall' && !miss[it.id]).map(it => it.word);
+    const items = P.items.map(it => {
+      if (it.status === 'omitted') return it;
+      let x = { ...it, answer: it.type === 'recall' ? (recallSaid.length ? `${recallSaid.join(' ')} 그랬다 카던데` : '기억이 안 난다') : cistAnswer(it, miss[it.id], date), segments: 2 };
+      if (it.type === 'recall' && miss[it.id]) x.recog = { ...it.recogSpec, response: miss[it.id] === 'recog' ? it.recogSpec.answer : it.recogSpec.options.find(o => o !== it.recogSpec.answer) };
+      x = rescoreCist(x);
+      if (it.type === 'draw') x = { ...x, answer: '그림 6획' };
+      return x;
+    });
+    const draft = i === 1 && n === plan.length - 1;
+    // 확정 회차: 담당자가 '확인 필요' 문항을 채점해 둔 모양 (그림 2점, 이해력은 녹음으로 1점)
+    // 초안 회차는 이해력만 채점해 둔 상태 (장소·그림 2개가 '확인 필요'로 남음)
+    for (const it of items) if (it.status === 'needs_review' && (!draft || it.type === 'comp')) Object.assign(it, { score: it.maxScore, status: 'reviewed', note: '담당자 채점' });
+    return {
+      id: `s${i}-${n}`, personId: p.id, date, dueDate: n ? addDays(dates[n - 1], 28) : p.enrolledAt, callId: null, audioId: null, drawingId: null,
+      form: P.form, modes, autoSwitch: i === 8 && n === 1 ? '시공간: 그림판 사용 불가 → 음성 대체' : null, register: [], items,
+      status: draft ? 'draft' : 'confirmed', confirmedBy: draft ? null : p.manager, confirmedAt: draft ? null : `${addDays(date, 1 + (i % 2))}T16:00`, edits: []
+    };
+  });
 }
 
 // 대화록 만들기 --------------------------------------------------------
@@ -411,9 +483,13 @@ export function reseed(old) {
   const d = makeSeed(old?.settings ? { ...DEFAULT_SETTINGS, ...old.settings } : DEFAULT_SETTINGS);
   d.accounts = old?.accounts || [];
   if (old?.questionBank) d.questionBank = old.questionBank;
+  if (old?.cistModes) d.cistModes = old.cistModes;
+  if (old?.cistModeLog) d.cistModeLog = old.cistModeLog;
   if ((old?.seedVersion ?? 0) < 5 && d.settings.maxCallSec === 180) d.settings.maxCallSec = 240; // 새 문항 구성(인사·최근 문제·6개 영역)에 맞춰 4분
   const ids = new Set(d.people.map(p => p.id));
   d.calls.push(...(old?.calls || []).filter(c => c.source === 'real' && ids.has(c.personId)));
+  const realCalls = new Set(d.calls.filter(c => c.source === 'real').map(c => c.id));
+  d.cistSessions.push(...(old?.cistSessions || []).filter(x => realCalls.has(x.callId))); // 직접 한 정기 검사 회차도 남긴다
   d.alerts.push(...(old?.alerts || []).filter(a => a.type === 'emergency' && ids.has(a.personId)));
   d.ringImports = (old?.ringImports || []).filter(r => d.people.some(p => p.id === r.personId));
   for (const pid of new Set(d.ringImports.map(r => r.personId))) recomputeRing(d, pid);

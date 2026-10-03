@@ -1,11 +1,12 @@
 // 통화 시뮬레이션: 인사 → 인지검사(고정) → 자기보고 → 안부 대화 → 끝인사
+// 정기 인지검사 날(cist 계획이 있으면): 인사 → 정기 검사 문항 → 끝인사 → 안부 한 번 → 마무리 (상한 cistMaxSec)
 // 음성 출력은 speak() 하나만 거친다: AI 음성(Typecast, server.py 경유) 또는 브라우저 기본 음성.
 // AI(Claude)는 인사·안부 대화·통화 후 정리만 맡는다. 검사 문항·순서·제한 시간·채점은 items.js 그대로.
 // 서버가 없거나 키·크레딧·동의가 없으면 기본 음성 + 고정 대본으로 끝까지 간다.
 
 import {
   planForDate, scoreItem, isDecline, itemSpec, isRepeatAsk, scorePct, SELF_QUESTIONS, classifySleep, classifyMood, findRequests,
-  SCRIPT, detectEmergency, checkChatReply, fillTitle, useAiVoice, useAiChat, ttsOutcome, isOffTopic
+  SCRIPT, detectEmergency, checkChatReply, fillTitle, useAiVoice, useAiChat, ttsOutcome, isOffTopic, CIST, rescoreCist, scoreCist
 } from './items.js';
 import { todayStr, nowStamp } from './metrics.js';
 
@@ -181,7 +182,9 @@ async function prefetch(texts) {
 // 끝나면 { call, blob, talk } (화면을 떠나 중단되면 null). 마이크를 못 쓰면 예외.
 // ui: { time(초), question(글자), level(0~1), emergency(발화, 표현) }
 // person.info.call: 호칭(title), 말 속도(rate), 질문 다시 읽기 허용 횟수(rereads), 자기보고 질문(selfReport)
-export async function runCall(settings, ui, person, prep, bank) {
+// cist: items.js cistPlan() 결과. 있으면 그날은 매일 문항 대신 정기 검사를 한다.
+// ui.draw(figure) → { finish(): Promise<{ blob, strokes }> } | null (그림판을 못 띄우면 음성 대체로 자동 전환)
+export async function runCall(settings, ui, person, prep, bank, cist = null) {
   aborted = false;
   const cfg = person?.info?.call || {};
   rate = cfg.rate || 0.9;
@@ -203,7 +206,8 @@ export async function runCall(settings, ui, person, prep, bank) {
   const aiChat = useAiChat(health, person);
   const S = plan.script;
   const greetLine = fillTitle(S.greeting, title);
-  if (voice.ai) {
+  if (voice.ai && cist) prefetch([fillTitle(CIST.script.greeting, title), CIST.script.intro, CIST.memory.intro, CIST.memory.again, ...cist.items.filter(i => i.question && !['recall', 'digits'].includes(i.type)).map(i => i.question)]);
+  else if (voice.ai) {
     prefetch([greetLine, ...(aiChat ? [] : [S.condition]), S.recent, S.intro,
       ...plan.items.flatMap((it, n) => (n ? [SCRIPT.bridges[(n - 1) % 3], it.question] : [it.question])),
       ...SCRIPT.acks, SCRIPT.offTopic, SCRIPT.emergency, SCRIPT.declined, SELF_QUESTIONS.sleep, SELF_QUESTIONS.mood,
@@ -231,7 +235,7 @@ export async function runCall(settings, ui, person, prep, bank) {
   };
 
   const t0 = performance.now();
-  const ctx = { ui, level, deadline: t0 + settings.maxCallSec * 1000, useSR: !!SR };
+  const ctx = { ui, level, deadline: t0 + (cist ? settings.cistMaxSec || 900 : settings.maxCallSec) * 1000, useSR: !!SR };
   const clock = setInterval(() => ui.time(Math.floor((performance.now() - t0) / 1000)), 500);
   const leftSec = () => (ctx.deadline - performance.now()) / 1000;
   const timeUp = () => aborted || performance.now() >= ctx.deadline; // 통화 상한을 넘으면 남은 문항은 건너뛴다
@@ -242,9 +246,9 @@ export async function runCall(settings, ui, person, prep, bank) {
   const turns = [];
   const emergencies = [];
   let endNow = false; // '죽고 싶' 같은 표현: 안내 뒤 끝인사
-  const say = async (text, { cache = true, slow = false, ai = false, phase = 'item' } = {}) => {
+  const say = async (text, { cache = true, slow = false, ai = false, phase = 'item', show } = {}) => {
     if (aborted) return;
-    ui.question(text);
+    ui.question(show ?? text); // show: 화면에 다른 글자 (숫자·외울 문장은 화면에 보이지 않게)
     turns.push({ role: 'app', text, ai, phase });
     await speak(text, { cache, slow });
   };
@@ -264,15 +268,17 @@ export async function runCall(settings, ui, person, prep, bank) {
   };
 
   // 한 문항 묻고 듣기 (재질문이면 허용 횟수만큼 천천히 다시 읽는다, 딴 이야기면 한 번 다시 묻는다)
-  const ask = async (question, item, phase = 'item', opts = {}) => {
-    const r = { answer: '', latencySec: null, repeatAsked: 0, startMs: Math.round(performance.now() - t0), endMs: null, emergency: false };
-    let left = rereads, offLeft = phase === 'item' ? 1 : 0, slow = false;
+  // limit: { rereads(다시 읽기 허용 횟수), noOff(딴 이야기 확인 안 함) }
+  const ask = async (question, item, phase = 'item', opts = {}, limit = {}) => {
+    const r = { answer: '', latencySec: null, repeatAsked: 0, startMs: Math.round(performance.now() - t0), endMs: null, emergency: false, segments: 0 };
+    let left = limit.rereads ?? rereads, offLeft = phase === 'item' && !limit.noOff ? 1 : 0, slow = false;
     const said = [];
     for (;;) {
       await say(question, { slow, phase, ...opts });
       if (aborted) break;
       const ans = await hear(item, left > 0);
       r.repeatAsked += ans.asks;
+      r.segments = ans.segments;
       said.push(ans.text);
       const off = !ans.wantReread && offLeft > 0 && isOffTopic(item, ans.text);
       if (ans.text) turns.push({ role: 'elder', text: ans.text, phase: off ? 'offtopic' : phase });
@@ -287,8 +293,173 @@ export async function runCall(settings, ui, person, prep, bank) {
     return r;
   };
 
-  // ① 인사: '안녕하세요, {호칭}. 통화 가능하신가요?' → 어렵다고 하시면 다음에 다시 전화
   const free = { key: 'free', maxSec: 20 };
+  const teardown = async () => {
+    clearInterval(clock);
+    if (recorder) await new Promise(resolve => { recorder.onstop = resolve; recorder.stop(); });
+    stream.getTracks().forEach(t => t.stop());
+    actx.close();
+  };
+  const blob = () => new Blob(chunks, { type: recorder?.mimeType || 'audio/webm' }); // 녹음하지 않았으면 빈 파일 → 저장 안 함
+
+  // ---------- 정기 인지검사(전화형) ----------
+  if (cist) {
+    const T = CIST.script;
+    const items = cist.items.map(i => ({ ...i }));
+    const byId = id => items.find(i => i.id === id);
+    const modes = { ...cist.modes };
+    const register = [];
+    let autoSwitch = null, drawing = null, regEnd = null;
+    const NUM = ['공', '일', '이', '삼', '사', '오', '육', '칠', '팔', '구'];
+    const stamp = (it, r) => Object.assign(it, { answer: r.answer, latencySec: r.latencySec, repeatAsked: r.repeatAsked, startMs: r.startMs, endMs: r.endMs, asked: true });
+    const askItem = async (it, limit, show) => {
+      const r = await ask(it.question, { key: 'cist', maxSec: 20 }, 'item', show ? { show } : {}, { noOff: true, ...limit });
+      stamp(it, r);
+      if (!r.answer && !r.emergency) await say(T.timeout); // 제한 시간 안에 대답이 없으면 0점 '무응답'
+      return r;
+    };
+    // 외울 문장: 끊어 읽는 자리('/')마다 0.4초
+    const sayParts = async parts => {
+      turns.push({ role: 'app', text: parts.join(' / '), phase: 'item' });
+      ui.question('잘 들어 주세요');
+      for (const part of parts) { if (aborted) return; await speak(part, { cache: true }); await wait(400); }
+    };
+
+    const hello = await ask(fillTitle(T.greeting, title), free, 'greeting');
+    const declined = !endNow && isDecline(hello.answer);
+    if (declined) { await say(SCRIPT.declined, { phase: 'goodbye' }); endNow = true; }
+    else await say(T.intro);
+    for (const step of declined ? [] : cist.steps) {
+      if (aborted || endNow || timeUp()) break;
+      const it = step.id ? byId(step.id) : null;
+      if (step.kind === 'say') await say(step.text);
+      else if (step.kind === 'ask') {
+        const r = await askItem(it, { rereads: step.reread ? rereads : 0 }, it.type === 'reverse' ? '단어를 거꾸로 말씀해 주세요' : undefined);
+        if (step.segments) it.segments = r.segments; // 말소리 앞에 따로 난 소리('후'·'콜록') 수
+      } else if (step.kind === 'register') {
+        // 정확히 두 번 읽는다. 따라 말하기는 채점하지 않는다.
+        for (let n = 0; n < step.times && !aborted && !endNow; n++) {
+          await say(step.lines[n]);
+          await sayParts(step.parts);
+          const a = await hear(free, false);
+          if (a.text) turns.push({ role: 'elder', text: a.text, phase: 'item' });
+          register.push(a.text);
+          await checkEmergency(a.text, 'item');
+        }
+        await say(step.remember);
+        regEnd = performance.now();
+      } else if (step.kind === 'digits') {
+        // 숫자는 1초 간격으로 한 번만. 다시 불러 달라고 하시면 정해진 안내만 한다.
+        const startMs = Math.round(performance.now() - t0);
+        turns.push({ role: 'app', text: it.question, phase: 'item' });
+        ui.question('숫자를 잘 들어 주세요');
+        for (const [n, d] of [...it.digits].entries()) { if (n) await wait(1000); await speak(NUM[+d], { cache: true }); }
+        let a = await hear({ key: 'cist', maxSec: 20 }, true);
+        const said = [a.text];
+        let asks = a.asks;
+        if (a.wantReread && !aborted) { await say(step.once); a = await hear({ key: 'cist', maxSec: 20 }, false); said.push(a.text); asks += a.asks; }
+        const answer = said.filter(Boolean).join(' ');
+        if (answer) turns.push({ role: 'elder', text: answer, phase: 'item' });
+        stamp(it, { answer, latencySec: a.latencyMs == null ? null : Math.round(a.latencyMs / 100) / 10, repeatAsked: asks, startMs, endMs: Math.round(performance.now() - t0) });
+        if (!(await checkEmergency(answer, 'item')) && !answer) await say(T.timeout);
+      } else if (step.kind === 'draw') {
+        const pad = step.figure ? ui.draw?.(step.figure) : null;
+        let res = null;
+        if (pad) {
+          await say(it.question);
+          const startMs = Math.round(performance.now() - t0);
+          const a = await hear({ key: 'draw', maxSec: it.maxSec, stopOn: /다했|다그렸|끝났/ }, false);
+          res = await pad.finish();
+          if (a.text) turns.push({ role: 'elder', text: a.text, phase: 'item' });
+          stamp(it, { answer: res?.strokes ? `그림 ${res.strokes}획` : '', latencySec: null, repeatAsked: 0, startMs, endMs: Math.round(performance.now() - t0) });
+        }
+        if (res?.strokes && res.blob) drawing = res.blob;
+        else { // 그림판이 없거나 입력이 없으면 음성 대체 두 문항으로 자동 전환
+          autoSwitch = pad ? '시공간: 그림 입력 없음 → 음성 대체' : '시공간: 그림판 사용 불가 → 음성 대체';
+          modes.visuospatial = 'b';
+          items.splice(items.indexOf(it), 1, ...step.fallback.map(f => ({ score: null, status: 'auto', note: '', answer: '', ...f })));
+          for (const f of step.fallback) { if (timeUp() || endNow) break; await askItem(byId(f.id), { rereads }); }
+        }
+      } else if (step.kind === 'verbal') {
+        const [a, b] = step.ids.map(byId);
+        await askItem(a, { rereads: 1 }); // 다시 읽기 한 번만
+        stamp(b, { ...a });
+      } else if (step.kind === 'fluency') {
+        // 중간에 쉬어도 끊지 않고 정한 시간(1분 또는 30초)을 다 기다린다
+        const r = await ask(it.question, { key: 'fluency', maxSec: it.sec }, 'item', {}, { rereads: 0, noOff: true });
+        stamp(it, r);
+        await say(step.stop);
+      } else if (step.kind === 'choice') {
+        const startMs = Math.round(performance.now() - t0);
+        await say(it.question);
+        const chosen = ui.choose ? await ui.choose(it) : null;
+        Object.assign(it, { chosen, answer: chosen == null ? '' : it.options[chosen], asked: true, startMs, endMs: Math.round(performance.now() - t0) });
+      } else if (step.kind === 'recall') {
+        // 등록 뒤 3분이 안 지났으면 잡담 한 문항을 끼우고, 그래도 모자라면 남은 시간만큼 쉰다
+        if (regEnd && (performance.now() - regEnd) / 1000 < step.gapSec) {
+          const f = await ask(step.filler, free, 'filler');
+          await checkEmergency(f.answer, 'filler');
+          const rest = step.gapSec * 1000 - (performance.now() - regEnd);
+          if (rest > 0 && !aborted && !endNow) { ui.question('잠시만 기다려 주세요'); await wait(Math.min(rest, ctx.deadline - performance.now())); }
+        }
+        if (aborted || endNow || timeUp()) break;
+        const r = await ask(step.q, { key: 'cist', maxSec: 30 }, 'item', {}, { rereads: 0, noOff: true });
+        for (const id of step.ids) stamp(byId(id), r);
+        if (!r.answer && !r.emergency) await say(T.timeout);
+      } else if (step.kind === 'recognition') {
+        // 떠올리지 못한 낱말만 보기를 들려준다 (1점)
+        for (const id of step.ids) {
+          const k = byId(id);
+          if (!k.asked || scoreCist(k).score === 2 || timeUp() || endNow || aborted) continue;
+          const r = await ask(k.recogSpec.q, { key: 'cist', maxSec: 20 }, 'item', {}, { rereads, noOff: true });
+          k.recog = { ...k.recogSpec, response: r.answer, startMs: r.startMs, endMs: r.endMs };
+        }
+      }
+    }
+    // 묻지 못한 문항(시간 초과·응급 안내로 중단)은 담당자 확인으로 남긴다
+    const scored = items.map(it => (it.status === 'omitted' ? it : it.asked ? rescoreCist(it)
+      : { ...it, score: null, status: 'needs_review', note: endNow ? '통화 중단으로 묻지 못함' : '시간 초과로 묻지 못함' }));
+    const finished = items.every(it => it.status === 'omitted' || it.asked);
+
+    // 끝인사 → 안부 한 번(AI면 AI 한 문장, 아니면 고정 질문) → 마무리
+    const chatStart = turns.length;
+    if (!declined && !aborted) {
+      await say(T.end);
+      if (!endNow && leftSec() > 15) {
+        const reply = aiChat ? await askLlm({ phase: 'chat', history: [], summaries: prep?.summaries || [], remainingSec: 30 }) : null;
+        await say(reply ? fillTitle(reply.say, title) : SCRIPT.chatFixed[1], { cache: !reply, ai: !!reply, phase: 'chat' });
+        const a = await hear({ key: 'free', maxSec: 20 }, false);
+        if (a.text) turns.push({ role: 'elder', text: a.text, phase: 'chat' });
+        await checkEmergency(a.text, 'chat');
+      }
+      await say(T.closing, { phase: 'goodbye' });
+    }
+    await teardown();
+    if (aborted) return null;
+    const chatTurns = turns.slice(chatStart).filter(t => t.phase === 'chat' || t.phase === 'emergency');
+    const elderChat = chatTurns.filter(t => t.role === 'elder').map(t => t.text).join(' ');
+    return {
+      blob: blob(),
+      talk: turns.filter(t => ['greeting', 'filler', 'chat'].includes(t.phase)).map(t => ({ ...t, text: anon(t.text) })),
+      aiChat,
+      drawing,
+      session: { form: cist.form, modes, autoSwitch, register, items: scored },
+      call: {
+        date, startedAt, time: startedAt.slice(11, 16), source: 'real', kind: 'cist',
+        status: declined ? 'partial' : finished ? 'completed' : 'partial', declined,
+        durationSec: Math.round((performance.now() - t0) / 1000),
+        items: [], scorePct: null, selfReport: null,
+        chat: chatTurns.length ? { question: chatTurns.find(t => t.role === 'app')?.text || '', answer: elderChat } : null,
+        greeting: { text: fillTitle(T.greeting, title), ai: false }, opening: null,
+        transcript: turns.map(({ role, text, phase }) => ({ role, text, phase })),
+        chatTurns: chatTurns.map(({ role, text, ai }) => ({ role, text, ai: !!ai })),
+        voice: voice.used ? 'ai' : 'basic', chatMode: aiChat ? 'ai' : 'fixed', emergencies,
+        requests: [hello.answer, elderChat].flatMap(findRequests)
+      }
+    };
+  }
+
+  // ① 인사: '안녕하세요, {호칭}. 통화 가능하신가요?' → 어렵다고 하시면 다음에 다시 전화
   const hello = await ask(greetLine, free, 'greeting');
   const declined = !endNow && isDecline(hello.answer);
   if (declined) { await say(SCRIPT.declined, { phase: 'goodbye' }); endNow = true; }
@@ -376,17 +547,14 @@ export async function runCall(settings, ui, person, prep, bank) {
 
   // ⑤ 끝인사
   if (!aborted && !declined) await say(S.closing, { phase: 'goodbye' });
-  clearInterval(clock);
-  if (recorder) await new Promise(resolve => { recorder.onstop = resolve; recorder.stop(); });
-  stream.getTracks().forEach(t => t.stop());
-  actx.close();
+  await teardown();
   if (aborted) return null;
 
   const firstQ = chatTurns.find(t => t.role === 'app');
   const chatAnswer = chatTurns.filter(t => t.role === 'elder').map(t => t.text).join(' ');
   const chat = firstQ ? { question: firstQ.text, answer: chatAnswer } : null;
   return {
-    blob: new Blob(chunks, { type: recorder?.mimeType || 'audio/webm' }), // 녹음하지 않았으면 빈 파일 → 저장 안 함
+    blob: blob(),
     // 통화 후 정리에 보내는 문장: 인사·딴 이야기·자기보고·안부 대화 (검사 문항과 대답은 보내지 않는다)
     talk: turns.filter(t => ['greeting', 'recent', 'offtopic', 'self', 'chat'].includes(t.phase)).map(t => ({ ...t, text: anon(t.text) })),
     aiChat,
@@ -407,12 +575,13 @@ export async function runCall(settings, ui, person, prep, bank) {
 }
 
 // 답변 구간 하나. 말이 끝나고 3초 침묵 / 문항 최대 시간 / [다음] / 재질문(다시 읽기) 중 먼저 오는 것으로 끝난다.
-// 동물 이름(1분 과제)은 중간에 쉬어도 끊지 않고 60초를 기다린다.
+// 동물 이름·유창성·그리기는 중간에 쉬어도 끊지 않는다. item.stopOn: 받아쓰기에 이 말이 나오면 끝 ('다 했어요').
+// segments: 0.25초 넘게 쉬었다가 다시 난 소리 묶음 수 (이해력 문항의 '후'·'콜록' 확인용)
 function listen(ctx, item, canReread) {
   return new Promise(resolve => {
     const start = performance.now();
-    const useSilence = item.key !== 'fluency';
-    let spokeAt = null, lastVoice = 0, finals = '', interim = '', asks = 0, recog = null, finished = false;
+    const useSilence = item.key !== 'fluency' && item.key !== 'draw';
+    let spokeAt = null, lastVoice = 0, finals = '', interim = '', asks = 0, recog = null, finished = false, segments = 0;
 
     const finish = wantReread => {
       if (finished) return;
@@ -421,7 +590,7 @@ function listen(ctx, item, canReread) {
       skip = null;
       if (recog) { recog.onend = null; recog.abort(); }
       ctx.ui.level(0);
-      resolve({ text: (finals + ' ' + interim).trim(), latencyMs: spokeAt ? Math.round(spokeAt - start) : null, asks, wantReread });
+      resolve({ text: (finals + ' ' + interim).trim(), latencyMs: spokeAt ? Math.round(spokeAt - start) : null, asks, wantReread, segments });
     };
 
     // 받아쓰기: 답변 구간마다 새로 시작한다 (질문 읽는 소리가 받아써지지 않도록)
@@ -443,6 +612,7 @@ function listen(ctx, item, canReread) {
             if (canReread) return finish(true);
           }
         }
+        if (item.stopOn?.test((finals + interim).replace(/\s/g, ''))) finish(false);
       };
       recog.onerror = e => {
         if (['not-allowed', 'service-not-allowed', 'network', 'language-not-supported'].includes(e.error)) ctx.useSR = false;
@@ -457,6 +627,7 @@ function listen(ctx, item, canReread) {
       const lv = now < quietUntil ? 0 : ctx.level();
       ctx.ui.level(lv);
       if (lv > VOICE_LEVEL) {
+        if (!lastVoice || now - lastVoice > 250) segments++;
         spokeAt ??= now;
         lastVoice = now;
       }

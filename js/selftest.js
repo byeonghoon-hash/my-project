@@ -406,4 +406,104 @@ const regItem = planForDate('2026-09-28').items.find(i => i.key === 'register');
 assert.equal(isOffTopic(regItem, '아이고 요새 허리가 계속 쑤시가 밭에도 못 나가요'), true);
 assert.equal(isOffTopic(regItem, '잘 모르겠는데 기억이 하나도 안 나요 미안해요'), false);
 
+
+// ---- 정기 인지검사(전화형) ----
+{
+  const { korToDigits, fluencyWords, fluencyPoints, scoreCist, cistPlan, cistForm, rescoreCist, CIST, DEFAULT_CIST_MODES } = await import('./items.js');
+  const { cistScore, cistChange, cistStatus, riskOf: risk2 } = await import('./metrics.js');
+  // 한글 숫자
+  assert.equal(korToDigits('이천이십육'), '2026');
+  assert.equal(korToDigits('시월'), '10월');
+  assert.equal(korToDigits('삼 일'), '3일');
+  assert.equal(korToDigits('열한 시'), '11시');
+  const tdate = '2026-10-03'; // 토요일
+  const T = (part, answer) => scoreCist({ type: 'time', part, date: tdate, answer });
+  assert.equal(T('year', '이천이십육년').score, 1);
+  assert.equal(T('year', '이천이십육 아이가').score, 1);
+  assert.equal(T('month', '시월이지').score, 1);
+  assert.equal(T('day', '삼 일').score, 1);
+  assert.equal(T('weekday', '토요일').score, 1);
+  assert.equal(T('day', '음력으로 팔월 열이틀').status, 'needs_review');   // 음력 → 확인 필요
+  assert.deepEqual([T('day', '').score, T('day', '').note], [0, '무응답']); // 제한 시간 초과 → 0점 '무응답'
+  // 순서·읽기 횟수: 숫자는 한 번, 문장은 두 번, 회상은 등록 3분 뒤, 재인은 회상 다음
+  const plan = cistPlan({ date: tdate, modes: {}, prevCount: 0, title: '윤병훈 어르신' });
+  const kinds = plan.steps.map(s => s.kind);
+  assert.deepEqual(kinds.filter(k => k === 'digits').length, 2);
+  assert.equal(plan.steps.find(s => s.kind === 'register').times, 2);
+  assert.equal(plan.steps.find(s => s.kind === 'recall').gapSec, 180);
+  assert.ok(kinds.indexOf('register') < kinds.indexOf('digits') && kinds.indexOf('fluency') < kinds.indexOf('recall') && kinds.indexOf('recall') < kinds.indexOf('recognition'));
+  // 문장 A·B 회차 교대
+  assert.deepEqual([cistForm(0), cistForm(1), cistForm(2)], ['A', 'B', 'A']);
+  assert.equal(cistPlan({ date: tdate, modes: {}, prevCount: 1 }).items.find(i => i.id === 'm1').word, '영희');
+  // 지연 회상: 인정 낱말이면 2점, 못 떠올린 낱말만 재인 1점
+  const m2 = plan.items.find(i => i.id === 'm2');
+  assert.equal(rescoreCist({ ...m2, answer: '자전차 타고 갔다' }).score, 2);
+  assert.equal(rescoreCist({ ...m2, answer: '버스', recog: { ...m2.recogSpec, response: '자전거' } }).score, 1);
+  assert.equal(rescoreCist({ ...m2, answer: '버스', recog: { ...m2.recogSpec, response: '버스' } }).score, 0);
+  assert.equal(rescoreCist({ ...m2, answer: '자전거', recog: { ...m2.recogSpec, response: '버스' } }).score, 2); // 회상하면 재인은 보지 않음
+  // 의미 유창성: 중복 제외, 1분 15/9 · 30초 8/5
+  const fw = fluencyWords('사과 사과 배 배를 포도 음 고등어');
+  assert.deepEqual(fw.found, ['사과', '배', '포도']);
+  assert.deepEqual(fw.candidates, ['고등어']);                    // 목록에 없는 말은 담당자 확인
+  const A = CIST.executive.fluency.a, B = CIST.executive.fluency.b;
+  assert.deepEqual([15, 14, 9, 8].map(n => fluencyPoints(n, A)), [2, 1, 1, 0]);
+  assert.deepEqual([8, 7, 5, 4].map(n => fluencyPoints(n, B)), [2, 1, 1, 0]);
+  // cistScore: 미시행은 만점에서 빼고, 30점 환산, 원형 유지는 원형 문항만
+  const mk = (items, extra = {}) => ({ status: 'confirmed', modes: { ...DEFAULT_CIST_MODES }, items, ...extra });
+  const it = (id, domain, fidelity, score, maxScore = 1, status = 'auto') => ({ id, domain, fidelity, score, maxScore, status });
+  const sA = mk([it('o_year', 'orientation', 'original', 1), it('v_draw', 'visuospatial', 'adapted', 2, 2, 'reviewed'), it('e_visual', 'executive', 'omitted', null, 2, 'omitted'), it('m1', 'memory', 'original', 1, 2)]);
+  const scA = cistScore(sA);
+  assert.deepEqual(scA.total, { score: 4, max: 5 });
+  assert.deepEqual(scA.original, { score: 2, max: 3 });
+  assert.equal(scA.scaled30, 24);
+  assert.equal(scA.byDomain.language, null);                        // 시행 안 한 영역은 '미시행'(null)
+  assert.equal(cistScore(mk([it('v_draw', 'visuospatial', 'adapted', null, 2, 'needs_review')])).pending, 1);
+  // cistChange: 확정 회차끼리만, 방식이 다른 영역은 비교 안 함
+  const sB = mk([it('o_year', 'orientation', 'original', 0), it('v_clock', 'visuospatial', 'replaced', 1), it('v_direction', 'visuospatial', 'replaced', 1), it('e_visual', 'executive', 'omitted', null, 2, 'omitted'), it('m1', 'memory', 'original', 1, 2)],
+    { modes: { ...DEFAULT_CIST_MODES, visuospatial: 'b' } });
+  const ch = cistChange(sA, sB);
+  assert.deepEqual(ch.original, { diff: -1, comparable: true });
+  assert.equal(ch.byDomain.visuospatial.modeDiff, true);
+  assert.equal(ch.byDomain.orientation.diff, -1);
+  assert.equal(cistChange(sA, { ...sB, status: 'draft' }), null);   // 초안은 비교하지 않는다
+
+  // riskOf: 같은 방식에서 3점 하락 → 주의, 두 번 연속 하락(합 4점 이상) → 높음, 초안은 무시
+  const sd = makeSeed(undefined, tdate);
+  const gv = (pid, d) => pickVitals(sd, pid, d);
+  const yoon = sd.people.find(p => p.name === '윤병훈'), lee = sd.people.find(p => p.name === '이상철'), han = sd.people.find(p => p.name === '한복남');
+  assert.ok(risk2(yoon, sd, tdate, gv).reasons.includes('정기검사 원형 유지 3점 하락'));
+  const rl = risk2(lee, sd, tdate, gv);
+  assert.equal(rl.level, 'high');
+  assert.ok(rl.reasons.includes('정기검사 연속 하락'));
+  const hanLast = sd.cistSessions.filter(x => x.personId === han.id).at(-1);
+  const drop = (x, n) => { const y = structuredClone(x); let left = n; for (const i of y.items) if (i.fidelity === 'original' && left && i.score) { const k = Math.min(left, i.score); i.score -= k; left -= k; } return y; };
+  sd.cistSessions.push({ ...drop(hanLast, 6), id: 'sx-draft', date: addDays(tdate, -1), status: 'draft', confirmedAt: null });
+  assert.equal(risk2(han, sd, tdate, gv).level, 'low');            // 초안은 무시
+  sd.cistSessions.pop();
+  sd.cistSessions.push({ ...drop(hanLast, 3), id: 'sx-conf', date: addDays(tdate, -1) });
+  const rh = risk2(han, sd, tdate, gv);
+  assert.equal(rh.level, 'mid');
+  assert.ok(rh.reasons.includes('정기검사 원형 유지 3점 하락'));
+  sd.cistSessions.pop();
+  // 방식을 바꿔도 지난 회차 점수는 그대로 (회차마다 방식과 문항을 함께 저장)
+  const before = sd.cistSessions.map(x => cistScore(x).original.score).join();
+  sd.cistModes = { ...DEFAULT_CIST_MODES, visuospatial: 'c', fluency: 'b', reverseWord: 'b' };
+  assert.equal(sd.cistSessions.map(x => cistScore(x).original.score).join(), before);
+  assert.equal(cistPlan({ date: tdate, modes: sd.cistModes, prevCount: 0 }).items.find(i => i.id === 'v_draw').status, 'omitted');
+  // 시드: 10명 모두 2~3회, 초안 1명(확인 필요 2), 9일 지연 1명, 시공간 방식 바뀐 1명, 위험도 2·3·5 유지
+  const per = sd.people.map(p => sd.cistSessions.filter(x => x.personId === p.id).length);
+  assert.ok(per.every(n => n >= 2 && n <= 3));
+  const drafts = sd.cistSessions.filter(x => x.status === 'draft');
+  assert.equal(drafts.length, 1);
+  assert.equal(cistScore(drafts[0]).pending, 2);
+  assert.equal(sd.people.filter(p => cistStatus(p, sd, tdate).delayed).length, 1);
+  assert.ok(sd.cistSessions.some((x, n, a) => n && x.personId === a[n - 1].personId && x.modes.visuospatial !== a[n - 1].modes.visuospatial));
+  const lv = sd.people.map(p => risk2(p, sd, tdate, gv).level);
+  assert.deepEqual(['high', 'mid', 'low'].map(l => lv.filter(x => x === l).length), [2, 3, 5]);
+  assert.equal(sd.people.filter(p => (p.info.tests || []).length).length, 4);
+  // 다음 정기 검사일 직접 지정
+  yoon.info.call.cistNext = tdate;
+  assert.equal(cistStatus(yoon, sd, tdate).isDueToday, true);
+}
+
 console.log('selftest 통과');

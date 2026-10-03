@@ -12,14 +12,15 @@ import {
   riskOf, aiSummary, recommendAction, filterPeople, completion7, refreshZ, isCallDay, spo2Threshold,
   primaryContact, validPhone, autoChecklist, trendAll, TREND_METRICS, METRIC, trendCsv, trendSentence,
   personEvents, journalDraft, daysBetween, visitChecks, visitStart, visitEnd, minToTime, VISIT_TYPES,
-  ageFrom, findDuplicates, insideBoundary,
+  ageFrom, findDuplicates, insideBoundary, cistStatus, cistScore, cistChange, cistSessionsOf, confirmedCist, syncCistAlerts, cistOps, cistModeNotes, cistDue,
   fmtDate, fmtMD, fmtMDW, fmtStamp, fmtDur, fmtNum, fmtUnit, timelineRange, layoutLabels, completionDelta
 } from './metrics.js';
 import { getNightVitals, importRing, recomputeRing, deleteRingImport } from './vitals.js';
 import { startRing, runCall, nextItem, stopCall, prepareCall, summarizeCall, getHealth, fetchVoice } from './call.js';
 import {
   scorePct, scoreItem, orientationParts, countAnimals, SELF_QUESTIONS, checkSummary, AI_CONSENT_TEXT, SCRIPT,
-  DEFAULT_BANK, normalizeBank, planForDate, DOMAINS, ORIENT_PART, ATTENTION_TYPE, LANGUAGE_TYPE
+  DEFAULT_BANK, normalizeBank, planForDate, DOMAINS, ORIENT_PART, ATTENTION_TYPE, LANGUAGE_TYPE,
+  CIST, CIST_DOMAINS, FIDELITY_LABEL, DEFAULT_CIST_MODES, normalizeModes, modeAvailable, modeOption, cistPlan, rescoreCist
 } from './items.js';
 import ungchon from './ungchon.js';
 import { icon } from './icons.js';
@@ -28,11 +29,12 @@ const app = document.getElementById('app');
 
 const LEVEL = { watch: '관찰', caution: '주의', refer: '의뢰' };
 const LEVEL_CHIP = { watch: 'info', caution: 'mid', refer: 'high' };
-const TYPE = { emergency: '응급 표현 (통화 중)', cognition: '인지 기저선 이탈', spo2: '야간 저산소 (수면무호흡 의심)', hearing: '재질문 잦음 (난청 의심)', noAnswer: '연속 무응답 (안부 확인)' };
+const TYPE = { cistReview: '정기검사 채점 확인 대기', cistOverdue: '정기검사 지연', emergency: '응급 표현 (통화 중)', cognition: '인지 기저선 이탈', spo2: '야간 저산소 (수면무호흡 의심)', hearing: '재질문 잦음 (난청 의심)', noAnswer: '연속 무응답 (안부 확인)' };
 const STATUS = { open: '처리 전', referred: '연계됨', closed: '종결' };
 const CALL_STATUS = { completed: '완료', missed: '무응답', partial: '일부 (시간 초과)' };
 const CHECKS = { acute: '최근 급성 질환', sleep: '수면 부족', meds: '약물 변경', mood: '우울감', hearing: '청력 저하' };
 const RISK = { high: '높음', mid: '주의', low: '낮음' };
+const TEST_KIND = { CIST: '인지선별검사(대면)', 'MMSE-DS': 'MMSE-DS', 기타: '기타' }; // 저장 값은 그대로, 화면에는 검사 이름으로
 const RISK_RANK = { high: 3, mid: 2, low: 1 };
 const JOBS = ['간호사', '사회복지사', '보건소 담당자', '기타'];
 const SETTING_LABEL = {
@@ -53,8 +55,11 @@ const SETTING_LABEL = {
   sdMinHr: '변화 추이 표준편차 최솟값: 심박 (bpm)',
   sdMinLatency: '변화 추이 표준편차 최솟값: 응답 지연 (초)',
   visitBufferMin: '방문 이동 여유 시간 (분)',
-  visitDailyLimit: '방문자 하루 방문 한도 (건)'
+  visitDailyLimit: '방문자 하루 방문 한도 (건)',
+  cistDropAlert: '정기검사 원형 유지 점수 하락 기준 (점)',
+  cistMaxSec: '정기검사 통화 상한 (초)'
 };
+const SETTING_HIDDEN = ['cistIntervalWeeks', 'voiceId']; // 정기 검사 주기는 '정기 인지검사 방식'에서 고른다
 const CARE_LABEL = { cognition: ['통화 인지검사', 40], response: ['통화 응답', 25], spo2: ['야간 SpO₂', 20], heart: ['안정 시 심박', 15] };
 
 // 색은 style.css의 :root 변수에서만 읽는다 (차트·지도도 같은 값)
@@ -82,7 +87,7 @@ let map = null;
 let period = 7;     // 운영 지표 기간
 let dashCal = {};   // 전체 현황 캘린더 { view, anchor, month, selected, visitor }
 let tlMine = true;  // 오늘 시간표: 내 담당만
-const list = { q: '', mine: false, risk: 'all', sort: 'risk', dir: -1, closed: false, visit: false }; // 대상자 관리 목록 상태
+const list = { q: '', mine: false, risk: 'all', sort: 'risk', dir: -1, closed: false, visit: false, cist: '' }; // 대상자 관리 목록 상태
 
 // 이벤트는 document 한 곳에서 받는다 (모달은 body 아래에 붙기 때문)
 for (const [type, key] of [['click', 'act'], ['change', 'change'], ['input', 'input']]) {
@@ -223,6 +228,7 @@ function evaluate(ids) {
     if (!p.active || (ids && !ids.includes(p.id))) continue;
     updateAlerts(d.alerts, p.id, personStatus(p, d.calls, d.settings, todayStr(), getNightVitals).levels, nowStamp());
   }
+  syncCistAlerts(d, todayStr(), nowStamp()); // 정기검사 '채점 확인 대기' · '정기검사 지연'
   save();
 }
 
@@ -426,11 +432,54 @@ function ringing(p) {
   actions.accept = () => { cleanup(); inCall(p, prep); };
 }
 
+// 시공간 문항 자리표시 도형 (원검사 그림이 아님: 점 5×5 위의 집 모양). cist_items.json에 그림(src)이 들어오면 그것을 쓴다.
+const FIGURE_PTS = [[1, 3], [1, 1.5], [2, 0.5], [3, 1.5], [3, 3], [1, 3], [3, 1.5], [1, 1.5], [3, 3]];
+const dotGrid = () => Array.from({ length: 25 }, (_, i) => `<circle cx="${i % 5}" cy="${Math.floor(i / 5)}" r="0.06" />`).join('');
+const figureSvg = fig => (fig?.src ? `<img src="${esc(fig.src)}" alt="따라 그릴 그림">`
+  : `<svg viewBox="-0.5 -0.5 5 5" class="figure" role="img" aria-label="따라 그릴 그림"><g class="dots">${dotGrid()}</g><polyline points="${FIGURE_PTS.map(p => p.join(',')).join(' ')}" /></svg>`);
+
+// 그림판: 점 배경 위에 손가락·마우스로 그린다. finish() → { blob(PNG), strokes }
+function drawPad(fig) {
+  const host = document.getElementById('draw');
+  if (!host || !HTMLCanvasElement.prototype.toBlob) return null;
+  host.hidden = false;
+  host.innerHTML = `<div class="draw-figure">${figureSvg(fig)}</div><canvas class="draw-pad" width="600" height="600" aria-label="그림 그리는 칸"></canvas>
+    <button type="button" class="big-btn" data-act="next">${icon('check', 20)}다 그렸어요</button>`;
+  const cv = host.querySelector('canvas'), g = cv.getContext('2d');
+  const paper = () => {
+    g.fillStyle = css('--panel'); g.fillRect(0, 0, 600, 600);
+    g.fillStyle = css('--faint');
+    for (let i = 0; i < 25; i++) { g.beginPath(); g.arc(60 + (i % 5) * 120, 60 + Math.floor(i / 5) * 120, 5, 0, 7); g.fill(); }
+  };
+  paper();
+  g.strokeStyle = css('--ink'); g.lineWidth = 8; g.lineCap = g.lineJoin = 'round';
+  let strokes = 0, down = false;
+  const at = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * 600 / r.width, (e.clientY - r.top) * 600 / r.height]; };
+  cv.onpointerdown = e => { down = true; strokes++; cv.setPointerCapture(e.pointerId); g.beginPath(); g.moveTo(...at(e)); };
+  cv.onpointermove = e => { if (down) { g.lineTo(...at(e)); g.stroke(); } };
+  cv.onpointerup = cv.onpointercancel = () => { down = false; };
+  return {
+    finish: () => new Promise(resolve => {
+      const done = blob => { host.hidden = true; host.innerHTML = ''; resolve({ blob, strokes }); };
+      if (!strokes) return done(null);
+      cv.toBlob(done, 'image/png');
+    })
+  };
+}
+
 async function inCall(p, prep) {
+  // 정기 인지검사 날이면 매일 문항 대신 정기 검사 (점수는 대상자에게 보여주지 않는다)
+  const d0 = getData();
+  const cst = cistStatus(p, d0, todayStr());
+  const cist = cst.isDueToday ? cistPlan({
+    date: todayStr(), modes: d0.cistModes, prevCount: cistSessionsOf(d0, p.id).length,
+    title: p.info?.call?.title || '', place: p.info?.call?.place || '집', address: p.address
+  }) : null;
   app.innerHTML = `
     <div class="phone">
       <div class="call-top"><span class="live">통화 중</span><span class="timer" id="time">00:00</span></div>
       <div class="question" id="q" aria-live="polite">연결 중</div>
+      <div class="draw" id="draw" hidden></div>
       <div class="voice" id="lv" aria-hidden="true">${'<span></span>'.repeat(7)}</div>
       <button type="button" class="big-btn ghost" data-act="next">다음 ${icon('next', 20)}</button>
     </div>`;
@@ -451,14 +500,15 @@ async function inCall(p, prep) {
         referredAt: null, notifiedAt: null, notifiedTo: null, outcome: null, checklist: {}, note: `통화 중 발화: "${text}"`
       });
       save();
-    }
+    },
+    draw: drawPad
   };
   actions.next = nextItem;
   cleanup = stopCall;
 
   let res;
   try {
-    res = await runCall(getData().settings, ui, p, prep, getData().questionBank); // 호칭·말 속도·다시 읽기 횟수는 대상자 기본 정보에서, 문항은 '문항 관리'에서
+    res = await runCall(getData().settings, ui, p, prep, getData().questionBank, cist); // 호칭·말 속도·다시 읽기 횟수는 대상자 기본 정보에서, 문항은 '문항 관리'에서
   } catch {
     cleanup = null;
     app.innerHTML = `<h1>마이크 사용 불가</h1>
@@ -475,6 +525,16 @@ async function inCall(p, prep) {
   if (audioId) await saveAudio(audioId, res.blob);
   const call = { id: 'c' + id, personId: p.id, ...res.call, z: null, audioId };
   d.calls.push(call);
+  // 정기 검사 회차: 초안으로 저장 → 담당자가 확인·확정 (그림은 녹음과 같은 저장소에)
+  if (res.session && !res.call.declined) {
+    const drawingId = res.drawing ? 'g' + id : null;
+    if (drawingId) await saveAudio(drawingId, res.drawing);
+    call.cistId = 's' + id;
+    d.cistSessions ??= [];
+    d.cistSessions.push({ id: call.cistId, personId: p.id, date: call.date, dueDate: cst.due, callId: call.id, audioId, drawingId,
+      ...res.session, status: 'draft', confirmedBy: null, confirmedAt: null, edits: [] });
+    if (p.info?.call?.cistNext) p.info.call.cistNext = null; // 다음 예정일은 이번 회차 + 주기로 다시 계산
+  }
   refreshZ(d, p, todayStr());
   evaluate([p.id]);
   // 통화 후 정리 (AI): 인용이 확인된 항목만 붙인다. 실패하면 규칙 기반 추출 그대로.
@@ -600,13 +660,15 @@ function todayPlan(d, today, scope) {
   const calls = people.filter(p => isCallDay(p, today)).map(p => {
     const c = d.calls.filter(x => x.personId === p.id && x.date === today).sort((a, b) => (a.startedAt || '').localeCompare(b.startedAt || '')).at(-1);
     const status = !c ? 'wait' : c.status === 'missed' ? 'miss' : 'done';
-    return { p, c, status, min: toMin(c ? c.time || c.startedAt?.slice(11, 16) : p.preferredTime) };
+    const cist = c ? c.kind === 'cist' : cistStatus(p, d, today).isDueToday; // 정기 검사 통화(예정 포함)는 마름모
+    return { p, c, status, cist, min: toMin(c ? c.time || c.startedAt?.slice(11, 16) : p.preferredTime) };
   });
   const visits = d.visits.filter(v => v.date === today && v.status !== 'canceled' && (!scope || ids.has(v.personId) || v.visitor === scope))
     .map(v => ({ v, p: d.people.find(x => x.id === v.personId), start: visitStart(v), end: visitEnd(v) }));
   const alerts = d.alerts.filter(a => a.status === 'open' && ids.has(a.personId)).length;
-  const n = { visit: visits.filter(x => x.v.status === 'planned').length, wait: calls.filter(x => x.status === 'wait').length, miss: calls.filter(x => x.status === 'miss').length, alerts };
-  return { calls, visits, n, total: n.visit + n.wait + n.miss + n.alerts };
+  const review = (d.cistSessions || []).filter(x => x.status === 'draft' && ids.has(x.personId)).length;
+  const n = { visit: visits.filter(x => x.v.status === 'planned').length, wait: calls.filter(x => x.status === 'wait').length, miss: calls.filter(x => x.status === 'miss').length, alerts, review };
+  return { calls, visits, n, total: n.visit + n.wait + n.miss + n.alerts + n.review };
 }
 
 // 오늘 시간표 SVG (가로 110px). 너비는 그릴 때 칸 너비를 읽는다.
@@ -629,9 +691,10 @@ function timelineSvg(plan, width) {
   const labs = layoutLabels(plan.calls.map(x => ({ ...x, x: X(x.min) })));
   for (const it of labs) {
     const [cls, t] = ST[it.status];
-    const label = `${it.p.name} ${hh(it.min)} 통화 ${t}`;
-    const href = it.c ? `#/admin/p/${it.p.id}/calls?call=${it.c.id}` : `#/admin/p/${it.p.id}/calls`;
-    s += `<a href="${href}" aria-label="${esc(label)}"><title>${esc(label)}</title><circle class="${cls}" cx="${it.x}" cy="64" r="6"/>
+    const label = `${it.p.name} ${hh(it.min)} ${it.cist ? '정기 인지검사' : '통화'} ${t}`;
+    const href = it.c?.kind === 'cist' ? `#/admin/p/${it.p.id}/cist` : it.c ? `#/admin/p/${it.p.id}/calls?call=${it.c.id}` : `#/admin/p/${it.p.id}/calls`;
+    const mark = it.cist ? `<rect class="${cls}" x="${it.x - 5.5}" y="58.5" width="11" height="11" transform="rotate(45 ${it.x} 64)"/>` : `<circle class="${cls}" cx="${it.x}" cy="64" r="6"/>`;
+    s += `<a href="${href}" aria-label="${esc(label)}"><title>${esc(label)}</title>${mark}
       <text class="lbl ${it.hidden ? 'hide' : ''}" x="${it.x}" y="${it.side === 'top' ? 50 : 84}" text-anchor="middle">${esc(it.p.name)}</text></a>`;
   }
   if (nowMin >= a && nowMin <= b) s += `<line class="now" x1="${X(nowMin)}" x2="${X(nowMin)}" y1="10" y2="92"/><text class="now-t" x="${X(nowMin) + 4}" y="9">${hh(nowMin)}</text>`;
@@ -659,10 +722,11 @@ function dashboardPage() {
     .sort((a, b) => a.startTime.localeCompare(b.startTime));
   const plan = todayPlan(d, today, tlMine ? mine : null);
 
+  const cops = cistOps(d, today, period);
   const dl = comp.delta;
   const kpis = [
     ['#/admin/people', '전체 대상자', `${people.length}<small>명</small>`, `높음 ${count('high')} · 주의 ${count('mid')}`],
-    ['#/admin/people?alerts=1', '미조치 알림', `${openAlerts.length}<small>건</small>`, `의뢰 단계 ${openAlerts.filter(a => a.level === 'refer').length}건`],
+    ['#/admin/people?alerts=1', '미조치 알림', `${openAlerts.length}<small>건</small>`, `의뢰 단계 ${openAlerts.filter(a => a.level === 'refer').length}건 · 채점 대기 ${cops.pending}`],
     ['#/admin/people?sort=rate', '7일 완료율', comp.now == null ? '-' : `${fmtNum(comp.now, 1)}<small>%</small>`,
       dl == null ? '목표 80%' : `<span class="${dl >= 0 ? 'up' : 'down'}">${dl >= 0 ? '▲' : '▼'} ${fmtNum(Math.abs(dl), 1)}%p</span> 지난주 대비`],
     ['#/admin/people', '오늘 통화', `${doneToday}<small>/ ${callToday.length}</small>`, `무응답 ${missedToday}`],
@@ -690,7 +754,9 @@ function dashboardPage() {
     ['의뢰 연계율', pctText(m.referralRate)],
     ['연계 후 확진율 (PPV)', pctText(m.ppv)],
     ['오경보율', pctText(m.falseAlarmRate)],
-    ['수면무호흡 의심 / 난청 의심', `${fmtUnit(m.spo2Alerts, '건')} / ${fmtUnit(m.hearingAlerts, '건')}`]
+    ['수면무호흡 의심 / 난청 의심', `${fmtUnit(m.spo2Alerts, '건')} / ${fmtUnit(m.hearingAlerts, '건')}`],
+    ['정기검사 이행률', pctText(cops.onTimeRate), '목표 90% 이상 (예정일 ±3일)', goal(cops.onTimeRate, v => v >= 90), cops.onTimeRate],
+    ['채점 확정까지 평균 일수', cops.avgConfirmDays == null ? '-' : fmtUnit(cops.avgConfirmDays, '일', 1)]
   ];
 
   const bandChip = (href, label, n, attrs = '') => `<a class="band-chip" href="${href}" ${attrs}>${label} <b>${n}</b></a>`;
@@ -704,6 +770,7 @@ function dashboardPage() {
             ${bandChip('#/admin/people', '통화 대기', plan.n.wait)}
             ${bandChip('#/admin/people', '무응답 확인', plan.n.miss)}
             ${bandChip('#/admin/people?alerts=1', '담당 알림', plan.n.alerts)}
+            ${bandChip('#/admin/people?cist=pending', '채점 확인', plan.n.review)}
             <div class="seg" role="group" aria-label="시간표 범위">
               <button type="button" data-act="tlScope" data-v="all" aria-pressed="${!tlMine}" class="${tlMine ? '' : 'on'}">전체</button>
               <button type="button" data-act="tlScope" data-v="mine" aria-pressed="${tlMine}" class="${tlMine ? 'on' : ''}">내 담당</button>
@@ -779,10 +846,11 @@ function dashboardPage() {
 
     <details class="card" style="margin-top:var(--s5)">
       <summary><h2>판정 설정</h2><span class="muted small">판정 파라미터 · 데이터 재생성 · 초기화</span></summary>
-      <form class="form" data-submit="saveSettings">${Object.keys(DEFAULT_SETTINGS).map(k => `
+      <form class="form" data-submit="saveSettings">${Object.keys(DEFAULT_SETTINGS).filter(k => SETTING_LABEL[k] && !SETTING_HIDDEN.includes(k)).map(k => `
         <label>${SETTING_LABEL[k]}<input id="set-${k}" type="number" step="any" value="${s[k]}"></label>`).join('')}
         <button class="btn btn-primary" type="submit">저장</button>
       </form>
+      <div class="row" style="margin-top:var(--s4)"><a class="btn btn-secondary btn-sm" href="#/admin/questions?tab=cist">${icon('list', 16)}정기 인지검사 방식</a></div>
       <div class="card-head" style="margin:var(--s6) 0 var(--s2)"><h2>AI 음성 · 대화</h2></div>
       <div id="voice-set" class="stack"><p class="muted">확인 중</p></div>
       <p class="muted small" style="margin-top:var(--s3)">음성 합성: Typecast</p>
@@ -807,7 +875,7 @@ function dashboardPage() {
   actions.mapRetry = () => render();
   actions.saveSettings = () => {
     for (const k of Object.keys(DEFAULT_SETTINGS)) {
-      const v = parseFloat(document.getElementById('set-' + k).value);
+      const v = parseFloat(document.getElementById('set-' + k)?.value);
       if (!Number.isNaN(v)) s[k] = v;
     }
     evaluate();
@@ -1002,22 +1070,34 @@ function peoplePage(params) {
   if (params.get('sort') === 'rate') { list.sort = 'rate'; list.dir = 1; }
   if (params.get('risk')) list.risk = params.get('risk');
   if (params.has('visit')) list.visit = true;
+  if (params.get('cist')) list.cist = params.get('cist');
   const onlyAlerts = params.has('alerts');
+  const C = new Map(d.people.map(p => [p.id, cistStatus(p, d, today)]));
+  const cistDiff = st => (st.change?.original.comparable ? st.change.original.diff : null);
+  const CIST_FILTER = { pending: st => !!st.draft, late: st => st.delayed, drop: st => cistDiff(st) < 0 };
 
   const cols = [
     ['name', '이름'], ['age', '성별/나이'], ['address', '주소'], ['manager', '담당자'],
-    ['risk', '위험도'], ['rate', '최근 7일 완료율', true], ['last', '최근 통화일'], ['visit', '다음 방문일']
+    ['risk', '위험도'], ['cist', '정기검사', true], ['rate', '최근 7일 완료율', true], ['last', '최근 통화일'], ['visit', '다음 방문일']
   ];
   const sortVal = {
     name: p => p.name, age: p => p.age ?? 0, address: p => p.address || '', manager: p => p.manager || '',
     risk: p => RISK_RANK[R.get(p.id).level] * 1000 - (R.get(p.id).score ?? 0), rate: p => comp.get(p.id) ?? -1,
-    last: p => lastCall(p.id) || '', visit: p => nextVisit(p.id)?.date || '9999'
+    last: p => lastCall(p.id) || '', visit: p => nextVisit(p.id)?.date || '9999',
+    cist: p => C.get(p.id).score?.original.score ?? -1
+  };
+  // 정기검사 칸: 최근 확정 회차의 원형 유지 점수 · 같은 방식일 때만 변화 · 시행일
+  const cistCell = p => {
+    const st = C.get(p.id), o = st.score?.original, df = cistDiff(st);
+    return `${o ? `<span class="num">${o.score}/${o.max}</span>${df ? ` <span class="${df > 0 ? 'up' : 'down'}">${df > 0 ? '▲' : '▼'}${Math.abs(df)}</span>` : ''} <span class="muted small">${mdot(st.latest.date)}</span>` : '-'}`
+      + (st.draft ? ' <span class="chip chip-info">채점 대기</span>' : '') + (st.delayed ? ' <span class="chip chip-mid">검사 지연</span>' : '');
   };
 
   const rows = () => {
     let ps = filterPeople(d.people.filter(p => p.active || (list.closed && p.closed)), list.q, list.mine && me ? displayName(me) : null);
     if (list.risk !== 'all') ps = ps.filter(p => R.get(p.id).level === list.risk);
     if (list.visit) ps = ps.filter(p => nextVisit(p.id));
+    if (CIST_FILTER[list.cist]) ps = ps.filter(p => CIST_FILTER[list.cist](C.get(p.id)));
     if (onlyAlerts) ps = ps.filter(p => d.alerts.some(a => a.personId === p.id && a.status === 'open'));
     const f = sortVal[list.sort];
     ps.sort((a, b) => { const x = f(a), y = f(b); return (x < y ? -1 : x > y ? 1 : 0) * list.dir; });
@@ -1035,6 +1115,7 @@ function peoplePage(params) {
             <td data-label="주소" class="clip" title="${shortAddr(p.address)}">${shortAddr(p.address)}</td>
             <td data-label="담당자">${esc(p.manager || '-')}</td>
             <td data-label="위험도">${p.closed ? `<span class="chip">종결 ${mdot(p.closed.date)}</span>` : riskChip(r.level)}${!p.closed && !r.signals.status.base.ready ? ' <span class="chip chip-info">기저선 형성 중</span>' : ''}</td>
+            <td data-label="정기검사" class="n">${cistCell(p)}</td>
             <td data-label="최근 7일 완료율" class="n ${rate != null && rate < 80 ? 'bad-t' : ''}">${pctText(rate)}</td>
             <td data-label="최근 통화일" class="num">${mmdd(lastCall(p.id))}</td>
             <td data-label="다음 방문일" class="num">${v ? mdot(v.date) : '-'}</td>
@@ -1059,6 +1140,11 @@ function peoplePage(params) {
     document.querySelectorAll('[data-act=riskf]').forEach(b => b.setAttribute('aria-pressed', b === el));
     refresh();
   };
+  actions.cistf = el => {
+    list.cist = list.cist === el.dataset.v ? '' : el.dataset.v;
+    document.querySelectorAll('[data-act=cistf]').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === list.cist));
+    refresh();
+  };
   actions.sort = (el, e) => {
     e.stopPropagation();
     const k = el.dataset.k;
@@ -1080,6 +1166,8 @@ function peoplePage(params) {
           ${toggle('flag', '방문 예정만', list.visit, 'visit')}
           ${toggle('flag', '내 담당만', list.mine, 'mine')}
           ${toggle('flag', '종결 포함', list.closed, 'closed')}
+          <span class="sep" aria-hidden="true"></span>
+          ${[['pending', '채점 대기'], ['late', '검사 지연'], ['drop', '점수 하락']].map(([v, t]) => toggle('cistf', t, list.cist === v, v)).join('')}
         </div>
         ${onlyAlerts ? `<p class="filter-on">미조치 알림 있는 대상자만 보는 중 · <a href="#/admin/people">전체 보기</a></p>` : ''}
         <div id="plist">${rows()}</div>
@@ -1160,7 +1248,7 @@ function journalsPage(params) {
 }
 
 // ---------- 대상자 상세 ----------
-const TABS = [['summary', '요약'], ['info', '기본 정보'], ['trend', '변화 추이'], ['calls', '통화 기록'], ['visits', '방문 · 요청'], ['journal', '돌봄일지'], ['alerts', '알림']];
+const TABS = [['summary', '요약'], ['info', '기본 정보'], ['trend', '변화 추이'], ['calls', '통화 기록'], ['cist', '정기 인지검사'], ['visits', '방문 · 요청'], ['journal', '돌봄일지'], ['alerts', '알림']];
 const CONDITIONS = ['고혈압', '당뇨병', '이상지질혈증', '심부전', '부정맥', '만성폐쇄성폐질환(COPD)', '천식', '뇌졸중 과거력', '파킨슨병', '우울증', '수면무호흡 진단', '갑상선질환', '만성콩팥병', '관절염', '골다공증'];
 const DEVICES = ['안경·돋보기', '틀니', '지팡이', '보행기', '휠체어'];
 const JOURNAL_TYPES = ['전화 상담', '방문', '보호자 연락', '기관 연계', '기타'];
@@ -1205,6 +1293,7 @@ function personPage([id, tab = 'summary'], params) {
   const tel = ph => esc((ph || '').replace(/[^0-9]/g, ''));
   const counts = {
     calls: d.calls.filter(c => c.personId === id).length,
+    cist: cistSessionsOf(d, id).filter(x => x.status === 'draft').length,
     journal: (d.journals || []).filter(j => j.personId === id).length,
     alerts: openCount
   };
@@ -1231,8 +1320,8 @@ function personPage([id, tab = 'summary'], params) {
       </div>
       <div class="stats">
         <div class="stat"><small>종합 케어 스코어</small><b>${r.score ?? '-'}<small>점</small></b></div>
-        <div class="stat"><small>최근 인지검사</small><b>${st.lastScore == null ? '-' : `${fmtNum(st.lastScore, 1)}<small>%</small>`}</b></div>
-        <div class="stat"><small>최근 z</small><b>${st.base.ready ? (st.lastZ == null ? '-' : fmtNum(st.lastZ, 2)) : '<small>기저선 형성 중</small>'}</b></div>
+        <div class="stat"><small>최근 인지검사 · z</small><b>${st.lastScore == null ? '-' : `${fmtNum(st.lastScore, 1)}<small>%</small>`}<small> · ${st.base.ready ? (st.lastZ == null ? '-' : 'z ' + fmtNum(st.lastZ, 2)) : '기저선 형성 중'}</small></b></div>
+        <a class="stat" href="#/admin/p/${p.id}/cist"><small>최근 정기검사</small><b>${cistStat(r.signals.cist.status)}</b></a>
         <div class="stat"><small>최근 7일 통화 완료</small><b>${r.signals.completion.done}<small>/ ${r.signals.completion.days}</small></b></div>
       </div>
     </section>
@@ -1254,6 +1343,7 @@ function personPage([id, tab = 'summary'], params) {
     visits: () => visitsTab(p),
     trend: () => trendTab(p, T, params.get('m')),
     calls: () => callsTab(p),
+    cist: () => cistTab(p),
     journal: () => journalTab(p),
     alerts: () => `
       <section class="card">
@@ -1330,7 +1420,8 @@ function personPage([id, tab = 'summary'], params) {
     trendOpt = { ...trendOpt, [k]: k === 'days' ? +v : k === 'weekly' ? v === '1' : !trendOpt[k] };
     render();
   };
-  actions.metric = el => { location.hash = `#/admin/p/${p.id}/trend?m=${el.dataset.k}`; };
+  actions.metric = el => { location.hash = METRIC[el.dataset.k].kind === 'cist' ? `#/admin/p/${p.id}/cist` : `#/admin/p/${p.id}/trend?m=${el.dataset.k}`; };
+  Object.assign(actions, cistActions(p, who));
   actions.csv = () => {
     const blob = new Blob([trendCsv(d, p, today, getNightVitals)], { type: 'text/csv;charset=utf-8' });
     const a = document.createElement('a');
@@ -1456,6 +1547,7 @@ function personPage([id, tab = 'summary'], params) {
       const sentinel = app.querySelector('.tab-sentinel'), bar = app.querySelector('.tabbar');
       if (sentinel && bar && window.IntersectionObserver) new IntersectionObserver(([e]) => bar.classList.toggle('stuck', !e.isIntersecting && e.boundingClientRect.top < 0)).observe(sentinel);
       if (tab === 'trend') { drawMetricChart(p, T, params.get('m')); drawPersonChart(p, st, s, today); }
+      if (tab === 'cist') drawCistChart(p);
       if (tab === 'calls') {
         app.querySelectorAll('details.crow').forEach(el => el.addEventListener('toggle', () => { if (el.open) openCallId = el.dataset.id; }));
         if (params.get('call')) document.getElementById('call-' + params.get('call'))?.scrollIntoView({ block: 'center' });
@@ -1569,7 +1661,9 @@ function sparkline(t, m) {
   let lo = Math.min(...vals), hi = Math.max(...vals);
   if (t.baseline) { lo = Math.min(lo, t.baseline.mean - t.sdEff); hi = Math.max(hi, t.baseline.mean + t.sdEff); }
   if (hi === lo) { hi += 1; lo -= 1; }
-  const X = dt => 2 + (daysBetween(from, dt) / Math.max(1, trendOpt.days - 1)) * (W - 4);
+  // 정기검사는 회차 순서로 (몇 주 간격이라 날짜 축에 두면 점이 1~2개만 보인다)
+  const X = t.cist ? (dt => 2 + (pts.findIndex(x => x.date === dt) / Math.max(1, pts.length - 1)) * (W - 4))
+    : (dt => 2 + (daysBetween(from, dt) / Math.max(1, trendOpt.days - 1)) * (W - 4));
   const Y = v => H - 3 - ((v - lo) / (hi - lo)) * (H - 6);
   const band = t.baseline ? `<rect x="0" y="${Y(t.baseline.mean + t.sdEff)}" width="${W}" height="${Math.max(1, Y(t.baseline.mean - t.sdEff) - Y(t.baseline.mean + t.sdEff))}" class="sp-band"/>` : '';
   const line = pts.map(x => `${X(x.date).toFixed(1)},${Y(x.value).toFixed(1)}`).join(' ');
@@ -1596,7 +1690,7 @@ function trendRow(m, t) {
 }
 
 function trendTable(p, T, compact) {
-  let ms = TREND_METRICS.filter(m => !m.domain || (!compact && trendOpt.domains));
+  let ms = TREND_METRICS.filter(m => !(m.domain || m.fold) || (!compact && trendOpt.domains));
   if (trendOpt.byChange) ms = [...ms].sort((a, b) => (T[b.key].status === '악화') - (T[a.key].status === '악화') || T[b.key].score - T[a.key].score);
   let group = null;
   const rows = ms.map(m => {
@@ -1765,8 +1859,9 @@ function callRow(c, p) {
       <summary>
         <span class="date">${mdot(c.date)} ${esc(c.time || (c.startedAt || '').slice(11, 16))}</span>
         <span class="st st-${c.status}">${CALL_STATUS[c.status]}</span>
+        ${c.kind === 'cist' ? '<span class="chip chip-info">정기 인지검사</span>' : ''}
         ${c.status === 'missed' ? '' : `
-          <span>점수 <b class="num">${pctText(c.scorePct)}</b>${c.z != null ? ` <span class="muted">(z ${c.z})</span>` : ''}</span>
+          ${c.kind === 'cist' ? '' : `<span>점수 <b class="num">${pctText(c.scorePct)}</b>${c.z != null ? ` <span class="muted">(z ${c.z})</span>` : ''}</span>`}
           <span class="muted">${fmtDur(c.durationSec)}</span>
           <span class="muted">재질문 ${asks}회</span>`}
         ${c.source === 'real' ? '<span class="chip chip-info">실측</span>' : ''}
@@ -1790,6 +1885,7 @@ function callRow(c, p) {
             ${c.opening.recent ? bubbleQ(c.opening.recent.question, '최근 문제 · 채점 안 함') + bubbleA(c.opening.recent.answer) : ''}</div>`
           : c.greeting ? `<div class="qa">${bubbleQ(c.greeting.text, c.greeting.ai ? '인사 · AI 문장' : '인사', c.greeting.ai)}</div>` : ''}
         ${c.declined ? '<p class="chk warn-box">통화 어려움 · 검사 없이 종료 (다음 통화에서 다시)</p>' : ''}
+        ${c.cistId ? `<p><a class="btn btn-secondary btn-sm" href="#/admin/p/${p.id}/cist">정기 인지검사 채점 보기</a></p>` : ''}
         ${c.items.map((it, i) => `
           <div class="qa">
             ${bubbleQ(it.question, it.domain)}
@@ -1812,6 +1908,195 @@ function callRow(c, p) {
         ${c.audioId ? `<p><button type="button" class="btn btn-danger btn-sm" data-act="delAudio" data-id="${c.id}">${icon('trash', 16)}녹음 삭제</button></p>` : ''}
       </div>`}
     </details>`;
+}
+
+// ---------- 정기 인지검사(전화형) 탭 ----------
+// 점수는 metrics.js의 cistScore · cistChange만 쓴다 (목록·현황·요약·추이·일지가 같은 값)
+let cistOpen = null; // 펼쳐 둔 회차
+const STATUS_CIST = { auto: ['자동', 'neutral'], needs_review: ['확인 필요', 'mid'], reviewed: ['담당자 채점', 'info'], omitted: ['미시행', 'neutral'] };
+const diffText = df => (df > 0 ? `<span class="up">▲${df}</span>` : df < 0 ? `<span class="down">▼${Math.abs(df)}</span>` : '<span class="muted">±0</span>');
+function cistStat(st) {
+  if (!st.latest) return st.draft ? '<small>채점 확인 대기</small>' : '<small>기록 없음</small>';
+  const o = st.score.original, df = st.change?.original.comparable ? st.change.original.diff : null;
+  return `${o.score}<small>/ ${o.max}</small>${df != null ? ` <small>${diffText(df)}</small>` : ''}${st.draft ? ' <small>· 채점 대기</small>' : ''}`;
+}
+function cistTab(p) {
+  const d = getData(), today = todayStr();
+  const st = cistStatus(p, d, today);
+  const all = cistSessionsOf(d, p.id).reverse();
+  const tests = (p.info?.tests || []).filter(t => t.score != null);
+  const row = (x, n) => {
+    const sc = cistScore(x);
+    const prev = confirmedCist(d, p.id).filter(y => y.date < x.date).at(-1);
+    const ch = x.status === 'confirmed' ? cistChange(prev, x) : null;
+    return `
+      <tr class="click" data-act="cistOpen" data-id="${x.id}" tabindex="0" aria-expanded="${cistOpen === x.id}">
+        <td class="first"><b>${all.length - n}회차</b> <span class="muted small">문장 ${x.form}</span></td>
+        <td data-label="시행일" class="num">${fmtDate(x.date)}</td>
+        <td data-label="원형 유지" class="n">${sc.original.score}/${sc.original.max}${ch ? ' ' + (ch.original.comparable ? diffText(ch.original.diff) : '<span class="chip chip-neutral">방식 다름</span>') : ''}</td>
+        <td data-label="30점 환산" class="n">${fmtNum(sc.scaled30, 1)} <span class="muted small">30점 환산</span></td>
+        <td data-label="상태">${x.status === 'confirmed' ? `<span class="chip chip-low">확정 ${mdot(x.confirmedAt?.slice(0, 10))}</span>` : `<span class="chip chip-info">채점 대기</span>`}${sc.pending ? ` <span class="chip chip-mid">확인 필요 ${sc.pending}</span>` : ''}</td>
+        <td data-label="방식">${cistModeNotes(x).map(t => `<span class="chip chip-neutral">${esc(t)}</span>`).join(' ') || '<span class="muted small">기본 방식</span>'}</td>
+      </tr>
+      ${cistOpen === x.id ? `<tr class="cist-detail"><td colspan="6">${cistDetail(p, x, prev)}</td></tr>` : ''}`;
+  };
+  return `
+    <section class="card">
+      <div class="card-head"><h2>정기 인지검사(전화형)</h2>
+        <div class="row"><span class="muted small">다음 검사일 ${fmtDate(st.due)}${st.delayed ? ' <span class="chip chip-mid">검사 지연</span>' : ''} · ${d.settings.cistIntervalWeeks || 4}주마다</span>
+          <a class="btn btn-ghost btn-sm" href="#/admin/questions?tab=cist">방식 설정</a></div></div>
+      ${all.length || tests.length ? `<div class="chartbox"><canvas id="cistChart" role="img" aria-label="정기검사 원형 유지 점수와 대면 검사 점수"></canvas></div>
+        ${legendHtml([['원형 유지 점수', 'var(--accent)'], ['대면 검사 (오른쪽 축)', 'var(--ink-2)'], ['방식 변경', 'var(--faint)', true]])}` : ''}
+      ${all.length ? `<div class="table-wrap" style="margin-top:var(--s4)"><table class="table compact rtable">
+        <thead><tr><th>회차</th><th>시행일</th><th class="n">원형 유지</th><th class="n">30점 환산</th><th>상태</th><th>방식</th></tr></thead>
+        <tbody>${all.map(row).join('')}</tbody></table></div>` : empty('기록 없음', 'list')}
+      <p class="muted small" style="margin-top:var(--s3)">원형 유지 = 원검사와 같은 문항만 · 영역 비교는 방식이 같은 회차끼리 · 점수 기준선(정상·이상)은 쓰지 않음</p>
+    </section>`;
+}
+function cistDetail(p, x, prev) {
+  const d = getData();
+  const sc = cistScore(x), ch = cistChange(prev, x.status === 'confirmed' ? x : null);
+  const call = d.calls.find(c => c.id === x.callId);
+  const scoreSel = (it, k) => {
+    if (it.status === 'omitted') return '<span class="muted small">미시행</span>';
+    const vals = Array.from({ length: it.maxScore + 1 }, (_, v) => v);
+    return `<select data-change="cistScoreSet" data-s="${x.id}" data-i="${k}" aria-label="${esc(it.id)} 점수">
+      ${it.score == null ? '<option value="" selected>확인 필요</option>' : ''}${vals.map(v => `<option value="${v}" ${it.score === v ? 'selected' : ''}>${v}점</option>`).join('')}</select><span class="muted small"> / ${it.maxScore}</span>
+      ${it.status === 'needs_review' && it.score != null ? btn('이 점수로 확인', `data-act="cistKeep" data-s="${x.id}" data-i="${k}"`, 'ghost') : ''}`;
+  };
+  const extra = (it, k) => {
+    if (it.type === 'fluency' && it.candidates?.length) return `<div class="chips">${(it.found || []).map(w => `<span class="chip chip-low">${esc(w)}</span>`).join('')}
+      ${it.candidates.map(w => { const ok = (it.accepted || []).includes(w), done = (it.decided || []).includes(w); return `<span class="chip ${done ? (ok ? 'chip-low' : 'chip-neutral') : 'chip-mid'}">${esc(w)}
+        ${btn(ok ? '제외' : '인정', `data-act="cistWord" data-s="${x.id}" data-i="${k}" data-w="${esc(w)}" data-ok="${ok ? 0 : 1}"`, 'ghost')}</span>`; }).join('')}</div>`;
+    if (it.type === 'fluency') return `<div class="chips">${(it.found || []).map(w => `<span class="chip chip-low">${esc(w)}</span>`).join('')}</div>`;
+    if (it.type === 'draw') return x.drawingId ? `${btn('그림 보기', `data-act="cistImg" data-s="${x.id}"`)}<div id="img-${x.id}"></div>` : '<span class="muted small">그림 없음</span>';
+    if (it.type === 'comp' || it.type === 'place') return call?.audioId && it.startMs != null ? `${btn(`${icon('play', 16)}녹음 듣기`, `data-act="cistPlay" data-s="${x.id}" data-i="${k}"`)}<div id="pl-${x.id}-${k}"></div>` : '<span class="muted small">녹음 없음</span>';
+    if (it.type === 'recall' && it.recog) return `<span class="muted small">보기: ${esc(it.recog.q)} → "${esc(it.recog.response || '')}"</span>`;
+    return '';
+  };
+  const expect = it => esc(it.type === 'recall' ? it.word : it.type === 'digits' ? it.digits : it.type === 'reverse' ? [...it.word].reverse().join('') : it.type === 'time' ? { year: '연도', month: '월', day: '일', weekday: '요일' }[it.part] + ' (통화 날짜)'
+    : it.type === 'answers' ? it.answers.join(' · ') : it.type === 'fluency' ? `${it.cut.two}개 이상 2점 · ${it.cut.one}개 이상 1점` : it.type === 'place' ? (it.mode === 'a' ? (it.home || []).slice(0, 4).join(' · ') : (it.areas || []).join(' · ')) : '');
+  const domains = CIST_DOMAINS.map(([k, label]) => {
+    const b = sc.byDomain[k], c = ch?.byDomain[k];
+    return `<div class="stat"><small>${label}</small><b>${b ? `${b.score}<small>/ ${b.max}</small>` : '<small>미시행</small>'}${c?.modeDiff ? ' <small>방식 다름</small>' : c ? ` <small>${diffText(c.diff)}</small>` : ''}</b></div>`;
+  }).join('');
+  const items = CIST_DOMAINS.map(([dk, label]) => {
+    const its = x.items.map((it, k) => [it, k]).filter(([it]) => it.domain === dk);
+    if (!its.length) return '';
+    return `<tr class="group-row"><td colspan="5">${label}</td></tr>` + its.map(([it, k]) => `
+      <tr><td class="first">${esc(it.type === 'recall' ? `지연 회상 · 문장 ${it.form}` : it.label || it.question || it.note || '')} <span class="chip chip-neutral">${FIDELITY_LABEL[it.fidelity] || ''}</span></td>
+        <td data-label="대답">${it.answer ? `"${esc(it.answer)}"` : '<span class="muted">대답 없음</span>'}</td>
+        <td data-label="정답 기준" class="muted small">${expect(it)}</td>
+        <td data-label="점수">${scoreSel(it, k)}</td>
+        <td data-label="상태"><span class="chip chip-${STATUS_CIST[it.status][1]}">${STATUS_CIST[it.status][0]}</span>${it.note ? ` <span class="muted small">${esc(it.note)}</span>` : ''}<div class="small">${extra(it, k)}</div></td></tr>`).join('');
+  }).join('');
+  const pending = sc.pending;
+  return `
+    <div class="cist-box">
+      <div class="stats">${domains}</div>
+      <p class="muted small">원형 유지 ${sc.original.score}/${sc.original.max} · 전체 ${sc.total.score}/${sc.total.max} · 30점 환산 ${fmtNum(sc.scaled30, 1)}점${x.register?.length ? ` · 문장 따라 말하기(채점 안 함): ${x.register.map(t => `"${esc(t || '대답 없음')}"`).join(' / ')}` : ''}</p>
+      <div class="table-wrap"><table class="table compact rtable"><thead><tr><th>문항</th><th>대답</th><th>정답 기준</th><th>점수</th><th>상태</th></tr></thead><tbody>${items}</tbody></table></div>
+      <div class="row" style="margin-top:var(--s4)">
+        ${x.status === 'draft' ? btn('채점 확정', `data-act="cistConfirm" data-s="${x.id}" ${pending ? 'disabled' : ''}`, 'primary', '') + (pending ? ` <span class="muted small">확인 필요 ${pending}개 남음</span>` : '')
+          : `<span class="chip chip-low">확정 · ${esc(x.confirmedBy || '')} · ${fmtStamp(x.confirmedAt)}</span>`}
+        ${call ? `<a class="btn btn-ghost btn-sm" href="#/admin/p/${p.id}/calls?call=${call.id}">통화 기록</a>` : ''}
+      </div>
+      ${call?.transcript?.length ? `<details class="cist-talk"><summary>대화록</summary><div class="convo">${call.transcript.map(t =>
+        `<div class="bubble ${t.role === 'app' ? 'app' : 'me'}">${esc(t.text)}</div>`).join('')}</div></details>` : ''}
+      ${x.edits?.length ? `<h3>확정 후 수정 이력</h3><ul class="plain">${x.edits.map(e => `<li class="small">${fmtStamp(e.at)} · ${esc(e.by)} · ${esc(e.itemId)} ${e.from ?? '-'}점 → ${e.to ?? '-'}점</li>`).join('')}</ul>` : ''}
+    </div>`;
+}
+function cistActions(p, who) {
+  const d = getData();
+  const ses = el => d.cistSessions.find(x => x.id === el.dataset.s);
+  const changed = x => { evaluate([p.id]); cistOpen = x.id; render(); };
+  return {
+    cistOpen: (el, e) => { if (e.target.closest('button, a, select')) return; cistOpen = cistOpen === el.dataset.id ? null : el.dataset.id; render(); },
+    cistScoreSet: el => {
+      const x = ses(el), it = x.items[+el.dataset.i];
+      const to = el.value === '' ? null : +el.value;
+      if (x.status === 'confirmed') (x.edits ??= []).push({ itemId: it.id, from: it.score, to, by: who, at: nowStamp() }); // 확정 뒤 수정은 이력으로
+      Object.assign(it, { score: to, status: to == null ? 'needs_review' : 'reviewed' });
+      changed(x);
+      toast('점수 수정됨');
+    },
+    cistKeep: el => { // 자동으로 매긴 후보 점수를 그대로 확인
+      const x = ses(el), it = x.items[+el.dataset.i];
+      Object.assign(it, { status: 'reviewed' });
+      changed(x);
+    },
+    cistWord: el => {
+      const x = ses(el), k = +el.dataset.i, it = x.items[k], w = el.dataset.w;
+      it.decided = [...new Set([...(it.decided || []), w])];
+      it.accepted = el.dataset.ok === '1' ? [...new Set([...(it.accepted || []), w])] : (it.accepted || []).filter(v => v !== w);
+      const before = it.score;
+      x.items[k] = rescoreCist(it.status === 'reviewed' ? { ...it, status: 'auto' } : it);
+      if (x.status === 'confirmed' && before !== x.items[k].score) (x.edits ??= []).push({ itemId: it.id, from: before, to: x.items[k].score, by: who, at: nowStamp() });
+      changed(x);
+    },
+    cistConfirm: el => {
+      const x = ses(el);
+      if (cistScore(x).pending) return;
+      Object.assign(x, { status: 'confirmed', confirmedBy: who, confirmedAt: nowStamp() });
+      changed(x);
+      toast('채점 확정됨');
+    },
+    cistImg: async el => {
+      const x = ses(el), blob = await getAudio(x.drawingId);
+      document.getElementById('img-' + x.id).innerHTML = blob ? `<img class="cist-img" alt="대상자가 그린 그림" src="${URL.createObjectURL(blob)}">` : '<p class="muted small">그림 없음</p>';
+    },
+    cistPlay: async el => {
+      const x = ses(el), it = x.items[+el.dataset.i];
+      const blob = await getAudio(d.calls.find(c => c.id === x.callId)?.audioId);
+      const box = document.getElementById(`pl-${x.id}-${el.dataset.i}`);
+      if (!blob) { box.innerHTML = '<p class="muted small">녹음 파일 없음</p>'; return; }
+      box.innerHTML = `<audio controls src="${URL.createObjectURL(blob)}"></audio>`;
+      const a = box.querySelector('audio');
+      a.addEventListener('loadedmetadata', () => { a.currentTime = it.startMs / 1000; a.play().catch(() => {}); }, { once: true });
+    }
+  };
+}
+// 원형 유지 점수 선 + 대면 검사 점(오른쪽 축) + 방식이 바뀐 회차에 세로 점선
+function drawCistChart(p) {
+  const el = document.getElementById('cistChart');
+  if (!el || !window.Chart) return;
+  const d = getData();
+  const conf = confirmedCist(d, p.id);
+  const tests = (p.info?.tests || []).filter(t => t.score != null && t.date);
+  const dates = [...new Set([...conf.map(x => x.date), ...tests.map(t => t.date)])].sort();
+  const modeKey = x => JSON.stringify(x.modes || {});
+  const changes = conf.filter((x, n) => n && modeKey(x) !== modeKey(conf[n - 1])).map(x => dates.indexOf(x.date));
+  const maxO = Math.max(1, ...conf.map(x => cistScore(x).original.max));
+  const lines = {
+    id: 'modeLines',
+    afterDatasetsDraw(c) {
+      const { ctx, chartArea: a, scales } = c;
+      ctx.save();
+      ctx.strokeStyle = css('--faint');
+      ctx.setLineDash([5, 4]);
+      for (const i of changes) { const xx = scales.x.getPixelForValue(i); ctx.beginPath(); ctx.moveTo(xx, a.top); ctx.lineTo(xx, a.bottom); ctx.stroke(); }
+      ctx.restore();
+    }
+  };
+  charts.push(new Chart(el, {
+    type: 'line',
+    data: {
+      labels: dates.map(fmtMD),
+      datasets: [
+        { label: '원형 유지 점수', data: dates.map(dt => { const x = conf.find(y => y.date === dt); return x ? cistScore(x).original.score : null; }),
+          borderColor: css('--accent'), backgroundColor: css('--accent'), pointRadius: 4, spanGaps: true, yAxisID: 'y' },
+        { label: '대면 검사', type: 'scatter', data: dates.map((dt, i) => { const t = tests.find(y => y.date === dt); return t ? { x: i, y: t.score } : null; }).filter(Boolean),
+          borderColor: css('--ink-2'), backgroundColor: css('--ink-2'), pointRadius: 5, pointStyle: 'rectRot', yAxisID: 'y2' }
+      ]
+    },
+    options: {
+      maintainAspectRatio: false,
+      scales: { x: { type: 'category' }, y: { min: 0, max: maxO, title: { display: true, text: '원형 유지 (점)' } },
+        y2: { position: 'right', min: 0, max: 30, grid: { display: false }, title: { display: true, text: '대면 검사 (점)' } } },
+      plugins: { tooltip: { callbacks: { label: c => `${c.dataset.label} ${c.parsed.y}점` } } }
+    },
+    plugins: [lines]
+  }));
 }
 
 // ---------- 방문 · 요청 탭 ----------
@@ -1914,6 +2199,8 @@ function infoTab(p, form = false) {
         <dt>호칭</dt><dd>${esc(c.title || '-')}</dd>
         <dt>통화 시각·요일</dt><dd>${esc(p.preferredTime)} (±1시간) · ${(c.days || []).length === 7 ? '매일' : (c.days || []).map(k => DAYS[k]).join('·')}</dd>
         <dt>첫 통화일</dt><dd>${fmtDate(c.firstCall)}</dd>
+        <dt>다음 정기 검사일</dt><dd>${fmtDate(cistDue(p, getData()))}${c.cistNext ? ' <span class="chip chip-info">직접 지정</span>' : ''}</dd>
+        <dt>평소 통화 장소</dt><dd>${esc(c.place || '집')}</dd>
         <dt>말 속도</dt><dd>${c.rate ?? 0.9}</dd><dt>질문 다시 읽기</dt><dd>최대 ${c.rereads ?? 1}회</dd>
         <dt>무응답 재발신</dt><dd>${c.retry?.count ?? 0}회 · ${c.retry?.interval ?? 30}분 간격</dd>
         <dt>자기보고 질문</dt><dd>${c.selfReport === false ? '끔' : '켬 (수면·기분)'}</dd>
@@ -1933,6 +2220,8 @@ function infoTab(p, form = false) {
         ${form ? '' : `<label>외부 AI 서비스 이용 동의<select name="ai-consent">${opts(['동의', '미동의'], i.consent?.ai === true ? '동의' : '미동의')}</select><span class="help">${AI_CONSENT_TEXT}</span></label>`}
         <label>SpO₂ 알림 기준 (%)<input name="spo2" type="number" step="1" min="80" max="95" value="${c.spo2Threshold ?? 90}"></label>
         <label>첫 통화일<input name="firstCall" type="date" value="${c.firstCall || ''}"></label>
+        <label>다음 정기 검사일<input name="cistNext" type="date" value="${c.cistNext || (form ? '' : cistDue(p, getData()) || '')}"><span class="help">비우면 마지막 회차 + 주기</span></label>
+        <label>평소 통화 장소<input name="place" value="${esc(c.place || '집')}" placeholder="집"></label>
       </div>
       <h3>통화 요일</h3><div class="chips">${[...DAYS].map((x, k) => `<label class="check"><input type="checkbox" name="day" value="${k}" ${(c.days || [0, 1, 2, 3, 4, 5, 6]).includes(k) ? 'checked' : ''}> ${x}</label>`).join('')}</div>
       <h3>통화 일시중지 <span class="muted small">발신 대상일에서 제외</span></h3>
@@ -1985,10 +2274,10 @@ function infoTab(p, form = false) {
 
   const tests = i.tests || [];
   const testSec = sec('tests', '⑥ 대면 인지검사 기록', tests.length ? `<table class="table compact rtable"><thead><tr><th>검사일</th><th>종류</th><th>점수</th><th>검사자</th></tr></thead><tbody>${tests.map(t => `
-      <tr><td class="first"><b>${fmtDate(t.date)}</b></td><td data-label="종류">${esc(t.kind)}</td><td data-label="점수">${esc(t.score)}</td><td data-label="검사자">${esc(t.examiner || '')}</td></tr>`).join('')}</tbody></table>` : empty('기록 없음'), `
+      <tr><td class="first"><b>${fmtDate(t.date)}</b></td><td data-label="종류">${esc(TEST_KIND[t.kind] || t.kind)}</td><td data-label="점수">${esc(t.score)}</td><td data-label="검사자">${esc(t.examiner || '')}</td></tr>`).join('')}</tbody></table>` : empty('기록 없음'), `
       <h3>대면 인지검사 <span class="muted small">종류를 비우면 삭제</span></h3>
       ${[...tests, {}].map(t => `<div class="rowform" data-row="test">
-        <select name="t-kind"><option value="">종류</option>${opts(['CIST', 'MMSE-DS', '기타'], t.kind)}</select>
+        <select name="t-kind"><option value="">종류</option>${Object.entries(TEST_KIND).map(([v, l]) => `<option value="${v}" ${t.kind === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
         <input name="t-score" type="number" step="any" placeholder="점수" value="${t.score ?? ''}">
         <label>검사일<input name="t-date" type="date" value="${t.date || ''}"></label>
         <input name="t-examiner" placeholder="검사자" value="${esc(t.examiner || '')}"></div>`).join('')}`);
@@ -2030,8 +2319,13 @@ function saveInfoSection(p, sec, f) {
       retry: { count: +F('retry').value, interval: +F('interval').value }, selfReport: F('self').value === '켬',
       days: [...f.querySelectorAll('[name=day]:checked')].map(x => +x.value),
       pause: from ? { from, to: F('p-to').value, reason: F('p-reason').value.trim() } : null,
-      spo2Threshold: +F('spo2').value || 90, firstCall: F('firstCall').value
+      spo2Threshold: +F('spo2').value || 90, firstCall: F('firstCall').value,
+      place: F('place').value.trim() || '집'
     };
+    // 다음 정기 검사일: 계산값과 같으면 저장하지 않는다 (직접 바꾼 날만 남긴다)
+    const next = F('cistNext').value;
+    i.call.cistNext = null;
+    if (next && next !== cistDue(p, getData())) i.call.cistNext = next;
     p.preferredTime = F('time').value;
     if (F('ai-consent')) i.consent = { ...(i.consent || {}), ai: F('ai-consent').value === '동의' };
   }
@@ -2141,6 +2435,7 @@ function alertCard(a, p) {
             <label><input type="checkbox" data-change="check" data-id="${a.id}" data-k="${k}" ${a.checklist?.[k] || auto[k] ? 'checked' : ''} ${auto[k] ? 'disabled' : ''}> ${t}${auto[k] ? ' <span class="chip chip-info">자동</span>' : ''}</label>`).join('')}</div>
         </div>` : ''}
       ${a.type === 'emergency' ? '<p class="chk err-box">대상자에게 119 안내함 · 즉시 전화 확인</p>' : ''}
+      ${a.type === 'cistReview' || a.type === 'cistOverdue' ? `<p><a class="btn btn-secondary btn-sm" href="#/admin/p/${p.id}/cist">정기 인지검사 보기</a> <span class="muted small">${a.type === 'cistReview' ? '채점 확정하면 자동 종결' : '검사를 하면 자동 종결'}</span></p>` : ''}
       <label>메모<textarea data-change="note" data-id="${a.id}" placeholder="처리 내용">${esc(a.note)}</textarea></label>
     </div>`;
 }
@@ -2433,7 +2728,52 @@ const visitActions = {
 // ---------- 문항 관리 (#/admin/questions) ----------
 // 인지검사 문항 뱅크를 고친다. 영역마다 통화 한 번에 한 문항, 다음 통화에는 다른 문항 (켜진 문항 수 = 반복 간격 일수).
 // 고친 뱅크는 data.questionBank에 저장되고 다음 통화부터 쓰인다. 지난 통화 기록은 그날 문항 정보를 따로 갖고 있어 바뀌지 않는다.
-const Q_TABS = [['script', '대본'], ['orientation', '지남력'], ['memory', '기억 (단어)'], ['attention', '주의력'], ['language', '언어기능'], ['executive', '집행기능'], ['preview', '미리보기']];
+// 정기 인지검사 방식: 영역마다 고르기 (★ 기본값). 바꾸면 다음 검사부터, 바꾼 기록을 남긴다.
+function cistModesTab(d, me) {
+  const cur = normalizeModes(d.cistModes);
+  const fid = f => `<span class="chip chip-${f === 'original' ? 'low' : f === 'omitted' ? 'neutral' : f === 'replaced' ? 'mid' : 'info'}">${FIDELITY_LABEL[f]}</span>`;
+  const optLabel = (k, id) => modeOption(k, id)?.label || id;
+  const groups = Object.entries(CIST.modes).map(([k, m]) => `
+    <fieldset class="mode-set">
+      <legend>${esc(m.label)}${m.why ? ` <span class="muted small">${esc(m.why)}</span>` : ''}</legend>
+      ${m.options.map(o => { const ok = modeAvailable(k, o.id); return `
+        <label class="mode-opt ${ok ? '' : 'off'}"><input type="radio" name="${k}" value="${o.id}" ${cur[k] === o.id ? 'checked' : ''} ${ok ? '' : 'disabled'}>
+          <span><b>${esc(o.label)}${o.default ? ' ★' : ''}</b> ${fid(o.fidelity)}${o.caution ? ` <span class="chip chip-mid">${esc(o.caution)}</span>` : ''}${ok ? '' : ' <span class="chip chip-neutral">문항 없음</span>'}
+          <br><span class="muted small">${esc(o.desc)}</span></span></label>`; }).join('')}
+    </fieldset>`).join('');
+  const log = (d.cistModeLog || []).slice().reverse();
+  actions.cistModesSave = f => {
+    const next = normalizeModes(Object.fromEntries(Object.keys(CIST.modes).map(k => [k, f[k].value])));
+    const at = nowStamp(), by = me ? displayName(me) : '';
+    const changes = Object.keys(next).filter(k => next[k] !== cur[k]).map(k => ({ by, at, key: k, from: optLabel(k, cur[k]), to: optLabel(k, next[k]) }));
+    const weeks = +f.weeks.value;
+    if (weeks !== (d.settings.cistIntervalWeeks || 4)) changes.push({ by, at, key: 'interval', from: `${d.settings.cistIntervalWeeks || 4}주`, to: `${weeks}주` });
+    if (!changes.length) { toast('바뀐 내용 없음'); return; }
+    d.cistModes = next;
+    d.settings.cistIntervalWeeks = weeks;
+    d.cistModeLog = [...(d.cistModeLog || []), ...changes];
+    evaluate();
+    render();
+    toast('저장됨 · 다음 검사부터 적용');
+  };
+  return `
+    <form class="card stack" data-submit="cistModesSave">
+      <div class="card-head"><h2>정기 인지검사(전화형) 방식</h2><button class="btn btn-primary" type="submit">저장</button></div>
+      <p class="chk warn-box">검사 도중 방식을 바꾸면 이전 회차와 점수를 비교할 수 없게 됩니다.</p>
+      <label class="field">검사 주기<select name="weeks">${[2, 4, 8].map(w => `<option value="${w}" ${(d.settings.cistIntervalWeeks || 4) === w ? 'selected' : ''}>${w}주마다${w === 4 ? ' ★' : ''}</option>`).join('')}</select>
+        <span class="help">등록 직후 1회, 그 뒤 주기마다 · 검사일에는 매일 문항 대신 시행 (상한 ${Math.round((d.settings.cistMaxSec || 900) / 60)}분)</span></label>
+      <p class="muted small">고정: 지남력(시간 4문항) · 기억(문장 A/B 회차 교대, 두 번 읽기, 지연 회상·재인) · 숫자 따라 말하기 · 언어 추론 · 이름 대기 3문항 ${fid('original')}</p>
+      ${groups}
+    </form>
+    <section class="card" style="margin-top:var(--s5)">
+      <div class="card-head"><h2>변경 기록</h2></div>
+      ${log.length ? `<div class="table-wrap"><table class="table compact rtable"><thead><tr><th>일시</th><th>변경자</th><th>항목</th><th>변경</th></tr></thead><tbody>
+        ${log.map(l => `<tr><td class="first num">${fmtStamp(l.at)}</td><td data-label="변경자">${esc(l.by)}</td><td data-label="항목">${esc(l.key === 'interval' ? '검사 주기' : CIST.modes[l.key]?.label || l.key)}</td><td data-label="변경">${esc(l.from)} → ${esc(l.to)}</td></tr>`).join('')}
+      </tbody></table></div>` : empty('기록 없음')}
+    </section>`;
+}
+
+const Q_TABS = [['script', '대본'], ['orientation', '지남력'], ['memory', '기억 (단어)'], ['attention', '주의력'], ['language', '언어기능'], ['executive', '집행기능'], ['preview', '미리보기'], ['cist', '정기 인지검사 방식']];
 const SCRIPT_LABEL = { greeting: '① 첫인사 (통화 가능 여부)', condition: '② 몸 상태 (AI 대화를 쓰면 AI가 이 자리를 지난 안부에 맞게 바꿈)', recent: '③ 최근 문제', intro: '④ 검사 시작 안내', closing: '⑧ 마무리' };
 const qStats = d => { // 문항별 사용 횟수와 정답률 (완료 통화)
   const m = new Map();
@@ -2540,6 +2880,7 @@ function questionsPage(params) {
           <span class="chip ${r != null && r <= 30 ? 'chip-mid' : 'chip-neutral'}" title="${x.n}회 출제${r != null ? ` · 기억 ${r}%` : ''}">${esc(w)}${r != null ? ` <small class="num">${r}%</small>` : ''}
             <button type="button" class="btn btn-ghost btn-sm btn-icon" style="height:20px;width:20px" data-act="qWordDel" data-w="${esc(w)}" aria-label="${esc(w)} 빼기">${icon('x', 16)}</button></span>`; }).join('')}</div>
       </section>`,
+    cist: () => cistModesTab(d, me),
     preview: () => {
       const date = params.get('date') || today;
       const plan = planForDate(date, bank);
