@@ -1657,7 +1657,7 @@ function personPage([id, tab = 'summary'], params) {
       </div>
       <div class="stats">
         <div class="stat"><small>종합 케어 스코어</small><b>${r.score ?? '-'}<small>점</small></b></div>
-        <div class="stat"><small>최근 인지검사 · z</small><b>${st.lastScore == null ? '-' : `${fmtNum(st.lastScore, 1)}<small>%</small>`}<small> · ${st.base.ready ? (st.lastZ == null ? '-' : 'z ' + fmtNum(st.lastZ, 2)) : '기저선 형성 중'}</small></b></div>
+        <div class="stat"><small>최근 인지검사 · z</small><b>${st.lastScore == null ? '-' : `${fmtNum(st.lastScore, 1)}<small>%</small>`}</b><small class="sub">${st.base.ready ? (st.lastZ == null ? 'z -' : 'z ' + fmtNum(st.lastZ, 2)) : '기저선 형성 중'}</small></div>
         <a class="stat" href="#/admin/p/${p.id}/cist"><small>최근 정기검사</small><b>${cistStat(r.signals.cist.status)}</b></a>
         <div class="stat"><small>최근 7일 통화 완료</small><b>${r.signals.completion.done}<small>/ ${r.signals.completion.days}</small></b></div>
       </div>
@@ -3342,7 +3342,7 @@ function questionsPage(params) {
       <form class="card stack" data-submit="qScript">
         <div class="card-head"><h2>통화 대본</h2><span class="sub">{호칭} 자리에 대상자 호칭이 들어감 (예: 윤병훈 어르신)</span></div>
         ${Object.entries(SCRIPT_LABEL).map(([k, t]) => `
-          <label class="field">${t}<span class="row" style="flex-wrap:nowrap"><input name="${k}" value="${esc(bank.script[k])}" style="flex:1">
+          <label class="field">${t}<span class="row" style="flex-wrap:nowrap;align-items:flex-start"><textarea name="${k}" rows="2" style="flex:1">${esc(bank.script[k])}</textarea>
             ${btn(icon('play', 16), `data-act="qSpeak" data-text="${esc(fillTitleLocal(bank.script[k]))}" aria-label="미리 듣기"`, 'ghost', 'sm btn-icon')}</span></label>`).join('')}
         <p class="muted small">⑤ 인지검사(6개 영역) → ⑥ 자기보고(수면·기분, 대상자별 켬/끔) → ⑦ 안부 대화 순서는 고정</p>
         <div class="row"><button class="btn btn-primary" type="submit">저장</button></div>
@@ -3354,8 +3354,8 @@ function questionsPage(params) {
     memory: () => `
       <form class="card stack" data-submit="qMemory">
         <div class="card-head"><h2>기억 등록 · 지연 회상</h2><span class="sub">통화마다 아래 단어 중 세 개를 무작위로 (전날 단어와 겹치지 않게)</span></div>
-        <label class="field">기억 등록 질문 (뒤에 단어 세 개가 붙음)<input name="register" value="${esc(bank.memory.register)}"></label>
-        <label class="field">지연 회상 질문<input name="recall" value="${esc(bank.memory.recall)}"></label>
+        <label class="field">기억 등록 질문 (뒤에 단어 세 개가 붙음)<textarea name="register" rows="2">${esc(bank.memory.register)}</textarea></label>
+        <label class="field">지연 회상 질문<textarea name="recall" rows="2">${esc(bank.memory.recall)}</textarea></label>
         <div class="row"><button class="btn btn-primary" type="submit">저장</button></div>
       </form>
       <section class="card">
@@ -3486,12 +3486,12 @@ function questionsPage(params) {
     commit('문항 삭제됨');
   };
   actions.qScript = f => {
-    for (const k of Object.keys(SCRIPT_LABEL)) { const v = f[k].value.trim(); if (v) bank.script[k] = v; }
+    for (const k of Object.keys(SCRIPT_LABEL)) { const v = f[k].value.replace(/\s+/g, ' ').trim(); if (v) bank.script[k] = v; }
     commit('대본 저장됨');
   };
   actions.qMemory = f => {
-    bank.memory.register = f.register.value.trim() || DEFAULT_BANK.memory.register;
-    bank.memory.recall = f.recall.value.trim() || DEFAULT_BANK.memory.recall;
+    bank.memory.register = f.register.value.replace(/\s+/g, ' ').trim() || DEFAULT_BANK.memory.register;
+    bank.memory.recall = f.recall.value.replace(/\s+/g, ' ').trim() || DEFAULT_BANK.memory.recall;
     commit('기억 문항 저장됨');
   };
   actions.qWordAdd = f => {
