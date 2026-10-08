@@ -13,7 +13,7 @@ import {
   primaryContact, validPhone, autoChecklist, trendAll, TREND_METRICS, METRIC, trendCsv, trendSentence,
   personEvents, journalDraft, daysBetween, visitChecks, visitStart, visitEnd, minToTime, VISIT_TYPES,
   ageFrom, findDuplicates, insideBoundary, cistStatus, cistScore, cistChange, cistSessionsOf, confirmedCist, syncCistAlerts, cistOps, cistModeNotes, cistDue, cistReferralCut,
-  pointsBalance, pointsOn, pointsHistory, callReward, gameReward, activityStats, activityOps, attendance,
+  pointsBalance, pointsOn, pointsHistory, callReward, gameReward, activityStats, activityOps, attendance, healthToday, noticeState, checkNotice,
   fmtDate, fmtMD, fmtMDW, fmtYMDW, fmtStamp, fmtDur, fmtNum, fmtUnit, timelineRange, layoutLabels, completionDelta
 } from './metrics.js';
 import { getNightVitals, importRing, recomputeRing, deleteRingImport } from './vitals.js';
@@ -22,7 +22,7 @@ import {
   scorePct, scoreItem, orientationParts, countAnimals, SELF_QUESTIONS, checkSummary, AI_CONSENT_TEXT, SCRIPT,
   DEFAULT_BANK, normalizeBank, planForDate, DOMAINS, ORIENT_PART, ATTENTION_TYPE, LANGUAGE_TYPE,
   CIST, CIST_DOMAINS, CIST_DOMAIN_MAX, CIST_ITEM_NAMES, FIDELITY_LABEL, DEFAULT_CIST_MODES, normalizeModes, modeAvailable, modeOption, cistPlan, rescoreCist,
-  ACTIVITIES, ACTIVITY, makeOrder, makeCalc, makeMatch, MATCH_NAME, EXERCISE_STEPS, EXERCISE_SAFETY
+  ACTIVITIES, ACTIVITY, makeOrder, makeCalc, makeMatch, MATCH_NAME, EXERCISE_STEPS, EXERCISE_SAFETY, HEALTH_CATEGORIES
 } from './items.js';
 import ungchon from './ungchon.js';
 import { icon } from './icons.js';
@@ -291,6 +291,7 @@ function render() {
   else if (path === '#/admin/people') pg = peoplePage(params);
   else if (path === '#/admin/people/new') pg = personFormPage(params);
   else if (path === '#/admin/questions') pg = questionsPage(params);
+  else if (path === '#/admin/health') pg = healthPage();
   else if (path.startsWith('#/admin/p/')) pg = personPage(path.slice(10).split('/').map(decodeURIComponent), params);
   else pg = { title: '없는 화면', html: empty('없는 화면') };
 
@@ -337,6 +338,7 @@ function shell(path, me, pg) {
         ${item('#/admin', 'map', '전체 현황', path === '#/admin')}
         ${item('#/admin/people', 'users', '대상자', path.startsWith('#/admin/p'))}
         ${item('#/admin/questions', 'list', '문항', path === '#/admin/questions')}
+        ${item('#/admin/health', 'heart', '건강정보', path === '#/admin/health')}
         <button type="button" class="nav" data-act="logout" data-tip="로그아웃">${icon('logout', 20)}<span>로그아웃</span></button>
       </nav>
       <div class="side-foot">
@@ -471,6 +473,8 @@ function elderPage([id, view = 'home', key]) {
   document.title = `${p.name} · I-ME`;
   if (view === 'play' && ACTIVITY[key]) return playPage(p, key);
   const att = attendance(d, p.id, today);
+  const health = healthToday(d, today);
+  if (view === 'health') return healthElder(p, health, key, today);
   const tabs = `<nav class="ea-tabs" aria-label="어르신 메뉴">${[['home', '홈', '', 'home'], ['activities', '활동', '/activities', 'grid'], ['records', '기록', '/records', 'star'], ['points', '포인트', '/points', 'wallet']].map(([k, t, h, ic]) =>
     `<a href="#/user/${p.id}${h}" ${view === k ? 'aria-current="page"' : ''}>${icon(ic, 20)}<span>${t}</span></a>`).join('')}</nav>`;
   const pageHead = title => `<header class="ea-head"><h1 class="ea-head-t">${title}</h1><a class="ea-iconbtn" href="#/user" aria-label="사람 바꾸기">${icon('users', 20)}</a></header>`;
@@ -550,8 +554,7 @@ function elderPage([id, view = 'home', key]) {
           <p class="ea-call-note">${ART.coin}지금 받아도 ${KRW(s.rewardCall)} 적립</p>
           <div class="ea-call-btns one"><button type="button" class="ea-btn accept" data-act="callAccept">${icon('phone', 20)}지금 전화 받기</button></div></section>`,
       done: `<section class="ea-call is-done">
-          <div class="ea-call-head"><span class="ea-call-av">${icon('check', 20)}</span><div><p class="ea-call-from">${from}</p><p class="ea-call-t">오늘 통화 완료</p></div>
-            <button type="button" class="ea-mini" data-act="callAccept">다시 통화</button></div>
+          <div class="ea-call-head"><span class="ea-call-av">${icon('check', 20)}</span><div><p class="ea-call-from">${from}</p><p class="ea-call-t">오늘 통화 완료</p></div></div>
           ${rewarded ? `<p class="ea-call-note">${ART.coin}${KRW(s.rewardCall)} 적립됨</p>` : ''}</section>`,
       off: `<section class="ea-call is-done">
           <div class="ea-call-head"><span class="ea-call-av">${icon('phone', 20)}</span><div><p class="ea-call-from">보건소 안부 전화</p><p class="ea-call-t">오늘은 쉬는 날</p></div></div></section>`
@@ -573,6 +576,10 @@ function elderPage([id, view = 'home', key]) {
         <a class="ea-card ea-mini-stat" href="#/user/${p.id}/points"><span class="ea-mini-art t-coin">${ART.coin}</span><span class="k">복지포인트</span><b class="num">${KRW(pointsBalance(d, p.id))}</b></a>
         <a class="ea-card ea-mini-stat" href="#/user/${p.id}/records"><span class="ea-mini-art t-coin">${ART.streak}</span><span class="k">연속 출석</span><b class="num">${att.streak}<small>일</small></b></a>
       </div>
+      <section class="ea-sec">
+        <div class="ea-sec-head"><h2 class="ea-h2">오늘의 건강정보</h2>${health.length > 1 ? `<a class="ea-more" href="#/user/${p.id}/health">전체 ${health.length}${icon('chev', 20)}</a>` : ''}</div>
+        ${health.length ? healthCard(p, health[0]) : '<p class="ea-card ea-empty">새 건강정보 없음</p>'}
+      </section>
       <section class="ea-card ea-weekcard">${week}</section>
       <section class="ea-sec">
         <div class="ea-sec-head"><h2 class="ea-h2">오늘의 두뇌 활동</h2><span class="ea-count num">${nDone} / ${ACTIVITIES.length}</span></div>
@@ -588,9 +595,35 @@ function elderPage([id, view = 'home', key]) {
       cleanup = () => { stopRing(); clearTimeout(timer); };
       actions.callAccept = () => { cleanup(); cleanup = null; inCall(p, prep); };
       actions.callReject = () => { cleanup(); cleanup = null; recordMissed(p); render(); };
-    } else actions.callAccept = () => inCall(p, prepFor(p));
+    } else if (state === 'missed') actions.callAccept = () => inCall(p, prepFor(p));
   }
   app.innerHTML = `${switchTop('user')}<div class="ea">${html}</div>${tabs}`;
+}
+
+// 건강정보 (관리자 '건강정보'에서 올린 공지). 분류마다 색·그림
+const HEALTH_STYLE = { 영양: ['t-focus', 'leaf'], 운동: ['t-body', null], 수면: ['t-memory', 'moon'], '마음 건강': ['t-red', 'heart'], '계절 건강': ['t-think', 'cloud'], 안전: ['t-coin-tile', 'alert'], 기타: ['t-call', 'star'] };
+const healthArt = cat => { const [, a] = HEALTH_STYLE[cat] || HEALTH_STYLE.기타; return a === null ? ART.exercise : a === 'alert' ? icon('alert', 20) : svg(MATCH_SVG[a]); };
+const healthCls = cat => (HEALTH_STYLE[cat] || HEALTH_STYLE.기타)[0];
+const healthCard = (p, n) => `
+  <a class="ea-card ea-health" href="#/user/${p.id}/health/${n.id}">
+    <span class="ea-tile ${healthCls(n.category)}">${healthArt(n.category)}</span>
+    <span class="ea-health-text"><span class="ea-chip ${healthCls(n.category)}">${esc(n.category)}</span><b>${esc(n.title)}</b><span class="ea-health-body">${esc(n.body)}</span></span>
+  </a>`;
+function healthElder(p, list, nid, today) {
+  const n = nid ? list.find(x => x.id === nid) : null;
+  const back = `<header class="ea-playtop"><a class="ea-iconbtn" href="#/user/${p.id}${nid && list.length > 1 ? '/health' : ''}" aria-label="뒤로">${icon('back', 20)}</a><div><h1 class="ea-play-t">건강정보</h1></div></header>`;
+  let body;
+  if (nid) body = n ? `
+    <article class="ea-card ea-article">
+      <div class="ea-article-art ${healthCls(n.category)}">${healthArt(n.category)}</div>
+      <span class="ea-chip ${healthCls(n.category)}">${esc(n.category)}</span>
+      <h2 class="ea-article-t">${esc(n.title)}</h2>
+      <p class="ea-article-d">${fmtMDW(n.from)} · 보건소</p>
+      ${esc(n.body).split(/\n+/).map(t => `<p class="ea-article-p">${t}</p>`).join('')}
+    </article>
+    <a class="ea-btn ghost" href="#/user/${p.id}">${icon('home', 20)}홈으로</a>` : '<p class="ea-card ea-empty">건강정보 없음</p>';
+  else body = list.length ? `<div class="ea-sec">${list.map(x => healthCard(p, x)).join('')}</div>` : '<p class="ea-card ea-empty">새 건강정보 없음</p>';
+  app.innerHTML = `${switchTop('user')}<div class="ea ea-play">${back}${body}</div>`;
 }
 
 // 미니게임·체조 한 판. 끝나면 활동 기록 + 미니게임이면 복지포인트 (하루 한도까지). 정답 수는 보여 주지 않는다.
@@ -1877,6 +1910,87 @@ function activityCard(p) {
       <div class="act-axis small muted"><span>${fmtMD(a.daily14[0].date)}</span><span>막대 미니게임 · 점 체조</span><span>${fmtMD(today)}</span></div>
       <p class="muted small" style="margin-top:var(--s3)">최근 30일 게임별: ${ACTIVITIES.filter(x => x.kind === 'game').map(x => `${x.title} ${a.byKey[x.key] || 0}회`).join(' · ')} · 최근 7일 ${a.minutes7}분 · 마지막 활동 ${a.last ? fmtMD(a.last) : '-'}</p>
     </section>`;
+}
+
+// ---------- 건강정보 공지 (#/admin/health): 올리면 어르신 화면 '오늘의 건강정보'에 뜬다 ----------
+function healthPage() {
+  const d = getData(), today = todayStr(), me = currentAccount(), who = me ? displayName(me) : '';
+  d.healthNotices ??= [];
+  const list = [...d.healthNotices].sort((a, b) => b.from.localeCompare(a.from) || (b.createdAt || '').localeCompare(a.createdAt || ''));
+  const live = healthToday(d, today);
+  const STATE_CHIP = { '게시 중': 'chip-low', 예약: 'chip-info', '기간 끝남': 'chip-neutral', 내림: 'chip-neutral' };
+  const open = id => {
+    const n = d.healthNotices.find(x => x.id === id) || { category: HEALTH_CATEGORIES[0], title: '', body: '', from: today, to: '' };
+    const field = (label, input, key, req) => `<label class="${key === 'body' ? 'wide' : ''}"><span>${label}${req ? ' <span class="req" aria-hidden="true">*</span>' : ''}</span>${input}<small class="err" id="hn-err-${key}" data-err="${key}"></small></label>`;
+    const m = modal({
+      title: id ? '건강정보 수정' : '새 건강정보', size: 'md',
+      body: `<form class="form two" id="hn-form" data-submit="hnSave">
+          ${field('분류', `<select name="category">${HEALTH_CATEGORIES.map(c => `<option ${c === n.category ? 'selected' : ''}>${c}</option>`).join('')}</select>`, 'category')}
+          ${field('제목', `<input name="title" maxlength="40" value="${esc(n.title)}" aria-required="true">`, 'title', true)}
+          ${field('내용', `<textarea name="body" rows="7" maxlength="600" aria-required="true">${esc(n.body)}</textarea>`, 'body', true)}
+          ${field('게시 시작일', `<input type="date" name="from" value="${n.from}">`, 'from', true)}
+          ${field('게시 끝일 (비우면 계속)', `<input type="date" name="to" value="${n.to || ''}">`, 'to')}
+        </form>
+        <p class="muted small" style="margin-top:var(--s3)">어르신 화면에 큰 글자로 보임 · 제목 40자 · 내용 600자 이하 · 진단·점수 표현은 쓰지 않음</p>`,
+      foot: `<button type="button" class="btn btn-secondary" data-close>취소</button><button type="submit" form="hn-form" class="btn btn-primary">${id ? '저장' : '올리기'}</button>`,
+      dirty: () => { const f = document.getElementById('hn-form'); return !!f && (f.title.value !== n.title || f.body.value !== n.body); }
+    });
+    // 고치면 그 칸의 오류 글자를 지운다
+    document.getElementById('hn-form')?.addEventListener('input', e => { const el = document.getElementById('hn-err-' + e.target.name); if (el) { el.textContent = ''; e.target.removeAttribute('aria-invalid'); } });
+    actions.hnSave = f => {
+      const v = { category: f.category.value, title: f.title.value.trim(), body: f.body.value.trim(), from: f.from.value, to: f.to.value };
+      const errs = checkNotice(v);
+      if (Object.keys(errs).length) { showErrors(f, errs); return; }
+      if (id) Object.assign(d.healthNotices.find(x => x.id === id), v, { updatedBy: who, updatedAt: nowStamp() });
+      else d.healthNotices.push({ id: 'hn' + Date.now().toString(36), ...v, status: 'posted', createdBy: who, createdAt: nowStamp(), updatedBy: null, updatedAt: null, source: 'real' });
+      save();
+      m.close(true);
+      render();
+      toast(id ? '건강정보 저장됨' : v.from <= today ? '건강정보 올림 · 어르신 화면에 표시' : `건강정보 예약 · ${fmtMD(v.from)}부터 표시`);
+    };
+  };
+  actions.hnNew = () => open(null);
+  actions.hnEdit = el => open(el.dataset.id);
+  actions.hnToggle = el => {
+    const n = d.healthNotices.find(x => x.id === el.dataset.id);
+    n.status = n.status === 'hidden' ? 'posted' : 'hidden';
+    Object.assign(n, { updatedBy: who, updatedAt: nowStamp() });
+    save(); render();
+    toast(n.status === 'hidden' ? '어르신 화면에서 내림' : '다시 올림');
+  };
+  actions.hnDel = async el => {
+    const n = d.healthNotices.find(x => x.id === el.dataset.id);
+    if (!(await confirmBox({ title: '건강정보 삭제', text: `'${n.title}'이 목록과 어르신 화면에서 지워짐`, ok: '삭제', danger: true }))) return;
+    d.healthNotices = d.healthNotices.filter(x => x !== n);
+    save(); render();
+    toast('건강정보 삭제됨');
+  };
+  return {
+    title: '건강정보', sub: `어르신 화면 게시 중 ${live.length}건`,
+    head: btn(`${icon('sparkle', 16)}새 건강정보`, 'data-act="hnNew"', 'primary', ''),
+    html: `
+      <section class="card">
+        <div class="card-head"><h2>오늘 어르신 화면</h2><span class="sub">홈 '오늘의 건강정보'에 가장 최근 것이 먼저 보임</span></div>
+        ${live.length ? `<div class="hn-live">${live.slice(0, 3).map((n, k) => `
+          <div class="hn-card"><span class="chip ${k ? 'chip-neutral' : 'chip-info'}">${k ? '전체 보기 안' : '홈에 표시'}</span><b>${esc(n.title)}</b><p class="muted small">${esc(n.category)} · ${fmtMD(n.from)}~${n.to ? fmtMD(n.to) : ''}</p></div>`).join('')}</div>` : empty('게시 중인 건강정보 없음', 'inbox')}
+      </section>
+      <section class="card" style="margin-top:var(--s5)">
+        <div class="card-head"><h2>전체 목록</h2><span class="sub">${list.length}건</span></div>
+        ${list.length ? `<div class="table-wrap"><table class="table compact rtable">
+          <thead><tr><th>제목</th><th>분류</th><th>게시 기간</th><th>상태</th><th>작성</th><th><span class="sr-only">관리</span></th></tr></thead>
+          <tbody>${list.map(n => { const st = noticeState(n, today); return `
+            <tr><td class="first"><b>${esc(n.title)}</b><div class="muted small clip2">${esc(n.body)}</div></td>
+              <td data-label="분류">${esc(n.category)}</td>
+              <td data-label="게시 기간" class="num">${fmtMD(n.from)} ~ ${n.to ? fmtMD(n.to) : '계속'}</td>
+              <td data-label="상태"><span class="chip ${STATE_CHIP[st]}">${st}</span></td>
+              <td data-label="작성" class="small">${esc(n.createdBy || '-')}${n.updatedAt ? `<div class="muted">수정 ${esc(n.updatedBy || '')} · ${fmtMD(n.updatedAt.slice(0, 10))}</div>` : ''}</td>
+              <td class="end"><div class="row" style="justify-content:flex-end;flex-wrap:nowrap">
+                ${btn('수정', `data-act="hnEdit" data-id="${n.id}"`)}
+                ${btn(n.status === 'hidden' ? '다시 올리기' : '내리기', `data-act="hnToggle" data-id="${n.id}"`)}
+                ${btn(icon('trash', 16), `data-act="hnDel" data-id="${n.id}" aria-label="삭제"`, 'danger', 'sm btn-icon')}</div></td></tr>`; }).join('')}</tbody>
+        </table></div>` : empty('기록 없음')}
+      </section>`
+  };
 }
 
 // ---------- 요약 탭 ----------

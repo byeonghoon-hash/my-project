@@ -27,9 +27,9 @@ server.py         앱 파일 제공 + API 중계 (표준 라이브러리만). /a
 vercel.json       Vercel 배포: 앱 파일만 public/으로 복사해 내보내고, api/*.py를 함수로
 api/              Vercel 함수 (health·tts·chat·summarize). 처리 코드는 server.py 것을 그대로 쓰고 키는 Vercel 환경 변수에서
 cache/tts/        고정 문장 mp3 캐시 (server.py가 만든다)
-index.html        단일 페이지. 해시 라우팅: #/ (첫 화면) · #/user · #/user/<id>[/activities|records|points|play/<key>] (어르신 앱) · #/login · #/signup
+index.html        단일 페이지. 해시 라우팅: #/ (첫 화면) · #/user · #/user/<id>[/activities|records|points|health[/<공지 id>]|play/<key>] (어르신 앱) · #/login · #/signup
                   · #/admin (전체 현황) · #/admin/people[?view=requests|journals] (대상자 관리) · #/admin/people/new[?id=] (대상자 추가·전체 수정)
-                  · #/admin/p/<id>[/summary|info|trend|calls|visits|journal|alerts] · #/admin/questions[?tab=] (문항 관리)
+                  · #/admin/p/<id>[/summary|info|trend|calls|visits|journal|alerts] · #/admin/questions[?tab=] (문항 관리) · #/admin/health (건강정보 공지)
 style.css
 package.json      {"type":"module"} 한 줄만 (node가 selftest를 ES 모듈로 실행하도록)
 js/app.js         라우팅과 화면 그리기, 모달(modal·confirmBox)과 알림 메시지(toast)
@@ -67,8 +67,8 @@ I-ME 로고와 큰 버튼 두 개: **[대상자 화면]** **[관리자 화면]**
 디자인: 큰 제목·둥근 흰 카드(삼성 One UI), 아랫면이 있어 눌리는 버튼·진행 막대·연속 출석 별(듀오링고), 간결한 지갑 카드(네이버). 그라데이션·이모지 없이 `:root` 색만.
 
 1. **누구세요** (#/user): 이름 카드 목록 (시연용 선택).
-2. **홈** (#/user/<id>): 위에서부터 날짜·'○○○ 어르신' · **맨 위 안부 전화 팝업** · 복지포인트·연속 출석 두 칸 · 이번 주 출석 별(일~토) · '오늘의 두뇌 활동'(진행 막대 n/4, [순서대로 시작하기], 활동 4개, 오늘 한 것은 타일에 체크) · 아래 탭(홈 · 활동 · 기록 · 포인트).
-   - 전화 팝업 상태: 울림(벨소리, [거절]/[받기], '통화하면 1,000원 적립') · 받지 않음([지금 전화 받기]) · 완료('오늘 통화 완료', 적립 표시, [다시 통화]) · 쉬는 날. 정기 검사 날이면 '기억력 확인 날'.
+2. **홈** (#/user/<id>): 위에서부터 날짜·'○○○ 어르신' · **맨 위 안부 전화 팝업** · 복지포인트·연속 출석 두 칸 · **오늘의 건강정보**(가장 최근 공지 1건, 누르면 큰 글자 본문, 2건 이상이면 [전체 n]) · 이번 주 출석 별(일~토) · '오늘의 두뇌 활동'(진행 막대 n/4, [순서대로 시작하기], 활동 4개, 오늘 한 것은 타일에 체크) · 아래 탭(홈 · 활동 · 기록 · 포인트).
+   - 전화 팝업 상태: 울림(벨소리, [거절]/[받기], '통화하면 1,000원 적립') · 받지 않음([지금 전화 받기]) · 완료('오늘 통화 완료', 적립 표시, 다시 거는 버튼 없음) · 쉬는 날. 정기 검사 날이면 '기억력 확인 날'.
    - [거절] 또는 팝업이 뜬 뒤 30초 동안 응답 없음 → `missed` 통화로 기록.
 3. **기록** (/records, `attendance`): 이번 주 출석 별 · 달성 현황(연속 출석일 · 누적 출석일 · 활동 시간 · 안부 전화 횟수). 출석 = 검사를 마친 통화 또는 앱 활동이 있는 날. 점수는 보여 주지 않는다.
 3-1. **활동** (/activities): 인지 강화 '숫자 차례로 누르기'(1~9) · 사고력 운동 '더 큰 쪽 고르기'(5판) · 기억력 운동 '같은 그림 짝 맞추기'(4쌍) · 신체 운동 '앉아서 하는 체조'(5동작, 안전 문구). 게임은 검사 문항과 겹치지 않게 그림·계산·숫자 차례를 쓴다. 판마다 '잘하셨습니다'만, 정답 수·점수는 보여 주지 않는다.
@@ -179,7 +179,7 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 ```js
 {
   settings: {...},                       // 아래 판정 파라미터
-  seedVersion: 9,                        // 올리면 시연 데이터를 새로 만든다 (accounts·settings·링 데이터는 유지)
+  seedVersion: 10,                        // 올리면 시연 데이터를 새로 만든다 (accounts·settings·링 데이터는 유지)
   people: [{ id, name, sex, birth, age, phone, phoneType, education, canRead, guardianPhone, preferredTime, enrolledAt,
              active, closed: { reason, date, by } | null,    // 삭제하지 않고 종결 (active=false)
              referral, dementiaCenter: '예'|'아니요'|'모름',
@@ -219,7 +219,8 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
                    items: [{ id, domain, type, fidelity, maxScore, score, status: 'auto'|'needs_review'|'reviewed'|'omitted', note, answer, … }],
                    status: 'draft'|'confirmed', confirmedBy, confirmedAt, edits: [{ itemId, from, to, by, at }] }],
   activities: [{ id, personId, kind: 'game'|'exercise', key: 'order'|'calc'|'match'|'exercise', date, at, durationSec, source, correct?, total? }], // 어르신 앱 활동
-  points: [{ id, personId, date, at, amount, reason: 'call'|'game', ref, source }]   // 복지포인트 적립 (잔액 = 합계, 관리자 화면에는 안 보임)
+  points: [{ id, personId, date, at, amount, reason: 'call'|'game', ref, source }],  // 복지포인트 적립 (잔액 = 합계, 관리자 화면에는 안 보임)
+  healthNotices: [{ id, category, title, body, from, to, status: 'posted'|'hidden', createdBy, createdAt, updatedBy, updatedAt, source }] // 건강정보 공지
 }
 ```
 
@@ -297,7 +298,9 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 
 ## 관리자 화면 (#/admin)
 
-**사이드바(아이콘 레일)**: 76px 짙은 띠에 전체 현황 · 대상자 · 로그아웃. 맨 아래 이니셜 원 + 이름·직종. 펼침 버튼으로 240px(이 브라우저에 기억). 768px 이하면 상단 바 + 서랍.
+**사이드바(아이콘 레일)**: 76px 짙은 띠에 전체 현황 · 대상자 · 문항 · 건강정보 · 로그아웃.
+
+**건강정보** (#/admin/health, `data.healthNotices`): [새 건강정보] 창(분류 7가지 · 제목 40자 · 내용 600자 · 게시 시작일 · 끝일(비우면 계속), `checkNotice`) → 저장하면 어르신 화면 '오늘의 건강정보'에 바로 뜬다(`healthToday`: 게시 중이고 기간 안, 새것부터). 목록에서 수정 · 내리기/다시 올리기 · 삭제(확인 창). 상태: 게시 중 · 예약 · 기간 끝남 · 내림. 시드를 다시 만들어도 관리자가 올리거나 고친 공지는 남는다. 맨 아래 이니셜 원 + 이름·직종. 펼침 버튼으로 240px(이 브라우저에 기억). 768px 이하면 상단 바 + 서랍.
 
 **전체 현황** (새 배치, 위에서부터): ① 오늘 시간표 띠(할 일 N건, 칩 4개, [전체]/[내 담당] 기본 내 담당, 통화 점·방문 막대·현재 시각 선, `timelineRange`·`layoutLabels`) ② 지도 560px(OpenStreetMap, 옅게) 위 유리판(왼쪽 위 요약 6칸 · 오른쪽 우선 확인 316px · 왼쪽 아래 범례) ③ 방문 일정 2주/월간 캘린더 ④ 위험도 도넛(누르면 대상자 목록 거르기) ⑤ 최근 14일 통화(완료·무응답·대기 + 목표 80% 점선) ⑥ 운영 지표 줄 목록 ⑦ 판정 설정(접힘). 1200px 이하면 요약·우선 확인이 지도 아래 카드로 내려간다.
 
@@ -380,8 +383,8 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 
 ## 시연 데이터 (js/seed.js)
 
-처음 실행해서 저장된 데이터가 없거나 `seedVersion`이 바뀌었으면 자동 생성(회원 계정·설정·링 실측 데이터 유지). 대상자 10명, 61일치(오늘 포함). 위험도 분포는 **높음 2 · 주의 3 · 낮음 5**가 되도록 사람마다 난수 시드를 바꿔 가며 만든다.
-- 안정 5명(한복남·이옥분·박순자·최영희·오금례, 낮음) · 점진적 저하 이상철(인지 '의뢰' → 높음) · COPD·야간 저산소 서정길(SpO2 기준 88%, 높음) · 보청기·재질문 김말순(청력 저하 기록 → 주의) · 무응답 정두만(최근 2일 미응답 → 주의) · 윤병훈(최근 2주 지연 회상 하락, z ≈ −1.6~−1.8 → '인지 경미한 저하', 주의).
+처음 실행해서 저장된 데이터가 없거나 `seedVersion`이 바뀌었으면 자동 생성(회원 계정·설정·링 실측 데이터 유지). 대상자 10명, 61일치(오늘 포함). **오늘 통화는 만들지 않는다**(아직 받지 않은 상태라 어르신 화면에서 전화가 울린다). 건강정보 공지 4건(3일 간격). 위험도 분포는 **높음 2 · 주의 3 · 낮음 5**가 되도록 사람마다 난수 시드를 바꿔 가며 만든다.
+- 안정 5명(한복남·이옥분·박순자·최영희·오금례, 낮음) · 점진적 저하 이상철(인지 '의뢰' → 높음) · COPD·야간 저산소 서정길(SpO2 기준 88%, 높음) · 보청기·재질문 김말순(청력 저하 기록 → 주의) · 무응답 정두만(어제·그제 미응답 → 주의) · 윤병훈(최근 2주 지연 회상 하락, z ≈ −1.6~−1.8 → '인지 경미한 저하', 주의).
 - 윤병훈: 남 78세 독거, 울주군 웅촌면 대학길 27 (실제 위치 35.456938, 129.195938), 담당 박지연 간호사, 데이터 출처 '기기'(모의 생체신호 없음, 링 CSV로 채움).
 - 한복남: 급성질환 '감기' 5일 전부터 진행 중. 이상철: 복용약 9일 전 변경. 김말순: 보청기 우측·청력 중등도 이상·거동 대부분 도움.
 - 담당자: 박지연 간호사 · 윤병훈 간호사 · 김민수 사회복지사.

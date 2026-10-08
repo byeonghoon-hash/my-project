@@ -7,12 +7,12 @@ import {
 } from './metrics.js';
 import {
   planForDate, scorePct, scoreItem, korNum, WEEKDAYS, SELF_QUESTIONS, CHAT_QUESTION, classifySleep, classifyMood, findRequests, itemSpec, DEFAULT_BANK,
-  cistPlan, rescoreCist, DEFAULT_CIST_MODES, CIST, ACTIVITIES
+  cistPlan, rescoreCist, DEFAULT_CIST_MODES, CIST, ACTIVITIES, HEALTH_SAMPLES
 } from './items.js';
 import { pickVitals, recomputeRing } from './vitals.js';
 
 // 시드 버전. 올리면 저장된 시연 데이터를 새로 만든다 (회원 계정·링 실측 데이터는 유지).
-export const SEED_VERSION = 9;
+export const SEED_VERSION = 10;
 
 // 전화번호는 모두 가짜(010-0000-), 보호자 이름은 지어낸 것, 의료기관명은 '○○내과의원'.
 const phone = n => `010-0000-${n}`;
@@ -249,6 +249,12 @@ export function makeSeed(settings = DEFAULT_SETTINGS, today = todayStr()) {
   // ---- 대상자 앱: 최근 4주 미니게임·체조 기록과 복지포인트 (오늘 활동은 비워 둔다) ----
   seedApp(data, today);
 
+  // ---- 건강정보 공지 (최근에 올린 것 4건, 박지연 간호사) ----
+  data.healthNotices = HEALTH_SAMPLES.map((n, k) => ({
+    id: 'hn' + (k + 1), ...n, from: addDays(today, -3 * k), to: '', status: 'posted',
+    createdBy: '박지연 간호사', createdAt: `${addDays(today, -3 * k - 1)}T17:00`, updatedBy: null, updatedAt: null, source: 'demo'
+  }));
+
   return data;
 }
 
@@ -439,11 +445,13 @@ function generate(person, pf, i, attempt, start, settings) {
     const fromEnd = 60 - k; // 0 = 오늘
     const base = { id: `c${i}-${k}`, personId: id, date, time, startedAt: `${date}T${time}`, source: 'demo', audioId: null };
 
-    // ---- 통화 ----
-    const missed = kind === 'noAnswer' ? fromEnd <= 1 || (fromEnd > 2 && rand() < 0.15)
+    // ---- 통화 (오늘 통화는 아직 받지 않은 상태로 둔다: 어르신 화면에서 전화가 울린다) ----
+    const missed = kind === 'noAnswer' ? fromEnd <= 2 || (fromEnd > 3 && rand() < 0.15)
       : kind === 'mild' || kind === 'hearing' ? fromEnd > 2 && rand() < 0.06
       : rand() < 0.06 && fromEnd > 0;
-    if (missed) {
+    if (fromEnd === 0) {
+      // 오늘: 통화 기록 없음 (생체신호만)
+    } else if (missed) {
       calls.push({ ...base, status: 'missed', durationSec: 0, scorePct: null, z: null, items: [], selfReport: null, chat: null, requests: [] });
     } else {
       const plan = planForDate(date, DEFAULT_BANK);
@@ -532,6 +540,9 @@ export function reseed(old) {
   const realCalls = new Set(d.calls.filter(c => c.source === 'real').map(c => c.id));
   d.cistSessions.push(...(old?.cistSessions || []).filter(x => realCalls.has(x.callId))); // 직접 한 정기 검사 회차도 남긴다
   d.alerts.push(...(old?.alerts || []).filter(a => a.type === 'emergency' && ids.has(a.personId)));
+  // 관리자가 올리거나 고친 건강정보는 남긴다
+  const kept = (old?.healthNotices || []).filter(n => n.source !== 'demo' || n.updatedAt);
+  d.healthNotices = [...d.healthNotices.filter(n => !kept.some(k => k.id === n.id)), ...kept];
   // 대상자 앱에서 직접 한 활동·적립은 남긴다
   d.activities.push(...(old?.activities || []).filter(a => a.source === 'real' && ids.has(a.personId)));
   d.points.push(...(old?.points || []).filter(x => x.source === 'real' && ids.has(x.personId)));

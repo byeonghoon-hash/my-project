@@ -596,4 +596,29 @@ assert.equal(isOffTopic(regItem, '잘 모르겠는데 기억이 하나도 안 �
   assert.ok(activityOps(sd, day, 7).plays > 0);
 }
 
+
+// ======== 건강정보 공지 · 오늘 통화 ========
+{
+  const { healthToday, noticeState, checkNotice } = await import('./metrics.js');
+  const day = '2026-10-08';
+  const hd = { healthNotices: [
+    { id: 'a', status: 'posted', from: '2026-10-01', to: '', createdAt: '2026-09-30T10:00' },
+    { id: 'b', status: 'posted', from: '2026-10-08', to: '', createdAt: '2026-10-08T08:00' },
+    { id: 'c', status: 'hidden', from: '2026-10-01', to: '' },
+    { id: 'd', status: 'posted', from: '2026-10-10', to: '' },
+    { id: 'e', status: 'posted', from: '2026-09-01', to: '2026-09-30' }] };
+  assert.deepEqual(healthToday(hd, day).map(n => n.id), ['b', 'a']);                       // 게시 중만, 새것부터
+  assert.deepEqual(hd.healthNotices.map(n => noticeState(n, day)), ['게시 중', '게시 중', '내림', '예약', '기간 끝남']);
+  assert.deepEqual(Object.keys(checkNotice({ title: '', body: '', from: '' })), ['title', 'body', 'from']);
+  assert.equal(checkNotice({ title: '가'.repeat(41), body: 'x', from: day }).title, '40자 이하');
+  assert.equal(checkNotice({ title: '물', body: 'x', from: day, to: '2026-10-01' }).to, '시작일 이후로');
+  assert.deepEqual(checkNotice({ title: '물', body: 'x', from: day }), {});
+  // 시드: 오늘 통화는 아직 없음(어르신 화면에서 전화가 울림), 건강정보 4건 게시 중, 위험도 분포는 그대로
+  const sd = makeSeed(S, day);
+  assert.equal(sd.calls.filter(c => c.date === day).length, 0);
+  assert.equal(healthToday(sd, day).length, 4);
+  const lv = sd.people.map(p => riskOf(p, sd, day, (pid, dt) => pickVitals(sd, pid, dt)).level);
+  assert.deepEqual(['high', 'mid', 'low'].map(l => lv.filter(x => x === l).length), [2, 3, 5]);
+}
+
 console.log('selftest 통과');

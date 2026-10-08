@@ -1083,3 +1083,25 @@ body.big.elder .switch-top a[aria-current="page"] { background: var(--ink); colo
 .act-bars i { display: block; width: 100%; background: var(--accent); border-radius: 4px; min-height: 2px; }
 .act-bars em { position: absolute; bottom: -12px; left: 50%; width: 6px; height: 6px; margin-left: -3px; border-radius: 50%; background: var(--t-body-fg); }
 .act-axis { display: flex; justify-content: space-between; margin-top: var(--s4); }
+
+/* 어르신 앱: 오늘의 건강정보 */
+.ea-more { display: inline-flex; align-items: center; gap: 2px; min-height: 48px; font-size: 24px; font-weight: 700; color: var(--accent); }
+.ea-more .icon { width: 24px; height: 24px; }
+.t-red { background: var(--ea-red-bg); color: var(--ea-red); }
+.t-coin-tile { background: var(--coin-bg); color: var(--coin-fg); }
+.ea-health { display: flex; gap: var(--s4); align-items: flex-start; padding: var(--s5); color: var(--text); }
+.ea-health:hover { background: var(--panel-2); color: var(--text); }
+.ea-health-text { display: grid; gap: var(--s1); min-width: 0; }
+.ea-health-text b { font-size: 26px; line-height: 1.3; }
+.ea-health-body { font-size: 24px; color: var(--muted); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ea-article { padding: var(--s5); display: grid; gap: var(--s3); justify-items: start; }
+.ea-article-art { width: 100%; height: 168px; border-radius: var(--r-xl); display: grid; place-items: center; }
+.ea-article-art .art, .ea-article-art .icon { width: 96px; height: 96px; }
+.ea-article-t { font-size: 32px; font-weight: 700; line-height: 1.3; letter-spacing: -.3px; }
+.ea-article-d { font-size: 24px; color: var(--muted); }
+.ea-article-p { font-size: 26px; line-height: 1.7; }
+
+/* 관리자: 건강정보 */
+.hn-live { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--s3); }
+.hn-card { display: grid; gap: var(--s1); padding: var(--s4); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel-2); justify-items: start; }
+.clip2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-width: 520px; }

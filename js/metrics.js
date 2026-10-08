@@ -1055,3 +1055,21 @@ export function attendance(data, personId, today) {
     week: Array.from({ length: 7 }, (_, i) => { const date = addDays(sun, i); return { date, done: days.has(date), today: date === today, future: date > today }; })
   };
 }
+
+// 건강정보 공지: 오늘 게시 중인 것 (새것부터). data.healthNotices: [{ id, category, title, body, from, to, status: 'posted'|'hidden', createdBy, createdAt, updatedBy, updatedAt, source }]
+export const healthToday = (data, today) => (data.healthNotices || [])
+  .filter(n => n.status === 'posted' && n.from <= today && (!n.to || n.to >= today))
+  .sort((a, b) => b.from.localeCompare(a.from) || (b.createdAt || '').localeCompare(a.createdAt || ''));
+// 게시 상태 이름: 게시 중 · 예약 · 기간 끝남 · 내림
+export const noticeState = (n, today) => (n.status === 'hidden' ? '내림' : n.from > today ? '예약' : n.to && n.to < today ? '기간 끝남' : '게시 중');
+// 저장 전 검사 → { 칸 이름: 오류 문구 }
+export function checkNotice(n) {
+  const e = {};
+  if (!n.title?.trim()) e.title = '제목 입력';
+  else if (n.title.trim().length > 40) e.title = '40자 이하';
+  if (!n.body?.trim()) e.body = '내용 입력';
+  else if (n.body.trim().length > 600) e.body = '600자 이하';
+  if (!n.from) e.from = '게시 시작일 입력';
+  if (n.to && n.from && n.to < n.from) e.to = '시작일 이후로';
+  return e;
+}
