@@ -556,23 +556,31 @@ assert.equal(isOffTopic(regItem, '잘 모르겠는데 기억이 하나도 안 �
   const day = '2026-10-08';
   const dd = { settings: { ...S }, people: [{ id: 'x', active: true }, { id: 'y', active: true }], points: [], activities: [] };
   const call = { personId: 'x', date: day, status: 'completed', declined: false, items: [{}] };
-  assert.equal(callReward(dd, call), 5000);                                              // 인지검사를 마친 통화 → 5,000원
+  assert.equal(callReward(dd, call), 1000);                                              // 인지검사를 마친 통화 → 1,000원
   assert.equal(callReward(dd, { ...call, status: 'partial' }), 0);                         // 끝까지 못 한 통화는 없음
   assert.equal(callReward(dd, { ...call, declined: true }), 0);
-  assert.equal(callReward(dd, { ...call, items: [], kind: 'cist' }), 5000);                // 정기 검사 통화도 적립
-  dd.points.push({ personId: 'x', date: day, at: day + 'T10:00', amount: 5000, reason: 'call' });
+  assert.equal(callReward(dd, { ...call, items: [], kind: 'cist' }), 1000);                // 정기 검사 통화도 적립
+  dd.points.push({ personId: 'x', date: day, at: day + 'T10:00', amount: 1000, reason: 'call' });
   assert.equal(callReward(dd, call), 0);                                                 // 하루 한 번
   for (let n = 0; n < 10; n++) { assert.equal(gameReward(dd, 'x', day), 100); dd.points.push({ personId: 'x', date: day, at: day + 'T11:00', amount: 100, reason: 'game' }); }
   assert.equal(gameReward(dd, 'x', day), 0);                                             // 하루 10판까지
   assert.equal(gameReward(dd, 'x', '2026-10-09'), 100);
-  assert.equal(pointsBalance(dd, 'x'), 6000);
-  assert.equal(pointsOn(dd, 'x', day), 6000);
+  assert.equal(pointsBalance(dd, 'x'), 2000);
+  assert.equal(pointsOn(dd, 'x', day), 2000);
   dd.activities.push({ personId: 'x', kind: 'game', key: 'calc', date: day, durationSec: 90 }, { personId: 'x', kind: 'game', key: 'match', date: '2026-09-30' },
     { personId: 'x', kind: 'exercise', key: 'exercise', date: day }, { personId: 'x', kind: 'game', key: 'order', date: '2026-09-01' });
   const as = activityStats(dd, 'x', day);
   assert.deepEqual([as.games7, as.games30, as.exercise7, as.prev7, as.days7], [1, 2, 1, 1, 1]);
   assert.equal(as.daily14.length, 14);
   assert.deepEqual(activityOps(dd, day, 7), { plays: 1, players: 1, people: 2, rate: 50 });
+  // 내 기록: 출석 = 통화 완료 또는 활동이 있는 날, 연속 출석은 오늘(없으면 어제)부터 거꾸로
+  const ad = { calls: [{ personId: 'x', date: '2026-10-06', status: 'completed', durationSec: 120 }, { personId: 'x', date: '2026-10-05', status: 'missed' }],
+    activities: [{ personId: 'x', date: '2026-10-07', durationSec: 60 }, { personId: 'x', date: '2026-10-04', durationSec: 60 }] };
+  const at = (await import('./metrics.js')).attendance(ad, 'x', day);
+  assert.deepEqual([at.streak, at.total, at.calls, at.minutes], [2, 3, 1, 4]);
+  assert.equal(at.week.length, 7);
+  assert.equal(at.week[0].date, '2026-10-04');                                           // 일요일부터
+  assert.deepEqual(at.week.map(w => w.done), [true, false, true, true, false, false, false]);
   // 게임 내용: 더 큰 쪽은 값이 다르고 답이 맞음 · 짝 4쌍 · 1~9 한 번씩
   let k = 1; const r = () => ((k = (k * 16807) % 2147483647) / 2147483647);
   for (const q of makeCalc(r, 30)) { assert.notEqual(q.left.value, q.right.value); assert.equal(q.answer, q.left.value > q.right.value ? 'left' : 'right'); }

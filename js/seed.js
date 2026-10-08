@@ -12,7 +12,7 @@ import {
 import { pickVitals, recomputeRing } from './vitals.js';
 
 // 시드 버전. 올리면 저장된 시연 데이터를 새로 만든다 (회원 계정·링 실측 데이터는 유지).
-export const SEED_VERSION = 8;
+export const SEED_VERSION = 9;
 
 // 전화번호는 모두 가짜(010-0000-), 보호자 이름은 지어낸 것, 의료기관명은 '○○내과의원'.
 const phone = n => `010-0000-${n}`;
@@ -525,7 +525,8 @@ export function reseed(old) {
   if (old?.questionBank) d.questionBank = old.questionBank;
   if (old?.cistModes) d.cistModes = old.cistModes;
   if (old?.cistModeLog) d.cistModeLog = old.cistModeLog;
-  if ((old?.seedVersion ?? 0) < 5 && d.settings.maxCallSec === 180) d.settings.maxCallSec = 240; // 새 문항 구성(인사·최근 문제·6개 영역)에 맞춰 4분
+  if ((old?.seedVersion ?? 0) < 5 && d.settings.maxCallSec === 180) d.settings.maxCallSec = 240;
+  if ((old?.seedVersion ?? 0) < 9 && d.settings.rewardCall === 5000) d.settings.rewardCall = 1000; // 통화 적립 5,000원 → 1,000원으로 바뀜 // 새 문항 구성(인사·최근 문제·6개 영역)에 맞춰 4분
   const ids = new Set(d.people.map(p => p.id));
   d.calls.push(...(old?.calls || []).filter(c => c.source === 'real' && ids.has(c.personId)));
   const realCalls = new Set(d.calls.filter(c => c.source === 'real').map(c => c.id));

@@ -27,7 +27,7 @@ export const DEFAULT_SETTINGS = {
   cistIntervalWeeks: 4,    // 정기 인지검사(전화형) 주기: 2 / 4 / 8주
   cistDropAlert: 3,        //   원형 유지 점수가 직전 확정 회차보다 3점 이상 하락 → 주의
   cistMaxSec: 900,         //   정기 검사 통화 상한 15분
-  rewardCall: 5000,        // 복지포인트: 전화 인지검사를 마친 날 (하루 한 번)
+  rewardCall: 1000,        // 복지포인트: 전화 인지검사를 마친 통화 (하루 한 번)
   rewardGame: 100,         //   미니게임 한 판
   rewardGameDailyMax: 10   //   미니게임 적립은 하루 이만큼까지
 };
@@ -1009,7 +1009,7 @@ export const pointsHistory = (data, personId) => pointsOf(data, personId).sort((
 export function callReward(data, call, s = data.settings) {
   const tested = call.status === 'completed' && !call.declined && (call.kind === 'cist' || (call.items || []).length > 0);
   if (!tested) return 0;
-  return pointsOf(data, call.personId).some(x => x.reason === 'call' && x.date === call.date) ? 0 : (s.rewardCall ?? 5000);
+  return pointsOf(data, call.personId).some(x => x.reason === 'call' && x.date === call.date) ? 0 : (s.rewardCall ?? 1000);
 }
 // 미니게임 적립: 하루 rewardGameDailyMax 판까지 rewardGame원
 export function gameReward(data, personId, date, s = data.settings) {
@@ -1039,4 +1039,19 @@ export function activityOps(data, today, periodDays) {
   const g = (data.activities || []).filter(a => a.kind === 'game' && a.date >= start && a.date <= today && active.some(p => p.id === a.personId));
   const players = new Set(g.map(a => a.personId)).size;
   return { plays: g.length, players, people: active.length, rate: active.length ? (players / active.length) * 100 : null };
+}
+
+// 어르신 앱 '내 기록': 출석한 날 = 검사를 마친 통화 또는 앱 활동이 있는 날 (점수는 쓰지 않는다)
+export function attendance(data, personId, today) {
+  const calls = data.calls.filter(c => c.personId === personId && c.status === 'completed' && !c.declined && c.date <= today);
+  const acts = (data.activities || []).filter(a => a.personId === personId && a.date <= today);
+  const days = new Set([...calls.map(c => c.date), ...acts.map(a => a.date)]);
+  let streak = 0;
+  for (let d = days.has(today) ? today : addDays(today, -1); days.has(d); d = addDays(d, -1)) streak++;
+  const sun = addDays(today, -new Date(Date.UTC(+today.slice(0, 4), +today.slice(5, 7) - 1, +today.slice(8, 10))).getUTCDay());
+  return {
+    streak, total: days.size, calls: calls.length, activities: acts.length,
+    minutes: Math.round((acts.reduce((t, a) => t + (a.durationSec || 0), 0) + calls.reduce((t, c) => t + (c.durationSec || 0), 0)) / 60),
+    week: Array.from({ length: 7 }, (_, i) => { const date = addDays(sun, i); return { date, done: days.has(date), today: date === today, future: date > today }; })
+  };
 }
