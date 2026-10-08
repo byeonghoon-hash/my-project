@@ -319,6 +319,8 @@ window.addEventListener('storage', e => {
   reloadData();
   if (location.hash.startsWith('#/admin') && !document.querySelector('.modal-backdrop') && !document.activeElement?.matches('input, textarea, select')) render();
   else if (location.hash.startsWith('#/admin')) notifyEmergencies();
+  // 어르신 화면(홈·건강정보·활동·기록·포인트)은 관리자가 건강정보를 올리거나 고치면 바로 다시 그린다. 통화·게임 중에는 건드리지 않는다.
+  else if (/^#\/user\/[^/]+(\/(health|activities|records|points)[^/]*)?(\/[^/]+)?$/.test(location.hash) && !location.hash.includes('/play/') && document.body.classList.contains('elder')) { cleanup?.(); cleanup = null; render(); }
 });
 
 // 어르신 ↔ 관리자 화면 전환 (관리자는 로그인 필요)
@@ -1919,37 +1921,50 @@ function healthPage() {
   const list = [...d.healthNotices].sort((a, b) => b.from.localeCompare(a.from) || (b.createdAt || '').localeCompare(a.createdAt || ''));
   const live = healthToday(d, today);
   const STATE_CHIP = { '게시 중': 'chip-low', 예약: 'chip-info', '기간 끝남': 'chip-neutral', 내림: 'chip-neutral' };
+  // 입력칸 (페이지 안 '새 건강정보 입력'과 수정 창이 같이 쓴다). pre: 오류 글자 id 앞부분
+  const fields = (n, pre) => {
+    const field = (label, input, key, req) => `<label class="${key === 'body' ? 'wide' : ''}"><span>${label}${req ? ' <span class="req" aria-hidden="true">*</span>' : ''}</span>${input}<small class="err" id="${pre}-err-${key}" data-err="${key}"></small></label>`;
+    return `${field('분류', `<select name="category">${HEALTH_CATEGORIES.map(c => `<option ${c === n.category ? 'selected' : ''}>${c}</option>`).join('')}</select>`, 'category')}
+      ${field('제목', `<input name="title" maxlength="40" value="${esc(n.title)}" aria-required="true" placeholder="예: 물은 조금씩 자주 드세요">`, 'title', true)}
+      ${field('내용', `<textarea name="body" rows="6" maxlength="600" aria-required="true" placeholder="어르신께 드릴 말씀을 쉬운 말로">${esc(n.body)}</textarea>`, 'body', true)}
+      ${field('게시 시작일', `<input type="date" name="from" value="${n.from}">`, 'from', true)}
+      ${field('게시 끝일 (비우면 계속)', `<input type="date" name="to" value="${n.to || ''}">`, 'to')}`;
+  };
+  const readForm = f => ({ category: f.category.value, title: f.title.value.trim(), body: f.body.value.trim(), from: f.from.value, to: f.to.value });
+  // 고치면 그 칸의 오류 글자를 지운다
+  const clearOnInput = (f, pre) => f?.addEventListener('input', e => { const el = document.getElementById(`${pre}-err-${e.target.name}`); if (el) { el.textContent = ''; e.target.removeAttribute('aria-invalid'); } });
+  const blank = () => ({ category: HEALTH_CATEGORIES[0], title: '', body: '', from: today, to: '' });
+  actions.hnAdd = f => {
+    const v = readForm(f);
+    const errs = checkNotice(v);
+    if (Object.keys(errs).length) { showErrors(f, errs); return; }
+    d.healthNotices.push({ id: 'hn' + Date.now().toString(36), ...v, status: 'posted', createdBy: who, createdAt: nowStamp(), updatedBy: null, updatedAt: null, source: 'real' });
+    save();
+    render();
+    toast(v.from <= today ? '건강정보 추가됨 · 어르신 화면에 바로 표시' : `건강정보 예약 · ${fmtMD(v.from)}부터 표시`);
+  };
+  actions.hnFocus = () => { const t = document.querySelector('#hn-add [name=title]'); t?.scrollIntoView({ block: 'center' }); t?.focus(); };
   const open = id => {
-    const n = d.healthNotices.find(x => x.id === id) || { category: HEALTH_CATEGORIES[0], title: '', body: '', from: today, to: '' };
-    const field = (label, input, key, req) => `<label class="${key === 'body' ? 'wide' : ''}"><span>${label}${req ? ' <span class="req" aria-hidden="true">*</span>' : ''}</span>${input}<small class="err" id="hn-err-${key}" data-err="${key}"></small></label>`;
+    const n = d.healthNotices.find(x => x.id === id) || blank();
     const m = modal({
-      title: id ? '건강정보 수정' : '새 건강정보', size: 'md',
-      body: `<form class="form two" id="hn-form" data-submit="hnSave">
-          ${field('분류', `<select name="category">${HEALTH_CATEGORIES.map(c => `<option ${c === n.category ? 'selected' : ''}>${c}</option>`).join('')}</select>`, 'category')}
-          ${field('제목', `<input name="title" maxlength="40" value="${esc(n.title)}" aria-required="true">`, 'title', true)}
-          ${field('내용', `<textarea name="body" rows="7" maxlength="600" aria-required="true">${esc(n.body)}</textarea>`, 'body', true)}
-          ${field('게시 시작일', `<input type="date" name="from" value="${n.from}">`, 'from', true)}
-          ${field('게시 끝일 (비우면 계속)', `<input type="date" name="to" value="${n.to || ''}">`, 'to')}
-        </form>
+      title: '건강정보 수정', size: 'md',
+      body: `<form class="form two" id="hn-form" data-submit="hnSave">${fields(n, 'hn')}</form>
         <p class="muted small" style="margin-top:var(--s3)">어르신 화면에 큰 글자로 보임 · 제목 40자 · 내용 600자 이하 · 진단·점수 표현은 쓰지 않음</p>`,
-      foot: `<button type="button" class="btn btn-secondary" data-close>취소</button><button type="submit" form="hn-form" class="btn btn-primary">${id ? '저장' : '올리기'}</button>`,
+      foot: `<button type="button" class="btn btn-secondary" data-close>취소</button><button type="submit" form="hn-form" class="btn btn-primary">저장</button>`,
       dirty: () => { const f = document.getElementById('hn-form'); return !!f && (f.title.value !== n.title || f.body.value !== n.body); }
     });
-    // 고치면 그 칸의 오류 글자를 지운다
-    document.getElementById('hn-form')?.addEventListener('input', e => { const el = document.getElementById('hn-err-' + e.target.name); if (el) { el.textContent = ''; e.target.removeAttribute('aria-invalid'); } });
+    clearOnInput(document.getElementById('hn-form'), 'hn');
     actions.hnSave = f => {
-      const v = { category: f.category.value, title: f.title.value.trim(), body: f.body.value.trim(), from: f.from.value, to: f.to.value };
+      const v = readForm(f);
       const errs = checkNotice(v);
       if (Object.keys(errs).length) { showErrors(f, errs); return; }
-      if (id) Object.assign(d.healthNotices.find(x => x.id === id), v, { updatedBy: who, updatedAt: nowStamp() });
-      else d.healthNotices.push({ id: 'hn' + Date.now().toString(36), ...v, status: 'posted', createdBy: who, createdAt: nowStamp(), updatedBy: null, updatedAt: null, source: 'real' });
+      Object.assign(d.healthNotices.find(x => x.id === id), v, { updatedBy: who, updatedAt: nowStamp() });
       save();
       m.close(true);
       render();
-      toast(id ? '건강정보 저장됨' : v.from <= today ? '건강정보 올림 · 어르신 화면에 표시' : `건강정보 예약 · ${fmtMD(v.from)}부터 표시`);
+      toast('건강정보 저장됨 · 어르신 화면에 바로 반영');
     };
   };
-  actions.hnNew = () => open(null);
   actions.hnEdit = el => open(el.dataset.id);
   actions.hnToggle = el => {
     const n = d.healthNotices.find(x => x.id === el.dataset.id);
@@ -1967,15 +1982,23 @@ function healthPage() {
   };
   return {
     title: '건강정보', sub: `어르신 화면 게시 중 ${live.length}건`,
-    head: btn(`${icon('sparkle', 16)}새 건강정보`, 'data-act="hnNew"', 'primary', ''),
+    head: btn(`${icon('next', 16)}건강정보 추가`, 'data-act="hnFocus"', 'secondary', ''),
+    after: () => clearOnInput(document.getElementById('hn-add'), 'hn-add'),
     html: `
-      <section class="card">
+      <section class="card hn-new">
+        <div class="card-head"><h2>새 건강정보 입력</h2><span class="sub">추가하면 어르신 화면 '오늘의 건강정보'에 바로 표시</span></div>
+        <form class="form two" id="hn-add" data-submit="hnAdd">
+          ${fields(blank(), 'hn-add')}
+          <div class="wide row"><button type="submit" class="btn btn-primary">${icon('check', 16)}추가</button><span class="muted small">제목 40자 · 내용 600자 이하 · 쉬운 말로 · 진단·점수 표현은 쓰지 않음</span></div>
+        </form>
+      </section>
+      <section class="card" style="margin-top:var(--s5)">
         <div class="card-head"><h2>오늘 어르신 화면</h2><span class="sub">홈 '오늘의 건강정보'에 가장 최근 것이 먼저 보임</span></div>
         ${live.length ? `<div class="hn-live">${live.slice(0, 3).map((n, k) => `
           <div class="hn-card"><span class="chip ${k ? 'chip-neutral' : 'chip-info'}">${k ? '전체 보기 안' : '홈에 표시'}</span><b>${esc(n.title)}</b><p class="muted small">${esc(n.category)} · ${fmtMD(n.from)}~${n.to ? fmtMD(n.to) : ''}</p></div>`).join('')}</div>` : empty('게시 중인 건강정보 없음', 'inbox')}
       </section>
       <section class="card" style="margin-top:var(--s5)">
-        <div class="card-head"><h2>전체 목록</h2><span class="sub">${list.length}건</span></div>
+        <div class="card-head"><h2>전체 목록 <span class="sub">${list.length}건</span></h2>${btn(`${icon('next', 16)}추가`, 'data-act="hnFocus"')}</div>
         ${list.length ? `<div class="table-wrap"><table class="table compact rtable">
           <thead><tr><th>제목</th><th>분류</th><th>게시 기간</th><th>상태</th><th>작성</th><th><span class="sr-only">관리</span></th></tr></thead>
           <tbody>${list.map(n => { const st = noticeState(n, today); return `
