@@ -621,4 +621,16 @@ assert.equal(isOffTopic(regItem, '잘 모르겠는데 기억이 하나도 안 �
   assert.deepEqual(['high', 'mid', 'low'].map(l => lv.filter(x => x === l).length), [2, 3, 5]);
 }
 
+
+// ======== 기본 계정: 비밀번호 원문 없이 해시로 확인 ========
+{
+  const { BASE_ACCOUNT, ensureBaseAccount, verifyPassword: vp, displayName } = await import('./store.js');
+  assert.equal(await vp(BASE_ACCOUNT, 'dbsqudgns'), true);
+  assert.equal(await vp(BASE_ACCOUNT, 'wrong1'), false);
+  const ed = ensureBaseAccount({ accounts: [] });
+  assert.equal(ed.accounts[0].username, 'dbsqudgns');
+  assert.equal(ensureBaseAccount(ed).accounts.length, 1);                  // 두 번 넣지 않음
+  assert.equal(displayName(BASE_ACCOUNT), '윤병훈 간호사');
+}
+
 console.log('selftest 통과');

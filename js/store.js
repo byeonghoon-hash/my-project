@@ -7,7 +7,7 @@ let data = null;
 export function getData() {
   if (!data) {
     const raw = localStorage.getItem(KEY);
-    data = raw ? JSON.parse(raw) : null;
+    data = raw ? ensureBaseAccount(JSON.parse(raw)) : null;
   }
   return data;
 }
@@ -16,7 +16,7 @@ export function getData() {
 export function reloadData() { data = null; return getData(); }
 
 export function setData(d) {
-  data = d;
+  data = ensureBaseAccount(d);
   save();
 }
 
@@ -62,6 +62,19 @@ export async function verifyPassword(account, password) {
   return (await hashPassword(account.salt, password)) === account.hash;
 }
 export const displayName = a => `${a.name} ${a.job}`;
+
+// 기본 계정 (회원가입 없이 바로 로그인): 아이디 dbsqudgns · 윤병훈 간호사 · 춘해보건대학교
+// 비밀번호는 원문 대신 salt와 해시만 둔다. 데이터를 처음 만들거나 다시 만들거나 초기화해도 없으면 다시 넣는다.
+export const BASE_ACCOUNT = {
+  id: 'acc-base', username: 'dbsqudgns', name: '윤병훈', job: '간호사', org: '춘해보건대학교',
+  salt: 'b55c34bf4acf051c90f1d7814b83d1db', hash: 'd0c37e49164ebc20b27b4b5e010d214d4690e57dcbcfcbd44d87e23a5d6ba8cd', createdAt: '2026-10-08T09:00'
+};
+export function ensureBaseAccount(d) {
+  if (!d) return d;
+  d.accounts ??= [];
+  if (!d.accounts.some(a => a.username === BASE_ACCOUNT.username)) d.accounts.unshift({ ...BASE_ACCOUNT });
+  return d;
+}
 
 export function currentAccount() {
   const id = localStorage.getItem(LOGIN_KEY);
