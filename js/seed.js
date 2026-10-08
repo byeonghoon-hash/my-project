@@ -3,16 +3,16 @@
 // 통화 대화록은 점수와 맞게 만든다: 대답을 먼저 만들고 점수는 그 대답을 자동 채점한 값이다.
 
 import {
-  DEFAULT_SETTINGS, addDays, todayStr, nowStamp, personStatus, updateAlerts, riskOf, refreshZ, journalDraft, syncCistAlerts
+  DEFAULT_SETTINGS, addDays, todayStr, nowStamp, personStatus, updateAlerts, riskOf, refreshZ, journalDraft, syncCistAlerts, callReward, gameReward
 } from './metrics.js';
 import {
   planForDate, scorePct, scoreItem, korNum, WEEKDAYS, SELF_QUESTIONS, CHAT_QUESTION, classifySleep, classifyMood, findRequests, itemSpec, DEFAULT_BANK,
-  cistPlan, rescoreCist, DEFAULT_CIST_MODES, CIST
+  cistPlan, rescoreCist, DEFAULT_CIST_MODES, CIST, ACTIVITIES
 } from './items.js';
 import { pickVitals, recomputeRing } from './vitals.js';
 
 // 시드 버전. 올리면 저장된 시연 데이터를 새로 만든다 (회원 계정·링 실측 데이터는 유지).
-export const SEED_VERSION = 7;
+export const SEED_VERSION = 8;
 
 // 전화번호는 모두 가짜(010-0000-), 보호자 이름은 지어낸 것, 의료기관명은 '○○내과의원'.
 const phone = n => `010-0000-${n}`;
@@ -246,7 +246,43 @@ export function makeSeed(settings = DEFAULT_SETTINGS, today = todayStr()) {
     });
   });
 
+  // ---- 대상자 앱: 최근 4주 미니게임·체조 기록과 복지포인트 (오늘 활동은 비워 둔다) ----
+  seedApp(data, today);
+
   return data;
+}
+
+// 사람마다 하루에 앱을 열 확률 (윤병훈 자주 · 정두만 거의 안 함 · 이상철 점점 줄어듦)
+const APP_USE = [0.6, 0.5, 0.7, 0.3, 0.6, 0.4, 0.2, 0.05, 0.5, 0.8];
+function seedApp(data, today) {
+  const s = data.settings;
+  data.activities = [];
+  data.points = [];
+  const games = ACTIVITIES.filter(a => a.kind === 'game').map(a => a.key);
+  data.people.forEach((p, i) => {
+    let st = 7919 * (i + 3);
+    const rand = () => { st = (st * 16807) % 2147483647; return st / 2147483647; };
+    for (let k = 28; k >= 1; k--) {
+      const date = addDays(today, -k);
+      const use = APP_USE[i] * (i === 4 ? k / 28 : 1);
+      if (rand() < use) {
+        const n = 1 + Math.floor(rand() * 3);
+        for (let j = 0; j < n; j++) {
+          const key = games[Math.floor(rand() * games.length)];
+          const at = `${date}T${String(10 + Math.floor(rand() * 9)).padStart(2, '0')}:${String(Math.floor(rand() * 60)).padStart(2, '0')}`;
+          data.activities.push({ id: `act-${i}-${k}-${j}`, personId: p.id, kind: 'game', key, date, at, durationSec: 60 + Math.floor(rand() * 150), source: 'demo' });
+          const amount = gameReward(data, p.id, date, s);
+          if (amount) data.points.push({ id: `pt-g-${i}-${k}-${j}`, personId: p.id, date, at, amount, reason: 'game', ref: key, source: 'demo' });
+        }
+      }
+      if (rand() < use * 0.4) data.activities.push({ id: `act-${i}-${k}-e`, personId: p.id, kind: 'exercise', key: 'exercise', date, at: `${date}T09:30`, durationSec: 300, source: 'demo' });
+    }
+  });
+  // 전화 인지검사를 마친 날 (최근 4주, 오늘 포함)
+  for (const c of data.calls.filter(c => c.date >= addDays(today, -28)).sort((a, b) => (a.date + (a.startedAt || '')).localeCompare(b.date + (b.startedAt || '')))) {
+    const amount = callReward(data, c, s);
+    if (amount) data.points.push({ id: `pt-c-${c.id}`, personId: c.personId, date: c.date, at: c.startedAt || `${c.date}T10:00`, amount, reason: 'call', ref: c.id, source: 'demo' });
+  }
 }
 
 // 정기 인지검사 회차 --------------------------------------------------------
@@ -495,6 +531,9 @@ export function reseed(old) {
   const realCalls = new Set(d.calls.filter(c => c.source === 'real').map(c => c.id));
   d.cistSessions.push(...(old?.cistSessions || []).filter(x => realCalls.has(x.callId))); // 직접 한 정기 검사 회차도 남긴다
   d.alerts.push(...(old?.alerts || []).filter(a => a.type === 'emergency' && ids.has(a.personId)));
+  // 대상자 앱에서 직접 한 활동·적립은 남긴다
+  d.activities.push(...(old?.activities || []).filter(a => a.source === 'real' && ids.has(a.personId)));
+  d.points.push(...(old?.points || []).filter(x => x.source === 'real' && ids.has(x.personId)));
   d.ringImports = (old?.ringImports || []).filter(r => d.people.some(p => p.id === r.personId));
   for (const pid of new Set(d.ringImports.map(r => r.personId))) recomputeRing(d, pid);
   return d;

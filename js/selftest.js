@@ -548,4 +548,44 @@ assert.equal(isOffTopic(regItem, '잘 모르겠는데 기억이 하나도 안 �
   assert.equal(cistStatus(yoon, sd, tdate).isDueToday, true);
 }
 
+
+// ======== 대상자 앱: 복지포인트 · 미니게임 기록 ========
+{
+  const { callReward, gameReward, pointsBalance, pointsOn, activityStats, activityOps } = await import('./metrics.js');
+  const { makeCalc, makeMatch, makeOrder, ACTIVITIES } = await import('./items.js');
+  const day = '2026-10-08';
+  const dd = { settings: { ...S }, people: [{ id: 'x', active: true }, { id: 'y', active: true }], points: [], activities: [] };
+  const call = { personId: 'x', date: day, status: 'completed', declined: false, items: [{}] };
+  assert.equal(callReward(dd, call), 5000);                                              // 인지검사를 마친 통화 → 5,000원
+  assert.equal(callReward(dd, { ...call, status: 'partial' }), 0);                         // 끝까지 못 한 통화는 없음
+  assert.equal(callReward(dd, { ...call, declined: true }), 0);
+  assert.equal(callReward(dd, { ...call, items: [], kind: 'cist' }), 5000);                // 정기 검사 통화도 적립
+  dd.points.push({ personId: 'x', date: day, at: day + 'T10:00', amount: 5000, reason: 'call' });
+  assert.equal(callReward(dd, call), 0);                                                 // 하루 한 번
+  for (let n = 0; n < 10; n++) { assert.equal(gameReward(dd, 'x', day), 100); dd.points.push({ personId: 'x', date: day, at: day + 'T11:00', amount: 100, reason: 'game' }); }
+  assert.equal(gameReward(dd, 'x', day), 0);                                             // 하루 10판까지
+  assert.equal(gameReward(dd, 'x', '2026-10-09'), 100);
+  assert.equal(pointsBalance(dd, 'x'), 6000);
+  assert.equal(pointsOn(dd, 'x', day), 6000);
+  dd.activities.push({ personId: 'x', kind: 'game', key: 'calc', date: day, durationSec: 90 }, { personId: 'x', kind: 'game', key: 'match', date: '2026-09-30' },
+    { personId: 'x', kind: 'exercise', key: 'exercise', date: day }, { personId: 'x', kind: 'game', key: 'order', date: '2026-09-01' });
+  const as = activityStats(dd, 'x', day);
+  assert.deepEqual([as.games7, as.games30, as.exercise7, as.prev7, as.days7], [1, 2, 1, 1, 1]);
+  assert.equal(as.daily14.length, 14);
+  assert.deepEqual(activityOps(dd, day, 7), { plays: 1, players: 1, people: 2, rate: 50 });
+  // 게임 내용: 더 큰 쪽은 값이 다르고 답이 맞음 · 짝 4쌍 · 1~9 한 번씩
+  let k = 1; const r = () => ((k = (k * 16807) % 2147483647) / 2147483647);
+  for (const q of makeCalc(r, 30)) { assert.notEqual(q.left.value, q.right.value); assert.equal(q.answer, q.left.value > q.right.value ? 'left' : 'right'); }
+  const mm = makeMatch(r);
+  assert.equal(mm.length, 8);
+  assert.ok(new Set(mm).size === 4 && [...new Set(mm)].every(x => mm.filter(y => y === x).length === 2));
+  assert.deepEqual([...makeOrder(r)].sort(), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  assert.deepEqual(ACTIVITIES.map(a => a.cat), ['focus', 'think', 'memory', 'body']);
+  // 시드: 오늘 활동은 비워 두고, 앱 활동이 관리자 화면 숫자로 나옴
+  const sd = makeSeed(S, day);
+  assert.ok(!sd.activities.some(a => a.date === day));
+  assert.ok(sd.people.every(p => pointsBalance(sd, p.id) > 0));
+  assert.ok(activityOps(sd, day, 7).plays > 0);
+}
+
 console.log('selftest 통과');

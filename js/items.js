@@ -656,3 +656,48 @@ export const recogInEarlier = (item, earlier) => (earlier || []).find(t => item.
 // 문항 하나 다시 채점 (담당자가 고친 점수는 그대로)
 export const rescoreCist = it => (it.status === 'reviewed' || it.status === 'omitted' ? it : { ...it, ...pickScore(scoreCist(it)) });
 const pickScore = r => ({ score: r.score, status: r.status, note: r.note ?? '', ...(r.found ? { found: r.found, candidates: r.candidates } : {}) });
+
+// =========================================================
+// 대상자 앱 활동: 미니게임 3가지 · 신체운동 가이드 (판마다 내용만 바뀐다, 점수는 대상자에게 보여 주지 않는다)
+// 검사 문항과 겹치지 않게: 단어·숫자 외우기 대신 그림 짝, 계산 비교, 숫자 차례 누르기를 쓴다.
+// =========================================================
+export const ACTIVITIES = [
+  { key: 'order', kind: 'game', cat: 'focus', catLabel: '인지 강화', short: '숫자 차례 누르기', title: '숫자 차례로 누르기', minutes: 2, desc: '1부터 9까지 차례대로 눌러요' },
+  { key: 'calc', kind: 'game', cat: 'think', catLabel: '사고력 운동', short: '더 큰 쪽 고르기', title: '더 큰 쪽 고르기', minutes: 3, desc: '두 계산 중 더 큰 쪽을 골라요' },
+  { key: 'match', kind: 'game', cat: 'memory', catLabel: '기억력 운동', short: '그림 짝 맞추기', title: '같은 그림 짝 맞추기', minutes: 3, desc: '카드를 뒤집어 같은 그림을 찾아요' },
+  { key: 'exercise', kind: 'exercise', cat: 'body', catLabel: '신체 운동', short: '앉아서 체조', title: '앉아서 하는 체조', minutes: 5, desc: '의자에 앉아 따라 하는 5가지 동작' }
+];
+export const ACTIVITY = Object.fromEntries(ACTIVITIES.map(a => [a.key, a]));
+const shuffle = (arr, rand) => { const a = [...arr]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+
+// 숫자 차례로 누르기: 3×3 칸에 1~9를 섞어 놓는다
+export const makeOrder = (rand = Math.random) => shuffle([1, 2, 3, 4, 5, 6, 7, 8, 9], rand);
+
+// 더 큰 쪽 고르기: 5판. 한 자리 수 더하기·빼기 둘 중 값이 큰 쪽 (값이 같은 판은 만들지 않는다)
+export function makeCalc(rand = Math.random, rounds = 5) {
+  const expr = () => {
+    const a = 2 + Math.floor(rand() * 8), b = 1 + Math.floor(rand() * 8);
+    return rand() < 0.5 || a <= b ? { text: `${a} + ${b}`, value: a + b } : { text: `${a} − ${b}`, value: a - b };
+  };
+  const out = [];
+  while (out.length < rounds) {
+    const left = expr(), right = expr();
+    if (left.value !== right.value) out.push({ left, right, answer: left.value > right.value ? 'left' : 'right' });
+  }
+  return out;
+}
+
+// 같은 그림 짝 맞추기: 그림 4가지를 두 장씩 8장 (모양은 검사 문항의 네모·동그라미·세모를 쓰지 않는다)
+export const MATCH_ART = ['star', 'heart', 'moon', 'sun', 'leaf', 'drop', 'cloud', 'flower'];
+export const MATCH_NAME = { star: '별', heart: '하트', moon: '달', sun: '해', leaf: '나뭇잎', drop: '물방울', cloud: '구름', flower: '꽃' };
+export const makeMatch = (rand = Math.random, pairs = 4) => { const pick = shuffle(MATCH_ART, rand).slice(0, pairs); return shuffle([...pick, ...pick], rand); };
+
+// 앉아서 하는 체조: 동작 5가지
+export const EXERCISE_STEPS = [
+  { title: '목 돌리기', count: '좌우 5번씩', text: '허리를 펴고 앉아 고개를 천천히 오른쪽, 왼쪽으로 돌려 주세요.', art: 'neck' },
+  { title: '어깨 으쓱', count: '10번', text: '두 어깨를 귀 쪽으로 올렸다가 힘을 빼고 툭 내려 주세요.', art: 'shoulder' },
+  { title: '팔 뻗어 주먹 쥐기', count: '10번', text: '두 팔을 앞으로 쭉 뻗고 주먹을 꼭 쥐었다가 활짝 펴 주세요.', art: 'arm' },
+  { title: '발목 돌리기', count: '양쪽 5번씩', text: '한쪽 발을 살짝 들고 발목을 천천히 크게 돌려 주세요.', art: 'ankle' },
+  { title: '무릎 펴기', count: '양쪽 5번씩', text: '한쪽 무릎을 쭉 펴고 다섯을 센 뒤 천천히 내려 주세요.', art: 'knee' }
+];
+export const EXERCISE_SAFETY = '아프거나 어지러우면 바로 멈추세요.';

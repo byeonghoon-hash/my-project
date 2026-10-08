@@ -26,7 +26,10 @@ export const DEFAULT_SETTINGS = {
   visitDailyLimit: 4,      // 방문자 하루 방문 한도(건)
   cistIntervalWeeks: 4,    // 정기 인지검사(전화형) 주기: 2 / 4 / 8주
   cistDropAlert: 3,        //   원형 유지 점수가 직전 확정 회차보다 3점 이상 하락 → 주의
-  cistMaxSec: 900          //   정기 검사 통화 상한 15분
+  cistMaxSec: 900,         //   정기 검사 통화 상한 15분
+  rewardCall: 5000,        // 복지포인트: 전화 인지검사를 마친 날 (하루 한 번)
+  rewardGame: 100,         //   미니게임 한 판
+  rewardGameDailyMax: 10   //   미니게임 적립은 하루 이만큼까지
 };
 
 export const LEVEL_RANK = { watch: 1, caution: 2, refer: 3 };
@@ -991,4 +994,49 @@ export function cistReferralCut(age, eduYears, canRead) {
   const row = REFERRAL_CUT.filter(([a]) => age >= a).at(-1)[1];
   const col = canRead === false ? 0 : eduYears <= 5 ? 1 : eduYears <= 8 ? 2 : eduYears <= 11 ? 3 : eduYears <= 15 ? 4 : 5;
   return row[col];
+}
+
+// =========================================================
+// 대상자 앱: 복지포인트 · 미니게임·신체운동 기록 (관리자 화면에는 게임 횟수만 보여 준다)
+// data.points: [{ id, personId, date, at, amount, reason: 'call'|'game', ref, source }]
+// data.activities: [{ id, personId, kind: 'game'|'exercise', key, date, at, durationSec, source }]
+// =========================================================
+const pointsOf = (data, personId) => (data.points || []).filter(x => x.personId === personId);
+export const pointsBalance = (data, personId) => pointsOf(data, personId).reduce((t, x) => t + x.amount, 0);
+export const pointsOn = (data, personId, date) => pointsOf(data, personId).filter(x => x.date === date).reduce((t, x) => t + x.amount, 0);
+export const pointsHistory = (data, personId) => pointsOf(data, personId).sort((a, b) => b.at.localeCompare(a.at));
+// 전화 인지검사 적립: 검사를 마친 통화(매일 문항 또는 정기 검사)만, 하루 한 번 → 적립할 금액 (없으면 0)
+export function callReward(data, call, s = data.settings) {
+  const tested = call.status === 'completed' && !call.declined && (call.kind === 'cist' || (call.items || []).length > 0);
+  if (!tested) return 0;
+  return pointsOf(data, call.personId).some(x => x.reason === 'call' && x.date === call.date) ? 0 : (s.rewardCall ?? 5000);
+}
+// 미니게임 적립: 하루 rewardGameDailyMax 판까지 rewardGame원
+export function gameReward(data, personId, date, s = data.settings) {
+  const n = pointsOf(data, personId).filter(x => x.reason === 'game' && x.date === date).length;
+  return n < (s.rewardGameDailyMax ?? 10) ? (s.rewardGame ?? 100) : 0;
+}
+// 한 사람의 활동 요약 (관리자 상세): 최근 7·30일 게임 횟수, 게임별, 신체운동, 마지막 활동, 14일 일별
+export function activityStats(data, personId, today) {
+  const acts = (data.activities || []).filter(a => a.personId === personId && a.date <= today);
+  const since = n => addDays(today, -(n - 1));
+  const games = acts.filter(a => a.kind === 'game');
+  const byKey = {};
+  for (const a of games.filter(a => a.date >= since(30))) byKey[a.key] = (byKey[a.key] || 0) + 1;
+  const daily14 = Array.from({ length: 14 }, (_, i) => { const d = addDays(today, i - 13); return { date: d, games: games.filter(a => a.date === d).length, exercise: acts.filter(a => a.kind === 'exercise' && a.date === d).length }; });
+  const g7 = games.filter(a => a.date >= since(7));
+  return {
+    games7: g7.length, games30: games.filter(a => a.date >= since(30)).length, prev7: games.filter(a => a.date >= since(14) && a.date < since(7)).length,
+    days7: new Set(g7.map(a => a.date)).size, minutes7: Math.round(g7.reduce((t, a) => t + (a.durationSec || 0), 0) / 60),
+    exercise7: acts.filter(a => a.kind === 'exercise' && a.date >= since(7)).length,
+    byKey, daily14, last: acts.map(a => a.date).sort().at(-1) || null
+  };
+}
+// 운영 지표: 기간 안 미니게임 횟수 · 한 번 이상 한 사람 / 활동 대상자
+export function activityOps(data, today, periodDays) {
+  const start = periodDays ? addDays(today, -(periodDays - 1)) : '0000-00-00';
+  const active = data.people.filter(p => p.active);
+  const g = (data.activities || []).filter(a => a.kind === 'game' && a.date >= start && a.date <= today && active.some(p => p.id === a.personId));
+  const players = new Set(g.map(a => a.personId)).size;
+  return { plays: g.length, players, people: active.length, rate: active.length ? (players / active.length) * 100 : null };
 }

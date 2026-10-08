@@ -13,6 +13,7 @@ import {
   primaryContact, validPhone, autoChecklist, trendAll, TREND_METRICS, METRIC, trendCsv, trendSentence,
   personEvents, journalDraft, daysBetween, visitChecks, visitStart, visitEnd, minToTime, VISIT_TYPES,
   ageFrom, findDuplicates, insideBoundary, cistStatus, cistScore, cistChange, cistSessionsOf, confirmedCist, syncCistAlerts, cistOps, cistModeNotes, cistDue, cistReferralCut,
+  pointsBalance, pointsOn, pointsHistory, callReward, gameReward, activityStats, activityOps,
   fmtDate, fmtMD, fmtMDW, fmtYMDW, fmtStamp, fmtDur, fmtNum, fmtUnit, timelineRange, layoutLabels, completionDelta
 } from './metrics.js';
 import { getNightVitals, importRing, recomputeRing, deleteRingImport } from './vitals.js';
@@ -20,7 +21,8 @@ import { startRing, runCall, nextItem, stopCall, prepareCall, summarizeCall, get
 import {
   scorePct, scoreItem, orientationParts, countAnimals, SELF_QUESTIONS, checkSummary, AI_CONSENT_TEXT, SCRIPT,
   DEFAULT_BANK, normalizeBank, planForDate, DOMAINS, ORIENT_PART, ATTENTION_TYPE, LANGUAGE_TYPE,
-  CIST, CIST_DOMAINS, CIST_DOMAIN_MAX, CIST_ITEM_NAMES, FIDELITY_LABEL, DEFAULT_CIST_MODES, normalizeModes, modeAvailable, modeOption, cistPlan, rescoreCist
+  CIST, CIST_DOMAINS, CIST_DOMAIN_MAX, CIST_ITEM_NAMES, FIDELITY_LABEL, DEFAULT_CIST_MODES, normalizeModes, modeAvailable, modeOption, cistPlan, rescoreCist,
+  ACTIVITIES, ACTIVITY, makeOrder, makeCalc, makeMatch, MATCH_NAME, EXERCISE_STEPS, EXERCISE_SAFETY
 } from './items.js';
 import ungchon from './ungchon.js';
 import { icon } from './icons.js';
@@ -57,7 +59,10 @@ const SETTING_LABEL = {
   visitBufferMin: '방문 이동 여유 시간 (분)',
   visitDailyLimit: '방문자 하루 방문 한도 (건)',
   cistDropAlert: '정기검사 원형 유지 점수 하락 기준 (점)',
-  cistMaxSec: '정기검사 통화 상한 (초)'
+  cistMaxSec: '정기검사 통화 상한 (초)',
+  rewardCall: '복지포인트: 전화 인지검사 (원, 하루 한 번)',
+  rewardGame: '복지포인트: 미니게임 한 판 (원)',
+  rewardGameDailyMax: '복지포인트: 미니게임 하루 적립 한도 (판)'
 };
 const SETTING_HIDDEN = ['cistIntervalWeeks', 'voiceId']; // 정기 검사 주기는 '정기 인지검사 방식'에서 고른다
 const CARE_LABEL = { cognition: ['통화 인지검사', 40], response: ['통화 응답', 25], spo2: ['야간 SpO₂', 20], heart: ['안정 시 심박', 15] };
@@ -263,9 +268,10 @@ function render() {
   const [path, qs] = location.hash.split('?');
   const params = new URLSearchParams(qs || '');
   const adminArea = path.startsWith('#/admin') || path === '#/login' || path === '#/signup';
-  document.body.className = adminArea ? 'admin' : 'big';
+  document.body.className = adminArea ? 'admin' : path.startsWith('#/user') ? 'big elder' : 'big';
 
   if (path === '#/user') return userSelect();
+  if (path.startsWith('#/user/')) return elderPage(path.slice(7).split('/').map(decodeURIComponent));
   if (!adminArea) return home();
 
   // 관리자 화면은 로그인해야 볼 수 있다
@@ -382,54 +388,290 @@ function home() {
     </div>`;
 }
 
-// ---------- 대상자(어르신) 화면 — 로그인 없이 쓴다 ----------
+// ---------- 대상자(어르신) 앱 — 로그인 없이 쓴다 ----------
+// #/user 누구세요 · #/user/<id> 홈(맨 위 안부 전화 팝업 · 복지포인트 · 오늘의 두뇌 활동) · /activities 활동 · /points 포인트
+// · /play/<key> 미니게임·체조. 글자 24px 이상, 버튼 64px 이상. 검사 점수·위험도는 보여 주지 않는다 (복지포인트만).
+const KRW = n => `${fmtNum(n)}원`;
+const WEEK_KO = '일월화수목금토';
+const dateKo = d => `${+d.slice(5, 7)}월 ${+d.slice(8, 10)}일 ${WEEK_KO[new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10))).getUTCDay()]}요일`;
+
+// 그림 (색은 CSS 변수에서): 활동 타일 · 짝 맞추기 카드 · 체조 동작
+const svg = (body, cls = '') => `<svg class="art ${cls}" viewBox="0 0 48 48" aria-hidden="true">${body}</svg>`;
+const ART = {
+  order: svg('<rect x="5" y="5" width="17" height="17" rx="5"/><rect class="soft" x="26" y="5" width="17" height="17" rx="5"/><rect class="soft" x="5" y="26" width="17" height="17" rx="5"/><rect x="26" y="26" width="17" height="17" rx="5"/><path class="cut" d="M13.5 10v7M29.5 31h6l-6 7h7"/>'),
+  calc: svg('<rect class="soft" x="6" y="22" width="14" height="20" rx="4"/><rect x="28" y="8" width="14" height="34" rx="4"/><path class="line" d="m17 12 5 4-5 4"/>'),
+  match: svg('<rect class="soft" x="5" y="9" width="22" height="30" rx="5" transform="rotate(-8 16 24)"/><rect x="21" y="9" width="22" height="30" rx="5" transform="rotate(8 32 24)"/><path class="cut" d="m32 16 2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5-3.6-3.5 5-.7z"/>'),
+  exercise: svg('<circle cx="22" cy="9" r="5"/><path class="line" d="M22 15v14h10v12M22 19l-8 7M22 19l10 -2"/><path class="line soft-line" d="M12 44V31h20"/>'),
+  coin: svg('<circle cx="24" cy="24" r="19"/><circle class="soft" cx="24" cy="24" r="13"/><path class="cut" d="M17 19l3 11 4-9 4 9 3-11M15 24h18"/>')
+};
+const MATCH_SVG = {
+  star: '<path d="m24 6 5.3 11 12 1.6-8.8 8.3 2.2 11.9L24 33l-10.7 5.8 2.2-11.9-8.8-8.3 12-1.6z"/>',
+  heart: '<path d="M24 41 8.5 26A9.5 9.5 0 0 1 24 13.8 9.5 9.5 0 0 1 39.5 26z"/>',
+  moon: '<path d="M31 6a17 17 0 1 0 11 27A14 14 0 0 1 31 6z"/>',
+  sun: '<circle cx="24" cy="24" r="9"/><path class="ray" d="M24 4v6M24 38v6M4 24h6M38 24h6M9.9 9.9l4.2 4.2M33.9 33.9l4.2 4.2M9.9 38.1l4.2-4.2M33.9 14.1l4.2-4.2"/>',
+  leaf: '<path d="M40 8C18 8 8 18 8 32c0 4 2 8 2 8s4-2 8-2c14 0 22-10 22-30z"/>',
+  drop: '<path d="M24 5s13 15 13 25a13 13 0 0 1-26 0C11 20 24 5 24 5z"/>',
+  cloud: '<path d="M14 38a9 9 0 0 1-1-18A12 12 0 0 1 36 18a10 10 0 0 1-1 20z"/>',
+  flower: '<circle cx="24" cy="13" r="7"/><circle cx="35" cy="21" r="7"/><circle cx="31" cy="34" r="7"/><circle cx="17" cy="34" r="7"/><circle cx="13" cy="21" r="7"/><circle class="soft" cx="24" cy="25" r="6"/>'
+};
+// 체조 동작: 의자에 앉은 사람 + 동작 표시
+const seat = (arms, legs, mark = '') => svg(`<path class="line soft-line" d="M10 46V32h22M30 32v14"/><circle cx="20" cy="9" r="5"/><path class="line" d="M20 15v15${legs}${arms}"/>${mark}`, 'fig');
+const EX_ART = {
+  neck: seat('M20 19l-6 9M20 19l6 9', 'h9v14', '<path class="line accent-line" d="M11 6a10 10 0 0 0 0 8M29 6a10 10 0 0 1 0 8"/>'),
+  shoulder: seat('M20 19l-6 9M20 19l6 9', 'h9v14', '<path class="line accent-line" d="M12 16v-7m-3 3 3-3 3 3M28 16v-7m-3 3 3-3 3 3"/>'),
+  arm: seat('M20 19h18', 'h9v14', '<circle class="accent-fill" cx="41" cy="19" r="3"/>'),
+  ankle: seat('M20 19l-6 9M20 19l6 9', 'l12 8', '<path class="line accent-line" d="M38 43a4 4 0 1 1 3-6"/>'),
+  knee: seat('M20 19l-6 9M20 19l6 9', 'h21', '<path class="line accent-line" d="M44 24v12"/>')
+};
+const TAB_ICON = { home: 'heart', activities: 'list', points: 'calendar' };
+
+// 오늘 안부 전화 상태: done(검사 마침) · missed(받지 않음·통화 어려움) · off(통화 쉬는 날) · ring
+function callStateOf(p, d, today) {
+  const calls = d.calls.filter(c => c.personId === p.id && c.date === today);
+  if (calls.some(c => c.status === 'completed' && !c.declined)) return 'done';
+  if (calls.length) return 'missed';
+  return isCallDay(p, today) ? 'ring' : 'off';
+}
+// 받지 않음 기록 (거절 또는 30초 동안 응답 없음)
+function recordMissed(p) {
+  const d = getData();
+  const at = nowStamp();
+  d.calls.push({
+    id: 'c' + Date.now(), personId: p.id, date: todayStr(), time: at.slice(11), startedAt: at, status: 'missed', source: 'real',
+    durationSec: 0, items: [], scorePct: null, z: null, selfReport: null, chat: null, requests: [], audioId: null
+  });
+  evaluate([p.id]);
+}
+// 통화 준비: 서버 상태와 AI 인사를 미리 받아 둔다 (보내는 것: 지난 안부 요약만)
+const prepFor = p => prepareCall(p, getData().calls.filter(c => c.personId === p.id && c.aiSummary?.summary)
+  .sort((a, b) => (b.startedAt || b.date).localeCompare(a.startedAt || a.date)).map(c => c.aiSummary.summary), getData().settings);
+
 function userSelect() {
   document.title = '어르신 · I-ME';
   const people = getData().people.filter(p => p.active);
   app.innerHTML = `
     ${switchTop('user')}
-    <h1>누구세요?</h1>
-    <div class="stack">${people.map(p => `
-      <button type="button" class="big-btn tile" data-act="pick" data-id="${p.id}"><span class="avatar" aria-hidden="true">${initial(p.name)}</span>${esc(p.name)}<span class="chev">${icon('chev', 20)}</span></button>`).join('')}
-    </div>
-    <a class="big-btn ghost" href="#/">${icon('back', 20)}처음으로</a>`;
-  actions.pick = el => ringing(people.find(p => p.id === el.dataset.id));
+    <div class="ea ea-select">
+      <div class="ea-brand"><span class="logo-mark" aria-hidden="true">I-ME</span></div>
+      <h1 class="ea-title">누구세요?</h1>
+      <ul class="ea-people">${people.map(p => `
+        <li><a class="ea-person" href="#/user/${p.id}"><span class="ea-person-av" aria-hidden="true">${initial(p.name)}</span><span class="ea-person-name">${esc(p.name)}</span>${icon('chev', 20)}</a></li>`).join('')}
+      </ul>
+      <a class="ea-link" href="#/">${icon('back', 20)}처음으로</a>
+    </div>`;
 }
 
-function ringing(p) {
-  app.innerHTML = `
-    <div class="phone">
-      <p class="caller-label">보건소 안부전화</p>
-      <div class="pulse"><div class="avatar">${icon('heart', 20)}</div></div>
-      <h1>안부 전화가 왔습니다</h1>
-      <div class="answer">
-        <button type="button" class="big-btn accept" data-act="accept">${icon('phone', 20)}받기</button>
-        <button type="button" class="big-btn reject" data-act="reject">${icon('phone', 20)}거절</button>
-      </div>
-    </div>`;
-  const stopRing = startRing();
-  // 전화가 울리는 동안 서버 상태와 AI 인사를 미리 받아 둔다 (보내는 것: 지난 안부 요약만)
-  const summaries = getData().calls.filter(c => c.personId === p.id && c.aiSummary?.summary)
-    .sort((a, b) => (b.startedAt || b.date).localeCompare(a.startedAt || a.date)).map(c => c.aiSummary.summary);
-  const prep = prepareCall(p, summaries, getData().settings);
-  const timer = setTimeout(missed, 30000); // 30초 동안 응답 없음 → 무응답
-  cleanup = () => { stopRing(); clearTimeout(timer); };
+function elderPage([id, view = 'home', key]) {
+  const d = getData(), p = d.people.find(x => x.id === id && x.active);
+  if (!p) { location.replace('#/user'); return; }
+  const today = todayStr();
+  document.title = `${p.name} · I-ME`;
+  if (view === 'play' && ACTIVITY[key]) return playPage(p, key);
+  const tabs = `<nav class="ea-tabs" aria-label="어르신 메뉴">${[['home', '홈', ''], ['activities', '활동', '/activities'], ['points', '포인트', '/points']].map(([k, t, h]) =>
+    `<a href="#/user/${p.id}${h}" ${view === k ? 'aria-current="page"' : ''}>${icon(TAB_ICON[k], 20)}<span>${t}</span></a>`).join('')}</nav>`;
+  const top = `<header class="ea-top"><div><p class="ea-date">${dateKo(today)}</p><h1 class="ea-hello">${esc(p.name)} 어르신</h1></div>
+    <a class="ea-iconbtn" href="#/user" aria-label="사람 바꾸기">${icon('users', 20)}</a></header>`;
+  const doneKeys = new Set((d.activities || []).filter(a => a.personId === p.id && a.date === today).map(a => a.key));
+  const row = a => `
+    <li><a class="ea-row" href="#/user/${p.id}/play/${a.key}">
+      <span class="ea-tile t-${a.cat}">${ART[a.key]}${doneKeys.has(a.key) ? `<span class="ea-done" aria-label="오늘 함">${icon('check', 20)}</span>` : ''}</span>
+      <span class="ea-row-text"><span class="ea-meta">${a.catLabel} · ${a.minutes}분</span><b>${a.title}</b></span>
+    </a></li>`;
 
-  function missed() {
-    cleanup();
-    cleanup = null;
-    const d = getData();
-    const at = nowStamp();
-    d.calls.push({
-      id: 'c' + Date.now(), personId: p.id, date: todayStr(), time: at.slice(11), startedAt: at, status: 'missed', source: 'real',
-      durationSec: 0, rotationDomain: null, setIndex: null, items: [], scorePct: null, z: null,
-      selfReport: null, chat: null, requests: [], audioId: null
-    });
-    evaluate([p.id]);
-    app.innerHTML = `<h1>전화를 받지 않으셨어요.</h1><a class="big-btn" href="#/">${icon('back', 20)}처음으로</a>`;
+  let html;
+  if (view === 'points') {
+    const s = d.settings, hist = pointsHistory(d, p.id);
+    const month = hist.filter(x => x.date.slice(0, 7) === today.slice(0, 7)).reduce((t, x) => t + x.amount, 0);
+    const label = x => (x.reason === 'call' ? '안부 전화 검사' : ACTIVITY[x.ref]?.short || '미니게임');
+    const days = [...new Set(hist.map(x => x.date))].slice(0, 14);
+    html = `${top}
+      <section class="ea-hero">
+        <span class="ea-coin">${ART.coin}</span>
+        <p class="ea-hero-k">내 복지포인트</p>
+        <p class="ea-hero-v num">${KRW(pointsBalance(d, p.id))}</p>
+        <p class="ea-hero-x">오늘 +${KRW(pointsOn(d, p.id, today))} · 이번 달 +${KRW(month)}</p>
+      </section>
+      <section class="ea-card ea-rules">
+        <h2>모으는 방법</h2>
+        <p><span class="ea-tile sm t-call">${icon('phone', 20)}</span><span>안부 전화로 인지검사를 마치면<b>${KRW(s.rewardCall)}</b></span></p>
+        <p><span class="ea-tile sm t-focus">${ART.order}</span><span>미니게임 한 판에 <small>하루 ${s.rewardGameDailyMax}판까지</small><b>${KRW(s.rewardGame)}</b></span></p>
+      </section>
+      <section class="ea-sec"><h2 class="ea-h2">적립 내역</h2>
+        ${days.length ? days.map(dt => { const xs = hist.filter(x => x.date === dt); return `
+          <div class="ea-card ea-hist"><p class="ea-hist-d"><span class="num">${fmtMDW(dt)}</span><b class="num">+${KRW(xs.reduce((t, x) => t + x.amount, 0))}</b></p>
+            <ul>${xs.map(x => `<li><span>${esc(label(x))}</span><span class="num">+${KRW(x.amount)}</span></li>`).join('')}</ul></div>`; }).join('')
+          : '<p class="ea-empty">적립 내역 없음</p>'}
+      </section>`;
+  } else if (view === 'activities') {
+    html = `${top}<h2 class="ea-h2 ea-page-title">두뇌·신체 활동</h2>
+      ${ACTIVITIES.map(a => `
+        <section class="ea-sec"><h3 class="ea-cat"><span class="dot t-${a.cat}"></span>${a.catLabel}</h3>
+          <a class="ea-card ea-act" href="#/user/${p.id}/play/${a.key}">
+            <span class="ea-tile lg t-${a.cat}">${ART[a.key]}</span>
+            <span class="ea-act-text"><b>${a.title}</b><span>${a.desc}</span>
+              <span class="ea-meta">${a.minutes}분${a.kind === 'game' ? ` · 한 판 ${KRW(d.settings.rewardGame)}` : ''}${doneKeys.has(a.key) ? ' · 오늘 함' : ''}</span></span>
+          </a>
+        </section>`).join('')}`;
+  } else {
+    // 홈: 맨 위 안부 전화 팝업
+    const state = callStateOf(p, d, today);
+    const cist = cistStatus(p, d, today).isDueToday;
+    const rewarded = (d.points || []).some(x => x.personId === p.id && x.reason === 'call' && x.date === today);
+    const from = `보건소 안부 전화${cist ? ' · 기억력 확인 날' : ''}`;
+    const pop = {
+      ring: `<section class="ea-call is-ring" role="alertdialog" aria-labelledby="ea-call-t">
+          <div class="ea-call-head"><span class="ea-call-av">${icon('phone', 20)}</span><div><p class="ea-call-from">${from}</p><p class="ea-call-t" id="ea-call-t">안부 전화가 왔습니다</p></div></div>
+          <p class="ea-call-note">${ART.coin}통화하면 ${KRW(d.settings.rewardCall)} 적립</p>
+          <div class="ea-call-btns">
+            <button type="button" class="ea-btn reject" data-act="callReject">${icon('phone', 20)}거절</button>
+            <button type="button" class="ea-btn accept" data-act="callAccept">${icon('phone', 20)}받기</button>
+          </div></section>`,
+      missed: `<section class="ea-call is-missed">
+          <div class="ea-call-head"><span class="ea-call-av">${icon('phoneOff', 20)}</span><div><p class="ea-call-from">${from}</p><p class="ea-call-t">받지 못한 안부 전화</p></div></div>
+          <p class="ea-call-note">${ART.coin}지금 받아도 ${KRW(d.settings.rewardCall)} 적립</p>
+          <div class="ea-call-btns one"><button type="button" class="ea-btn accept" data-act="callAccept">${icon('phone', 20)}지금 전화 받기</button></div></section>`,
+      done: `<section class="ea-call is-done">
+          <div class="ea-call-head"><span class="ea-call-av">${icon('check', 20)}</span><div><p class="ea-call-from">${from}</p><p class="ea-call-t">오늘 안부 전화를 마쳤어요</p></div></div>
+          ${rewarded ? `<p class="ea-call-note">${ART.coin}복지포인트 ${KRW(d.settings.rewardCall)} 적립됨</p>` : ''}
+          <button type="button" class="ea-btn ghost" data-act="callAccept">${icon('phone', 20)}다시 통화하기</button></section>`,
+      off: `<section class="ea-call is-done">
+          <div class="ea-call-head"><span class="ea-call-av">${icon('phone', 20)}</span><div><p class="ea-call-from">보건소 안부 전화</p><p class="ea-call-t">오늘은 전화 쉬는 날이에요</p></div></div></section>`
+    }[state];
+    const next = ACTIVITIES.find(a => !doneKeys.has(a.key)) || ACTIVITIES[0];
+    const nDone = ACTIVITIES.filter(a => doneKeys.has(a.key)).length;
+    html = `${top}${pop}
+      <a class="ea-card ea-points" href="#/user/${p.id}/points">
+        <span class="ea-coin">${ART.coin}</span>
+        <span class="ea-points-text"><span>내 복지포인트</span><b class="num">${KRW(pointsBalance(d, p.id))}</b></span>
+        <span class="ea-chev">${icon('chev', 20)}</span>
+      </a>
+      <section class="ea-sec">
+        <div class="ea-sec-head"><h2 class="ea-h2">오늘의 두뇌 활동</h2><span class="ea-pill">${nDone}/${ACTIVITIES.length}</span></div>
+        <a class="ea-start" href="#/user/${p.id}/play/${next.key}">${icon('play', 20)}${nDone === ACTIVITIES.length ? '한 번 더 하기' : nDone ? '이어서 하기' : '순서대로 시작하기'}</a>
+        <ul class="ea-list">${ACTIVITIES.map(row).join('')}</ul>
+      </section>`;
+    if (state === 'ring') {
+      // 전화 팝업이 뜨면 벨이 울리고, 30초 동안 받지 않으면 받지 않음으로 기록한다
+      const stopRing = startRing();
+      const prep = prepFor(p);
+      const timer = setTimeout(() => { cleanup?.(); cleanup = null; recordMissed(p); render(); }, 30000);
+      cleanup = () => { stopRing(); clearTimeout(timer); };
+      actions.callAccept = () => { cleanup(); cleanup = null; inCall(p, prep); };
+      actions.callReject = () => { cleanup(); cleanup = null; recordMissed(p); render(); };
+    } else actions.callAccept = () => inCall(p, prepFor(p));
   }
-  actions.reject = missed;
-  actions.accept = () => { cleanup(); inCall(p, prep); };
+  app.innerHTML = `${switchTop('user')}<div class="ea">${html}</div>${tabs}`;
+}
+
+// 미니게임·체조 한 판. 끝나면 활동 기록 + 미니게임이면 복지포인트 (하루 한도까지). 정답 수는 보여 주지 않는다.
+function playPage(p, key) {
+  const a = ACTIVITY[key];
+  const t0 = performance.now();
+  const shell = (inner, progress = '') => {
+    app.innerHTML = `<div class="ea ea-play">
+      <header class="ea-playtop"><a class="ea-iconbtn" href="#/user/${p.id}" aria-label="그만하고 홈으로">${icon('x', 20)}</a>
+        <div><p class="ea-meta">${a.catLabel}</p><h1 class="ea-play-t">${a.title}</h1></div><span class="ea-progress num">${progress}</span></header>
+      ${inner}</div>`;
+  };
+  const finish = extra => {
+    const d = getData(), today = todayStr(), at = nowStamp();
+    d.activities ??= [];
+    d.points ??= [];
+    d.activities.push({ id: 'act' + Date.now().toString(36), personId: p.id, kind: a.kind, key, date: today, at, durationSec: Math.round((performance.now() - t0) / 1000), source: 'real', ...extra });
+    const amount = a.kind === 'game' ? gameReward(d, p.id, today) : 0;
+    if (amount) d.points.push({ id: 'pt' + Date.now().toString(36), personId: p.id, date: today, at, amount, reason: 'game', ref: key, source: 'real' });
+    save();
+    const next = ACTIVITIES[(ACTIVITIES.indexOf(a) + 1) % ACTIVITIES.length];
+    shell(`<div class="ea-finish">
+      <div class="ea-finish-mark">${icon('check', 20)}</div>
+      <h2 class="ea-finish-t">잘하셨습니다</h2>
+      ${a.kind === 'game' ? (amount ? `<p class="ea-reward">${ART.coin}복지포인트 +${KRW(amount)}</p>` : '<p class="ea-finish-x">오늘 미니게임 적립은 모두 받았어요</p>') : '<p class="ea-finish-x">오늘 체조를 마쳤어요</p>'}
+      <div class="ea-finish-btns">
+        <button type="button" class="ea-btn ghost" data-act="again">${icon('refresh', 20)}한 번 더</button>
+        <a class="ea-btn primary" href="#/user/${p.id}/play/${next.key}">${next.title}${icon('next', 20)}</a>
+        <a class="ea-btn ghost" href="#/user/${p.id}">${icon('back', 20)}홈으로</a>
+      </div></div>`);
+    actions.again = () => render();
+  };
+  const msg = t => { const el = document.getElementById('ea-msg'); if (el) el.textContent = t; };
+
+  if (key === 'order') {
+    let next = 1;
+    shell(`<p class="ea-ask" id="ea-msg">1부터 9까지 차례대로 눌러 주세요</p>
+      <div class="ea-grid3">${makeOrder().map(n => `<button type="button" class="ea-num num" data-act="tapNum" data-n="${n}">${n}</button>`).join('')}</div>`, '1부터');
+    actions.tapNum = el => {
+      const n = +el.dataset.n;
+      if (el.classList.contains('ok')) return;
+      if (n !== next) { el.classList.remove('nope'); void el.offsetWidth; el.classList.add('nope'); msg(`${next}번을 찾아 주세요`); return; }
+      el.classList.add('ok');
+      next++;
+      msg(next > 9 ? '다 찾으셨어요' : `다음은 ${next}`);
+      if (next > 9) setTimeout(() => finish({ total: 9 }), 600);
+    };
+  } else if (key === 'calc') {
+    const rounds = makeCalc();
+    let i = 0, correct = 0, busy = false;
+    const draw = () => {
+      const r = rounds[i];
+      shell(`<p class="ea-ask" id="ea-msg">더 큰 쪽을 눌러 주세요</p>
+        <div class="ea-pair">${['left', 'right'].map(side => `<button type="button" class="ea-choice num" data-act="pick" data-side="${side}">${esc(r[side].text)}</button>`).join('')}</div>`, `${i + 1} / ${rounds.length}`);
+      busy = false;
+    };
+    actions.pick = el => {
+      if (busy) return;
+      busy = true;
+      const r = rounds[i], ok = el.dataset.side === r.answer;
+      if (ok) correct++;
+      el.classList.add(ok ? 'ok' : 'nope');
+      document.querySelector(`[data-side="${r.answer}"]`)?.classList.add('ok');
+      msg(ok ? '맞았어요' : `${r[r.answer].text} 쪽이 더 커요`);
+      setTimeout(() => { i++; if (i < rounds.length) draw(); else finish({ correct, total: rounds.length }); }, 1100);
+    };
+    draw();
+  } else if (key === 'match') {
+    const cards = makeMatch();
+    let open = [], busy = false, moves = 0;
+    shell(`<p class="ea-ask" id="ea-msg">카드를 두 장씩 뒤집어 같은 그림을 찾아 주세요</p>
+      <div class="ea-cards">${cards.map((c, n) => `<button type="button" class="ea-flip" data-act="flip" data-n="${n}" aria-label="카드 ${n + 1}"><span class="back"></span><span class="face">${svg(MATCH_SVG[c], 'm-' + c)}</span></button>`).join('')}</div>`, `${cards.length / 2}쌍`);
+    actions.flip = el => {
+      if (busy || el.classList.contains('up')) return;
+      el.classList.add('up');
+      el.setAttribute('aria-label', MATCH_NAME[cards[+el.dataset.n]]);
+      open.push(el);
+      if (open.length < 2) return;
+      moves++;
+      const [x, y] = open;
+      open = [];
+      if (cards[+x.dataset.n] === cards[+y.dataset.n]) {
+        x.classList.add('got'); y.classList.add('got');
+        msg('찾으셨어요');
+        if (document.querySelectorAll('.ea-flip.got').length === cards.length) setTimeout(() => finish({ moves, total: cards.length / 2 }), 700);
+      } else {
+        busy = true;
+        msg('다른 그림이에요. 기억해 두세요');
+        setTimeout(() => { for (const c of [x, y]) { c.classList.remove('up'); c.setAttribute('aria-label', `카드 ${+c.dataset.n + 1}`); } busy = false; }, 1200);
+      }
+    };
+  } else {
+    let i = 0;
+    const draw = () => {
+      const st = EXERCISE_STEPS[i], last = i === EXERCISE_STEPS.length - 1;
+      shell(`<div class="ea-ex">
+          <div class="ea-ex-art t-body">${EX_ART[st.art]}</div>
+          <h2 class="ea-ex-t">${st.title}</h2>
+          <span class="ea-pill">${st.count}</span>
+          <p class="ea-ex-text">${st.text}</p>
+          <p class="ea-ex-safe">${icon('alert', 20)}${EXERCISE_SAFETY}</p>
+        </div>
+        <div class="ea-ex-btns">
+          ${i ? `<button type="button" class="ea-btn ghost" data-act="exPrev">${icon('back', 20)}이전</button>` : '<span></span>'}
+          <button type="button" class="ea-btn primary" data-act="exNext">${last ? `${icon('check', 20)}다 했어요` : `다음 동작${icon('next', 20)}`}</button>
+        </div>`, `${i + 1} / ${EXERCISE_STEPS.length}`);
+    };
+    actions.exPrev = () => { i = Math.max(0, i - 1); draw(); };
+    actions.exNext = () => { if (i < EXERCISE_STEPS.length - 1) { i++; draw(); } else finish({ total: EXERCISE_STEPS.length }); };
+    draw();
+  }
 }
 
 // 시공간 문항 자리표시 도형 (원검사 그림이 아님: 점 5×5 위의 집 모양). cist_items.json에 그림(src)이 들어오면 그것을 쓴다.
@@ -486,6 +728,7 @@ function drawPad(fig) {
 }
 
 async function inCall(p, prep) {
+  document.body.className = 'big'; // 통화 중에는 전화 앱처럼 어두운 화면
   // 정기 인지검사 날이면 매일 문항 대신 정기 검사 (점수는 대상자에게 보여주지 않는다)
   const d0 = getData();
   const cst = cistStatus(p, d0, todayStr());
@@ -533,7 +776,7 @@ async function inCall(p, prep) {
     cleanup = null;
     app.innerHTML = `<h1>마이크 사용 불가</h1>
       <p>크롬에서 http://localhost:8000 접속 후 마이크 허용</p>
-      <a class="big-btn" href="#/">${icon('back', 20)}처음으로</a>`;
+      <a class="big-btn" href="#/user/${p.id}">${icon('back', 20)}홈으로</a>`;
     return;
   }
   cleanup = null;
@@ -555,6 +798,9 @@ async function inCall(p, prep) {
       ...res.session, status: 'draft', confirmedBy: null, confirmedAt: null, edits: [] });
     if (p.info?.call?.cistNext) p.info.call.cistNext = null; // 다음 예정일은 이번 회차 + 주기로 다시 계산
   }
+  // 복지포인트: 인지검사를 마친 통화면 하루 한 번 적립
+  const reward = callReward(d, call);
+  if (reward) (d.points ??= []).push({ id: 'pt' + id, personId: p.id, date: call.date, at: nowStamp(), amount: reward, reason: 'call', ref: call.id, source: 'real' });
   refreshZ(d, p, todayStr());
   evaluate([p.id]);
   // 통화 후 정리 (AI): 인용이 확인된 항목만 붙인다. 실패하면 규칙 기반 추출 그대로.
@@ -569,11 +815,12 @@ async function inCall(p, prep) {
     }
     save();
   });
-  // 점수나 위험도는 대상자에게 보여주지 않는다
+  // 점수나 위험도는 대상자에게 보여주지 않는다 (복지포인트 적립만 알린다)
   app.innerHTML = `
     <div class="done-mark">${icon('check', 20)}</div>
     <h1>오늘도 통화해 주셔서 감사합니다.</h1>
-    <a class="big-btn" href="#/">${icon('back', 20)}처음으로</a>`;
+    ${reward ? `<p class="call-reward"><span class="ea-reward">${ART.coin}복지포인트 +${KRW(reward)}</span></p>` : ''}
+    <a class="big-btn" href="#/user/${p.id}">${icon('back', 20)}홈으로</a>`;
 }
 
 // ---------- 로그인·회원가입 (왼쪽 40% 로고 · 오른쪽 380px 입력) ----------
@@ -743,6 +990,7 @@ function dashboardPage() {
   const plan = todayPlan(d, today, tlMine ? mine : null);
 
   const cops = cistOps(d, today, period);
+  const aops = activityOps(d, today, period);
   const dl = comp.delta;
   const kpis = [
     ['#/admin/people', '전체 대상자', `${people.length}<small>명</small>`, `높음 ${count('high')} · 주의 ${count('mid')}`],
@@ -776,7 +1024,8 @@ function dashboardPage() {
     ['오경보율', pctText(m.falseAlarmRate)],
     ['수면무호흡 의심 / 난청 의심', `${fmtUnit(m.spo2Alerts, '건')} / ${fmtUnit(m.hearingAlerts, '건')}`],
     ['정기검사 이행률', pctText(cops.onTimeRate), '목표 90% 이상 (예정일 ±3일)', goal(cops.onTimeRate, v => v >= 90), cops.onTimeRate],
-    ['채점 확정까지 평균 일수', cops.avgConfirmDays == null ? '-' : fmtUnit(cops.avgConfirmDays, '일', 1)]
+    ['채점 확정까지 평균 일수', cops.avgConfirmDays == null ? '-' : fmtUnit(cops.avgConfirmDays, '일', 1)],
+    ['미니게임 참여', `${fmtUnit(aops.plays, '회')} · ${aops.players}/${aops.people}명`, '한 번 이상 한 대상자 비율', null, aops.rate]
   ];
 
   const bandChip = (href, label, n, attrs = '') => `<a class="band-chip" href="${href}" ${attrs}>${label} <b>${n}</b></a>`;
@@ -1093,18 +1342,20 @@ function peoplePage(params) {
   if (params.get('cist')) list.cist = params.get('cist');
   const onlyAlerts = params.has('alerts');
   const C = new Map(d.people.map(p => [p.id, cistStatus(p, d, today)]));
+  const G = new Map(d.people.map(p => [p.id, activityStats(d, p.id, today).games7]));
   const cistDiff = st => (st.change?.original.comparable ? st.change.original.diff : null);
   const CIST_FILTER = { pending: st => !!st.draft, late: st => st.delayed, drop: st => cistDiff(st) < 0 };
 
   const cols = [
     ['name', '이름'], ['age', '성별/나이'], ['address', '주소'], ['manager', '담당자'],
-    ['risk', '위험도'], ['cist', '정기검사', true], ['rate', '최근 7일 완료율', true], ['last', '최근 통화일'], ['visit', '다음 방문일']
+    ['risk', '위험도'], ['cist', '정기검사', true], ['games', '미니게임 7일', true], ['rate', '최근 7일 완료율', true], ['last', '최근 통화일'], ['visit', '다음 방문일']
   ];
   const sortVal = {
     name: p => p.name, age: p => p.age ?? 0, address: p => p.address || '', manager: p => p.manager || '',
     risk: p => RISK_RANK[R.get(p.id).level] * 1000 - (R.get(p.id).score ?? 0), rate: p => comp.get(p.id) ?? -1,
     last: p => lastCall(p.id) || '', visit: p => nextVisit(p.id)?.date || '9999',
-    cist: p => C.get(p.id).score?.original.score ?? -1
+    cist: p => C.get(p.id).score?.original.score ?? -1,
+    games: p => G.get(p.id)
   };
   // 정기검사 칸: 최근 확정 회차의 원형 유지 점수 · 같은 방식일 때만 변화 · 시행일
   const cistCell = p => {
@@ -1136,6 +1387,7 @@ function peoplePage(params) {
             <td data-label="담당자">${esc(p.manager || '-')}</td>
             <td data-label="위험도">${p.closed ? `<span class="chip">종결 ${mdot(p.closed.date)}</span>` : riskChip(r.level)}${!p.closed && !r.signals.status.base.ready ? ' <span class="chip chip-info">기저선 형성 중</span>' : ''}</td>
             <td data-label="정기검사" class="n">${cistCell(p)}</td>
+            <td data-label="미니게임 7일" class="n num">${G.get(p.id)}회</td>
             <td data-label="최근 7일 완료율" class="n ${rate != null && rate < 80 ? 'bad-t' : ''}">${pctText(rate)}</td>
             <td data-label="최근 통화일" class="num">${mmdd(lastCall(p.id))}</td>
             <td data-label="다음 방문일" class="num">${v ? mdot(v.date) : '-'}</td>
@@ -1576,6 +1828,27 @@ function personPage([id, tab = 'summary'], params) {
   };
 }
 
+// 대상자 앱 활동 (관리자에게는 미니게임·체조 횟수만, 복지포인트는 보여 주지 않는다)
+function activityCard(p) {
+  const today = todayStr(), a = activityStats(getData(), p.id, today);
+  const max = Math.max(1, ...a.daily14.map(x => x.games));
+  const dl = a.games7 - a.prev7;
+  return `
+    <section class="card" style="margin-top:var(--s5)">
+      <div class="card-head"><h2>앱 활동 · 미니게임</h2><span class="sub">최근 14일 일별 횟수</span></div>
+      <div class="stats">
+        <div class="stat"><small>최근 7일 미니게임</small><b>${a.games7}<small>회</small>${dl ? ` <small class="${dl > 0 ? 'up' : 'down'}">${dl > 0 ? '▲' : '▼'}${Math.abs(dl)}</small>` : ''}</b></div>
+        <div class="stat"><small>게임 한 날</small><b>${a.days7}<small>/ 7일</small></b></div>
+        <div class="stat"><small>최근 30일 미니게임</small><b>${a.games30}<small>회</small></b></div>
+        <div class="stat"><small>최근 7일 체조</small><b>${a.exercise7}<small>회</small></b></div>
+      </div>
+      <div class="act-bars" role="img" aria-label="최근 14일 일별 미니게임 횟수">${a.daily14.map(x => `
+        <span title="${fmtMDW(x.date)} 미니게임 ${x.games}회${x.exercise ? ` · 체조 ${x.exercise}회` : ''}"><i style="height:${(x.games / max) * 100}%"></i>${x.exercise ? '<em></em>' : ''}</span>`).join('')}</div>
+      <div class="act-axis small muted"><span>${fmtMD(a.daily14[0].date)}</span><span>막대 미니게임 · 점 체조</span><span>${fmtMD(today)}</span></div>
+      <p class="muted small" style="margin-top:var(--s3)">최근 30일 게임별: ${ACTIVITIES.filter(x => x.kind === 'game').map(x => `${x.title} ${a.byKey[x.key] || 0}회`).join(' · ')} · 최근 7일 ${a.minutes7}분 · 마지막 활동 ${a.last ? fmtMD(a.last) : '-'}</p>
+    </section>`;
+}
+
 // ---------- 요약 탭 ----------
 function summaryTab(p, ai, T) {
   const d = getData(), s = d.settings;
@@ -1609,6 +1882,8 @@ function summaryTab(p, ai, T) {
         <p class="muted small">75점 이상 낮음 · 55~74점 주의 · 55점 미만 높음</p>
       </section>
     </div>
+
+    ${activityCard(p)}
 
     <details class="card" style="margin-top:var(--s5)">
       <summary><h2>등록 정보</h2><span class="muted small">주소 · 담당자 · 위도·경도 · 다음 방문 ${v ? `${fmtDate(v.date)} ${v.startTime} · ${esc(v.purpose)}` : '-'}</span></summary>
