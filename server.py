@@ -1,4 +1,4 @@
-# I-ME 서버: 앱 파일 제공 + Typecast(음성 합성)·Claude(대화) API 중계
+# I-ME 서버: 앱 파일 제공 + Typecast(음성 합성)·Claude(대화) API 중계 + 검사 기록 저장소(Upstash Redis) 중계
 # 실행: python server.py  →  http://localhost:8000   (검사: python server.py --selftest)
 # 표준 라이브러리만 쓴다 (pip 설치 필요 없음). API 키는 이 서버만 알고, 브라우저로 보내지 않는다.
 
@@ -51,7 +51,9 @@ def load_env(path):
     return env
 
 
-KEYS = ('TYPECAST_API_KEY', 'TYPECAST_VOICES', 'ANTHROPIC_API_KEY', 'LLM_MODEL')
+KEYS = ('TYPECAST_API_KEY', 'TYPECAST_VOICES', 'ANTHROPIC_API_KEY', 'LLM_MODEL',
+        # 기록 저장소: Vercel에서 Upstash Redis를 연결하면 아래 이름 중 한 쌍이 자동으로 들어온다
+        'KV_REST_API_URL', 'KV_REST_API_TOKEN', 'UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN')
 
 
 def env_config():
@@ -68,15 +70,19 @@ def configure(env):
             vid, _, label = part.strip().partition(':')
             voices.append({'id': vid.strip(), 'label': label.strip() or vid.strip()})
     CONFIG.clear()
+    store_url = env.get('KV_REST_API_URL') or env.get('UPSTASH_REDIS_REST_URL') or ''
     CONFIG.update(tts_key=env.get('TYPECAST_API_KEY', ''), llm_key=env.get('ANTHROPIC_API_KEY', ''),
-                  model=env.get('LLM_MODEL', ''), voices=voices)
+                  model=env.get('LLM_MODEL', ''), voices=voices,
+                  store_url=store_url.rstrip('/') if store_url.startswith('https://') else '',
+                  store_token=env.get('KV_REST_API_TOKEN') or env.get('UPSTASH_REDIS_REST_TOKEN') or '')
 
 
 def health():
     return {'tts': bool(CONFIG.get('tts_key')) and bool(CONFIG.get('voices')) and time.time() >= state['credits_until'],
             'llm': bool(CONFIG.get('llm_key')) and bool(CONFIG.get('model')),
             'voices': CONFIG.get('voices', []),
-            'credits': time.time() < state['credits_until']}
+            'credits': time.time() < state['credits_until'],
+            'records': bool(CONFIG.get('store_url')) and bool(CONFIG.get('store_token'))}
 
 
 # ---------- 정적 파일 보호 ----------
@@ -214,6 +220,68 @@ def chat_prompt(body):
             f"[오늘 대화]\n{talk or '(아직 없음)'}\n다음에 할 말을 JSON으로.")
 
 
+# ---------- 검사 기록 저장소 (Upstash Redis REST) ----------
+# 직접 한 통화·정기 검사·활동·적립·응급 알림·요청·건강정보를 종류별 해시(ime:<종류>)에 id로 저장한다.
+# 대상자 이름·주소·전화(people)와 녹음·그림 파일은 올리지 않는다. 어느 기기에서 열어도 같은 기록이 보이게 하는 용도.
+RECORD_KINDS = ('calls', 'cistSessions', 'activities', 'points', 'alerts', 'requests', 'healthNotices')
+RECORD_MAX = 200_000      # 기록 한 건 최대 글자 수
+RECORDS_BODY_MAX = 2_000_000
+
+
+def redis(commands):
+    """명령 여러 개를 한 번에. 결과 목록. 실패하면 RuntimeError('fail') (주소·토큰은 오류에 넣지 않는다)."""
+    req = urllib.request.Request(CONFIG['store_url'] + '/pipeline', data=json.dumps(commands).encode('utf-8'), method='POST',
+                                 headers={'Authorization': 'Bearer ' + CONFIG['store_token'], 'Content-Type': 'application/json'})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            out = json.loads(r.read().decode('utf-8'))
+    except Exception:
+        raise RuntimeError('fail')
+    if not isinstance(out, list) or any(not isinstance(x, dict) or 'error' in x for x in out):
+        raise RuntimeError('fail')
+    return [x.get('result') for x in out]
+
+
+def check_records(body):
+    """{put: [{kind, rec}], remove: [{kind, id}]} 검사. 맞으면 Redis 명령 목록, 틀리면 None."""
+    if not isinstance(body, dict):
+        return None
+    put, remove = body.get('put', []), body.get('remove', [])
+    if not isinstance(put, list) or not isinstance(remove, list) or len(put) + len(remove) > 300:
+        return None
+    ok_id = lambda v: isinstance(v, str) and 1 <= len(v) <= 80
+    cmds = []
+    for x in put:
+        rec = x.get('rec') if isinstance(x, dict) else None
+        if not isinstance(rec, dict) or x.get('kind') not in RECORD_KINDS or not ok_id(rec.get('id')):
+            return None
+        text = json.dumps(rec, ensure_ascii=False)
+        if len(text) > RECORD_MAX:
+            return None
+        cmds.append(['HSET', 'ime:' + x['kind'], rec['id'], text])
+    for x in remove:
+        if not isinstance(x, dict) or x.get('kind') not in RECORD_KINDS or not ok_id(x.get('id')):
+            return None
+        cmds.append(['HDEL', 'ime:' + x['kind'], x['id']])
+    return cmds
+
+
+def records_from(results):
+    """HGETALL 결과(필드, 값, 필드, 값 …)를 종류별 기록 목록으로. 깨진 값은 건너뛴다."""
+    out = {}
+    for kind, flat in zip(RECORD_KINDS, results):
+        recs = []
+        for v in (flat or [])[1::2]:
+            try:
+                r = json.loads(v)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(r, dict):
+                recs.append(r)
+        out[kind] = recs
+    return out
+
+
 # ---------- HTTP ----------
 class Handler(BaseHTTPRequestHandler):
     server_version = 'I-ME'
@@ -248,9 +316,9 @@ class Handler(BaseHTTPRequestHandler):
 
     do_HEAD = do_GET
 
-    def read_json(self):
+    def read_json(self, limit=64_000):
         n = int(self.headers.get('Content-Length') or 0)
-        if n <= 0 or n > 64_000:
+        if n <= 0 or n > limit:
             return None
         try:
             return json.loads(self.rfile.read(n).decode('utf-8'))
@@ -265,7 +333,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.same_origin():
             return self.send(403, {'error': 'forbidden'})
-        path, body = self.path.split('?')[0], self.read_json()
+        path = self.path.split('?')[0]
+        if path == '/api/records':
+            return self.records(self.read_json(RECORDS_BODY_MAX))
+        body = self.read_json()
         if path == '/api/tts':
             return self.tts(body)
         if path in ('/api/chat', '/api/summarize'):
@@ -294,6 +365,22 @@ class Handler(BaseHTTPRequestHandler):
             tmp.write_bytes(mp3)
             tmp.replace(file)
         self.send(200, mp3, 'audio/mpeg', {'X-Cache': 'miss'})
+
+    def records(self, body):
+        """{get: true} → 종류별 기록 전체. {put, remove} → 저장·삭제. 저장소가 없으면 503 (앱은 이 기기에만 저장)."""
+        if not health()['records']:
+            return self.send(503, {'error': 'off'})
+        if isinstance(body, dict) and body.get('get') is True:
+            cmds = [['HGETALL', 'ime:' + k] for k in RECORD_KINDS]
+        else:
+            cmds = check_records(body)
+            if not cmds:
+                return self.send(400, {'error': 'bad_request'})
+        try:
+            results = redis(cmds)
+        except RuntimeError:
+            return self.send(502, {'error': 'fail'})
+        self.send(200, records_from(results) if body.get('get') is True else {'ok': True})
 
     def llm(self, path, body):
         if not health()['llm']:
@@ -349,10 +436,27 @@ def selftest():
     assert chat_prompt({'phase': 'chat', 'history': [{'role': 'system', 'text': 'x'}]}) is None
     assert chat_prompt({'phase': 'chat', 'history': [{'role': 'elder', 'text': '허리가 아파'}], 'summaries': [], 'remainingSec': 40})
 
+    # 기록 저장소: 입력 검사와 HGETALL 결과 읽기
+    assert check_records({'put': [{'kind': 'calls', 'rec': {'id': 'c1', 'date': '2026-10-14'}}], 'remove': [{'kind': 'healthNotices', 'id': 'hn1'}]}) == [
+        ['HSET', 'ime:calls', 'c1', '{"id": "c1", "date": "2026-10-14"}'], ['HDEL', 'ime:healthNotices', 'hn1']]
+    assert check_records({'put': [{'kind': 'people', 'rec': {'id': 'p1'}}]}) is None          # 대상자 정보는 올리지 않는다
+    assert check_records({'put': [{'kind': 'calls', 'rec': {'date': 'x'}}]}) is None          # id 없음
+    assert check_records({'put': [{'kind': 'calls', 'rec': {'id': 'c1', 't': '가' * RECORD_MAX}}]}) is None
+    assert check_records({'put': 'x'}) is None and check_records([]) is None
+    got = records_from([['c1', '{"id": "c1"}', 'c2', '깨짐'], None, [], [], [], [], []])
+    assert got['calls'] == [{'id': 'c1'}] and got['cistSessions'] == [] and set(got) == set(RECORD_KINDS)
+    configure({})
+    assert health()['records'] is False
+    configure({'UPSTASH_REDIS_REST_URL': 'http://insecure.example', 'UPSTASH_REDIS_REST_TOKEN': 't'})
+    assert health()['records'] is False                                                          # https만
+    configure({'KV_REST_API_URL': 'https://x.upstash.io/', 'KV_REST_API_TOKEN': 't'})
+    assert health()['records'] is True and CONFIG['store_url'] == 'https://x.upstash.io'
+
     # 정적 파일 보호 + 오류 응답에 키가 없는지 (가짜 키, 접속 안 되는 주소로 실패를 만든다)
     global TYPECAST_URL, ANTHROPIC_URL
-    secret_tc, secret_llm = 'tc-SECRET-0000-TEST', 'sk-ant-SECRET-0000-TEST'
-    configure({'TYPECAST_API_KEY': secret_tc, 'ANTHROPIC_API_KEY': secret_llm, 'LLM_MODEL': 'test-model', 'TYPECAST_VOICES': 'tc_1:목소리1'})
+    secret_tc, secret_llm, secret_kv = 'tc-SECRET-0000-TEST', 'sk-ant-SECRET-0000-TEST', 'kv-SECRET-0000-TEST'
+    configure({'TYPECAST_API_KEY': secret_tc, 'ANTHROPIC_API_KEY': secret_llm, 'LLM_MODEL': 'test-model', 'TYPECAST_VOICES': 'tc_1:목소리1',
+               'KV_REST_API_URL': 'https://127.0.0.1:9', 'KV_REST_API_TOKEN': secret_kv})
     TYPECAST_URL = ANTHROPIC_URL = 'http://127.0.0.1:9/unreachable'
     Handler.log_message = lambda *a: None  # 검사 중에는 요청 기록을 찍지 않는다
     srv = make_server(0)
@@ -375,9 +479,11 @@ def selftest():
     bodies = [call('/api/health')[1], call('/api/tts', {'text': '안녕하세요', 'voiceId': 'tc_1', 'tempo': 0.9})[1],
               call('/api/chat', {'phase': 'chat', 'history': [], 'summaries': [], 'remainingSec': 40})[1],
               call('/api/summarize', {'history': [{'role': 'elder', 'text': '허리가 아파'}]})[1],
-              call('/api/tts', {'text': '', 'voiceId': 'tc_1', 'tempo': 0.9})[1]]
+              call('/api/tts', {'text': '', 'voiceId': 'tc_1', 'tempo': 0.9})[1],
+              call('/api/records', {'get': True})[1], call('/api/records', {'put': [{'kind': 'calls', 'rec': {'id': 'c1'}}]})[1]]
     for b in bodies:
-        assert secret_tc.encode() not in b and secret_llm.encode() not in b, b
+        assert secret_tc.encode() not in b and secret_llm.encode() not in b and secret_kv.encode() not in b and b'127.0.0.1:9' not in b, b
+    assert call('/api/records', {'get': True})[0] == 502 and call('/api/records', {'put': 'x'})[0] == 400
     assert call('/api/tts', {'text': '안녕하세요', 'voiceId': 'tc_1', 'tempo': 0.9})[0] == 502
     assert call('/api/tts', {'text': '안녕하세요', 'voiceId': 'tc_x', 'tempo': 0.9})[0] == 400
     # 다른 사이트에서 부르면 거절
@@ -399,7 +505,8 @@ if __name__ == '__main__':
     configure(env_config())
     h = health()
     print('I-ME 서버: http://localhost:%d' % PORT)
-    print('AI 음성(Typecast): %s / AI 대화(Claude): %s' % ('사용' if h['tts'] else '미사용', '사용' if h['llm'] else '미사용'))
+    print('AI 음성(Typecast): %s / AI 대화(Claude): %s / 기록 저장소: %s' % ('사용' if h['tts'] else '미사용', '사용' if h['llm'] else '미사용',
+                                                                        '사용' if h['records'] else '미사용 (이 브라우저에만 저장)'))
     try:
         srv = make_server()
     except OSError:

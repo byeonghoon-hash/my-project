@@ -3,7 +3,7 @@
 // #/admin 전체 현황 · #/admin/people 대상자 관리 · #/admin/p/<id>[/<탭>] 대상자 상세
 
 import {
-  getData, setData, save, reloadData, saveAudio, getAudio, deleteAudio, clearAudio,
+  getData, setData, save, reloadData, saveAudio, getAudio, deleteAudio, clearAudio, startSync, removeRecord,
   makeSalt, hashPassword, verifyPassword, displayName, currentAccount, setLogin
 } from './store.js';
 import { reseed, SEED_VERSION, baseInfo } from './seed.js';
@@ -317,11 +317,16 @@ function notifyEmergencies() {
 window.addEventListener('storage', e => {
   if (e.key !== 'cogcare-v1' || !e.newValue) return;
   reloadData();
+  redrawForOutsideChange();
+});
+// 다른 탭이나 서버에서 기록이 바뀌었을 때 다시 그린다 (입력 중·창이 열려 있을 때·통화·게임 중에는 건드리지 않는다)
+function redrawForOutsideChange() {
   if (location.hash.startsWith('#/admin') && !document.querySelector('.modal-backdrop') && !document.activeElement?.matches('input, textarea, select')) render();
   else if (location.hash.startsWith('#/admin')) notifyEmergencies();
   // 어르신 화면(홈·건강정보·활동·기록·포인트)은 관리자가 건강정보를 올리거나 고치면 바로 다시 그린다. 통화·게임 중에는 건드리지 않는다.
   else if (/^#\/user\/[^/]+(\/(health|activities|records|points)[^/]*)?(\/[^/]+)?$/.test(location.hash) && !location.hash.includes('/play/') && document.body.classList.contains('elder')) { cleanup?.(); cleanup = null; render(); }
-});
+  else if (location.hash === '#/user' || location.hash === '#/user/') render();
+}
 
 // 어르신 ↔ 관리자 화면 전환 (관리자는 로그인 필요)
 const switchTop = which => `<nav class="switch-top" aria-label="화면 전환">
@@ -1977,7 +1982,7 @@ function healthPage() {
     const n = d.healthNotices.find(x => x.id === el.dataset.id);
     if (!(await confirmBox({ title: '건강정보 삭제', text: `'${n.title}'이 목록과 어르신 화면에서 지워짐`, ok: '삭제', danger: true }))) return;
     d.healthNotices = d.healthNotices.filter(x => x !== n);
-    save(); render();
+    save(); removeRecord('healthNotices', n.id); render();
     toast('건강정보 삭제됨');
   };
   return {
@@ -3781,3 +3786,5 @@ for (const p of d0.people) if (p.info && p.info.consent?.ai === undefined) p.inf
 d0.accounts ??= [];
 window.addEventListener('hashchange', route);
 route();
+// 서버 기록 저장소가 연결돼 있으면 다른 기기에서 한 검사 기록을 받아 합친다
+startSync().then(changed => { if (changed) redrawForOutsideChange(); });

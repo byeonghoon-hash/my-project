@@ -1,4 +1,4 @@
-// localStorage 읽기/쓰기, IndexedDB 녹음 저장·삭제
+// localStorage 읽기/쓰기, IndexedDB 녹음 저장·삭제, 검사 기록 서버 저장(저장소가 연결돼 있을 때만)
 
 const KEY = 'cogcare-v1';
 let data = null;
@@ -22,6 +22,113 @@ export function setData(d) {
 
 export function save() {
   localStorage.setItem(KEY, JSON.stringify(data));
+  if (sync.on) schedulePush();
+}
+
+// ---------- 검사 기록 서버 저장 (Vercel에 Upstash Redis를 연결했을 때만) ----------
+// 직접 한 통화·정기 검사·활동·적립·응급 알림·요청·건강정보를 서버에 올리고, 앱을 열 때 받아 합친다.
+// 그래서 다른 기기·브라우저에서 열어도 같은 기록이 보인다. 대상자 이름·주소·전화와 녹음·그림 파일은 올리지 않는다.
+// 저장소가 없으면(로컬 실행, 연결 전) 지금처럼 이 브라우저에만 저장한다.
+const SYNC_KEY = 'cogcare-sync'; // 기록별로 마지막에 서버와 맞춘 내용의 지문
+const SYNC_KINDS = {
+  calls: x => x.source === 'real',
+  cistSessions: (x, real) => real.has(x.callId),
+  activities: x => x.source === 'real',
+  points: x => x.source === 'real',
+  alerts: x => x.type === 'emergency',
+  requests: (x, real) => real.has(x.callId),
+  healthNotices: x => x.source !== 'demo' || !!x.updatedAt
+};
+const sync = { on: false, timer: null, busy: false, sent: {} };
+try { sync.sent = JSON.parse(localStorage.getItem(SYNC_KEY)) || {}; } catch { sync.sent = {}; }
+
+// 짧은 지문 (FNV-1a). 내용이 바뀌었는지만 본다
+export function fingerprint(rec) {
+  const t = JSON.stringify(rec);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(36) + t.length.toString(36);
+}
+// 서버에 올릴 기록: [{ kind, rec }]
+export function syncable(d) {
+  const real = new Set((d.calls || []).filter(c => c.source === 'real').map(c => c.id));
+  return Object.entries(SYNC_KINDS).flatMap(([kind, ok]) => (d[kind] || []).filter(x => x?.id && ok(x, real)).map(rec => ({ kind, rec })));
+}
+// 서버 기록을 합친다. 이 기기에서 고치고 아직 못 올린 기록은 이 기기 것을 둔다. 바뀐 게 있으면 true.
+export function mergeRecords(d, remote, sent) {
+  let changed = false;
+  for (const kind of Object.keys(SYNC_KINDS)) {
+    const list = (d[kind] ??= []);
+    for (const rec of remote?.[kind] || []) {
+      if (!rec?.id) continue;
+      const key = kind + ':' + rec.id, h = fingerprint(rec);
+      const i = list.findIndex(x => x.id === rec.id);
+      if (i < 0) { list.push(rec); changed = true; sent[key] = h; continue; }
+      const lh = fingerprint(list[i]);
+      if (lh === h) { sent[key] = h; continue; }
+      if (sent[key] !== lh) continue; // 이 기기에서 바꾼 뒤 아직 못 올림 → 이 기기 것이 다음에 올라간다
+      list[i] = rec; sent[key] = h; changed = true;
+    }
+    // 화면은 사람별로 날짜 순서를 기대한다 (같은 날은 원래 순서 유지)
+    if (changed) list.sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')) || String(a.at || a.startedAt || a.time || '').localeCompare(String(b.at || b.startedAt || b.time || '')));
+  }
+  return changed;
+}
+
+async function records(body) {
+  const r = await fetch('/api/records', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), cache: 'no-store' });
+  if (!r.ok) throw new Error(String(r.status));
+  return r.json();
+}
+const saveSent = () => { try { localStorage.setItem(SYNC_KEY, JSON.stringify(sync.sent)); } catch { /* 저장 공간 부족이면 다음에 다시 올린다 */ } };
+
+// 앱을 열 때 한 번: 서버 기록을 받아 합치고, 이 기기에만 있는 기록을 올린다. 합쳐서 바뀌었으면 true.
+export async function startSync() {
+  let remote;
+  try { remote = await records({ get: true }); } catch { return false; } // 저장소 없음·서버 꺼짐 → 이 브라우저에만 저장
+  sync.on = true;
+  const d = getData();
+  const changed = d ? mergeRecords(d, remote, sync.sent) : false;
+  saveSent();
+  if (changed) localStorage.setItem(KEY, JSON.stringify(data));
+  schedulePush(0);
+  return changed;
+}
+
+function schedulePush(ms = 1500) {
+  clearTimeout(sync.timer);
+  sync.timer = setTimeout(push, ms);
+}
+async function push() {
+  if (!data) return;
+  if (sync.busy) return schedulePush();
+  const todo = syncable(data).map(x => ({ ...x, h: fingerprint(x.rec) })).filter(x => sync.sent[x.kind + ':' + x.rec.id] !== x.h);
+  if (!todo.length) return;
+  sync.busy = true;
+  try {
+    // 한 번에 너무 크지 않게 나눠 올린다
+    for (let i = 0, size = 0, batch = []; i <= todo.length; i++) {
+      const x = todo[i], len = x ? JSON.stringify(x.rec).length : 0;
+      if (batch.length && (!x || size + len > 400_000 || batch.length >= 100)) {
+        await records({ put: batch.map(({ kind, rec }) => ({ kind, rec })) });
+        for (const b of batch) sync.sent[b.kind + ':' + b.rec.id] = b.h;
+        saveSent();
+        batch = []; size = 0;
+      }
+      if (x) { batch.push(x); size += len; }
+    }
+  } catch {
+    schedulePush(30_000); // 연결이 끊겼으면 30초 뒤 다시
+  } finally {
+    sync.busy = false;
+  }
+}
+
+// 지운 기록을 서버에서도 지운다 (건강정보 삭제처럼 사용자가 직접 지운 경우만)
+export function removeRecord(kind, id) {
+  delete sync.sent[kind + ':' + id];
+  saveSent();
+  if (sync.on) records({ remove: [{ kind, id }] }).catch(() => {});
 }
 
 // ---------- 녹음 파일 (IndexedDB) ----------

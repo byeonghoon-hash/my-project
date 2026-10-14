@@ -633,4 +633,34 @@ assert.equal(isOffTopic(regItem, '잘 모르겠는데 기억이 하나도 안 �
   assert.equal(displayName(BASE_ACCOUNT), '윤병훈 간호사');
 }
 
+// ======== 검사 기록 서버 저장: 올릴 기록 고르기·합치기 ========
+{
+  const { syncable, mergeRecords, fingerprint } = await import('./store.js');
+  const d = {
+    people: [{ id: 'p1', name: '이름은 올리지 않음' }],
+    calls: [{ id: 'c-demo', personId: 'p1', date: '2026-10-01', source: 'demo' }, { id: 'c1', personId: 'p1', date: '2026-10-10', source: 'real', scorePct: 80 }],
+    cistSessions: [{ id: 's-demo', callId: 'c-demo' }, { id: 's1', callId: 'c1' }],
+    alerts: [{ id: 'a1', type: 'cognition' }, { id: 'a2', type: 'emergency' }],
+    activities: [{ id: 'g1', source: 'real' }, { id: 'g0', source: 'demo' }], points: [{ id: 'pt1', source: 'real' }],
+    requests: [{ id: 'r1', callId: 'c1' }, { id: 'r0', callId: 'c-demo' }],
+    healthNotices: [{ id: 'h0', source: 'demo' }, { id: 'h1', source: 'demo', updatedAt: 'x' }, { id: 'h2', source: 'real' }]
+  };
+  assert.deepEqual(syncable(d).map(x => x.kind + ':' + x.rec.id).sort(),
+    ['activities:g1', 'alerts:a2', 'calls:c1', 'cistSessions:s1', 'healthNotices:h1', 'healthNotices:h2', 'points:pt1', 'requests:r1']);
+  assert.ok(!syncable(d).some(x => x.kind === 'people'));                   // 대상자 정보는 올리지 않음
+  assert.equal(fingerprint({ a: 1 }), fingerprint({ a: 1 }));
+  assert.notEqual(fingerprint({ a: 1 }), fingerprint({ a: 2 }));
+  // 합치기: 새 기록은 들어오고, 맞춰 둔 기록은 서버 것으로, 이 기기에서 고치고 못 올린 기록은 이 기기 것 유지
+  const sent = { 'calls:c1': fingerprint(d.calls[1]), 'points:pt1': fingerprint({ id: 'pt1', source: 'real' }) };
+  d.points[0].amount = 999;                                                  // 이 기기에서 고침 (아직 못 올림)
+  const remote = { calls: [{ id: 'c0', personId: 'p1', date: '2026-10-05', source: 'real' }, { id: 'c1', personId: 'p1', date: '2026-10-10', source: 'real', scorePct: 90 }],
+    points: [{ id: 'pt1', source: 'real', amount: 1000 }], people: [{ id: 'p9' }] };
+  assert.equal(mergeRecords(d, remote, sent), true);
+  assert.deepEqual(d.calls.map(c => c.id), ['c-demo', 'c0', 'c1']);         // 날짜 순서
+  assert.equal(d.calls.find(c => c.id === 'c1').scorePct, 90);
+  assert.equal(d.points[0].amount, 999);
+  assert.equal(d.people.length, 1);                                          // 서버에서 대상자는 받지 않음
+  assert.equal(mergeRecords(d, remote, sent), false);                        // 같은 내용을 다시 받으면 바뀜 없음
+}
+
 console.log('selftest 통과');

@@ -11,21 +11,21 @@
 - 빌드 도구 없음. npm 패키지 설치 없음. 순수 HTML + CSS + JavaScript(ES 모듈).
 - 외부 라이브러리는 **Chart.js**(`https://cdn.jsdelivr.net/npm/chart.js`)와 **Leaflet**(`https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js`·`leaflet.css`, 지도) 두 개만 CDN으로 쓴다. 글꼴은 Google Fonts의 IBM Plex Sans KR(본문)·Space Grotesk(숫자)(없으면 기본 글꼴). 지도 타일은 OpenStreetMap(키 필요 없음, CSS로 옅게)이며 출처 '© OpenStreetMap contributors'를 반드시 넣는다. CARTO 타일은 키를 요구해 쓰지 않는다.
 - 브라우저 기본 기능을 먼저 쓴다: `speechSynthesis`(질문 읽기), `MediaRecorder`(녹음), `SpeechRecognition`(받아쓰기, 크롬), `AnalyserNode`(말 시작·침묵 감지), `localStorage`, `IndexedDB`(녹음 파일만).
-- 서버·DB 없음. 모든 데이터는 브라우저에 저장된다. 로그인도 브라우저 안에서만 하는 시연용이다 (아래 '로그인').
+- 데이터는 브라우저(localStorage)에 저장한다. 직접 한 검사 기록만 서버 저장소(Upstash Redis, 선택)에도 올려 다른 기기에서 보이게 한다 (아래 '검사 기록 서버 저장'). 로그인은 브라우저 안에서만 하는 시연용이다 (아래 '로그인').
 - 파일은 아래 구조보다 늘리지 않는다. 쓰이지 않는 설정, 미리 만든 확장 구조, 불필요한 추상화는 만들지 않는다.
 - 화면 문구·주석은 한국어로 쓴다.
-- 배포(Vercel): GitHub 저장소를 Vercel에 연결하면 푸시할 때마다 자동 배포. 키는 Vercel Settings > Environment Variables에 `.env`와 같은 이름으로. API는 같은 사이트 화면에서 온 요청(Origin)만 받는다. 데이터는 접속한 브라우저마다 따로 저장된다(서버 DB 없음).
+- 배포(Vercel): GitHub 저장소를 Vercel에 연결하면 푸시할 때마다 자동 배포. 키는 Vercel Settings > Environment Variables에 `.env`와 같은 이름으로. API는 같은 사이트 화면에서 온 요청(Origin)만 받는다. 검사 기록을 기기끼리 이어 보려면 Vercel Storage에서 Upstash Redis를 연결한다(환경 변수 `KV_REST_API_URL`·`KV_REST_API_TOKEN`이 자동으로 들어감). 연결하지 않으면 브라우저마다 따로 저장된다.
 - 실행: 폴더에서 `python server.py` → 크롬에서 `http://localhost:8000` (127.0.0.1에만 열림, 마이크는 localhost에서만 허용된다). `python3 -m http.server 8000`으로 열어도 앱은 동작하고 통화는 기본 음성 + 고정 대본이 된다.
 - 검사: `python server.py --selftest` · `node js/selftest.js` (채점·지표 계산 함수를 assert로 확인한다. 테스트 프레임워크는 쓰지 않는다.)
 
 ## 파일 구조
 
 ```
-server.py         앱 파일 제공 + API 중계 (표준 라이브러리만). /api/health · /api/tts(Typecast) · /api/chat · /api/summarize(Claude)
+server.py         앱 파일 제공 + API 중계 (표준 라이브러리만). /api/health · /api/tts(Typecast) · /api/chat · /api/summarize(Claude) · /api/records(검사 기록 저장소)
 .env.example      키 칸 견본 (.env는 사용자가 복사해 키를 넣는다, git에 올리지 않음)
-.gitignore        .env · cache/ · public/ · .vercel
+.gitignore        .env · cache/ · public/ · .vercel · __pycache__/
 vercel.json       Vercel 배포: 앱 파일만 public/으로 복사해 내보내고, api/*.py를 함수로
-api/              Vercel 함수 (health·tts·chat·summarize). 처리 코드는 server.py 것을 그대로 쓰고 키는 Vercel 환경 변수에서
+api/              Vercel 함수 (health·tts·chat·summarize·records). 처리 코드는 server.py 것을 그대로 쓰고 키는 Vercel 환경 변수에서
 cache/tts/        고정 문장 mp3 캐시 (server.py가 만든다)
 index.html        단일 페이지. 해시 라우팅: #/ (첫 화면) · #/user · #/user/<id>[/activities|records|points|health[/<공지 id>]|play/<key>] (어르신 앱) · #/login · #/signup
                   · #/admin (전체 현황) · #/admin/people[?view=requests|journals] (대상자 관리) · #/admin/people/new[?id=] (대상자 추가·전체 수정)
@@ -34,7 +34,7 @@ style.css
 package.json      {"type":"module"} 한 줄만 (node가 selftest를 ES 모듈로 실행하도록)
 js/app.js         라우팅과 화면 그리기, 모달(modal·confirmBox)과 알림 메시지(toast)
 js/icons.js       선 아이콘 SVG 모음 (16/18/20px)
-js/store.js       localStorage 읽기/쓰기, IndexedDB 녹음 저장·삭제, 회원 계정(비밀번호 해시·로그인 상태)
+js/store.js       localStorage 읽기/쓰기, IndexedDB 녹음 저장·삭제, 회원 계정(비밀번호 해시·로그인 상태), 검사 기록 서버 저장(startSync·mergeRecords)
 js/items.js       문항 뱅크, 오늘의 문항 선택(로테이션), 자동 채점, 통화 고정 대본(SCRIPT)·응급 표현 목록·AI 응답 검사
                   · 정기 인지검사: cistPlan(회차 문항·진행 순서) · scoreCist · korToDigits · fluencyWords · 방식 고르기
                   · 어르신 앱 활동: ACTIVITIES · makeOrder · makeCalc · makeMatch · EXERCISE_STEPS
@@ -225,6 +225,14 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 ```
 
 로그인한 계정 id는 localStorage `cogcare-login`에 따로 저장한다. **localStorage 키 이름은 바꾸지 않는다** (바꾸면 저장된 데이터가 사라진다).
+
+### 검사 기록 서버 저장 (store.js `startSync` + server.py `/api/records`)
+- 저장소가 연결돼 있을 때만 켜진다 (`/api/health`의 `records`). 없으면(로컬 `python -m http.server`, 연결 전) 지금처럼 이 브라우저에만 저장.
+- 올리는 것(`syncable`): 직접 한 통화(`source: 'real'`, 무응답 포함) · 그 통화의 정기 검사 회차 · 요청 · 앱 활동·복지포인트(`source: 'real'`) · 응급 표현 알림 · 관리자가 올리거나 고친 건강정보. Redis 해시 `ime:<종류>`에 id로 저장.
+- 올리지 않는 것: 대상자 정보(이름·주소·전화·기본 정보), 시드 기록, 녹음·그림 파일(이 기기 IndexedDB에만), 회원 계정.
+- 앱을 열면 서버 기록을 받아 합친다(`mergeRecords`): 새 기록은 넣고, 서버와 맞춰 둔 기록은 서버 것으로, 이 기기에서 고치고 아직 못 올린 기록은 이 기기 것을 둔다. 저장(`save`)할 때마다 1.5초 뒤 바뀐 기록만 올린다(지문 `cogcare-sync`). 실패하면 30초 뒤 다시.
+- 지우기는 건강정보 삭제만 서버에서도 지운다(`removeRecord`). 데이터 재생성·전체 초기화는 서버 기록을 지우지 않는다(다음에 열면 다시 받아 온다). 서버 기록 정리는 Upstash 화면(Data Browser)에서.
+- 접근 제한은 같은 사이트 화면에서 온 요청(Origin)뿐이다. 링크를 아는 사람은 기록을 볼 수 있으므로 실제 개인정보는 넣지 않는다.
 
 녹음 파일(Blob)만 IndexedDB에 `audioId`로 저장한다. 관리자가 [녹음 삭제]를 누르면 녹음만 지우고 점수·받아쓰기는 남긴다 (계획서 3-7 '원본 폐기' 정책 시연).
 

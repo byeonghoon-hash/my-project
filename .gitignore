@@ -2,3 +2,4 @@
 cache/
 public/
 .vercel
+__pycache__/
