@@ -22,6 +22,8 @@
   --t-memory-bg: #ECE5FF; --t-memory-fg: #6A47D1;
   --t-body-bg: #FFE9DC; --t-body-fg: #C04E14;
   --t-call-bg: #DCF2E3; --t-call-fg: #166534;
+  /* 체조 그림: 사람(피부·머리·옷)과 의자 */
+  --fig-skin: #F3C4A2; --fig-hair: #C3C8D0; --fig-shirt: #3B78AE; --fig-sleeve: #2A5F8F; --fig-pants: #4B5568; --fig-shoe: #2B3445; --fig-chair: #C99C6B; --fig-chair-2: #A97C4E; --fig-cheek: #EE9A86;
   --coin: #F2B233; --coin-bg: #FFF3D6; --coin-fg: #6E4300; --coin-press: #C98A12;
   --r-2xl: 28px;
   /* 어르신 앱 버튼 아랫면 (눌리는 버튼) · 진행 막대 윗면 */
@@ -827,6 +829,11 @@ a.stat:hover { background: var(--line); }
 .sumtable th[scope=row] { text-align: left; white-space: nowrap; }
 .sumtable td { white-space: nowrap; }
 .cist-head { color: var(--muted); }
+/* 자기보고 탭 */
+.self-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s3); }
+.self-list > li { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3) var(--s4); display: grid; gap: var(--s2); }
+.self-quotes { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 14px; }
+.self-table td { vertical-align: top; padding-top: var(--s2); padding-bottom: var(--s2); height: auto; }
 
 /* 어르신 통화 화면: 대본 대신 보여 주는 칸 (카드·모양·보기). 카드는 검사지 그림4처럼 6장씩 두 줄 */
 .stim { width: 100%; background: var(--panel); color: var(--ink); border-radius: var(--r-xl); padding: var(--s5) var(--s3); }
@@ -1073,6 +1080,23 @@ body.big.elder .switch-top a[aria-current="page"] { background: var(--ink); colo
 .ea-ex { background: var(--panel); border-radius: var(--r-2xl); padding: var(--s5); display: grid; gap: var(--s3); justify-items: start; }
 .ea-ex-art { width: 100%; height: 200px; border-radius: var(--r-xl); padding: var(--s5); display: grid; place-items: center; }
 .ea-ex-art .art { width: 160px; height: 160px; color: var(--t-body-fg); }
+/* 체조 그림: 얼굴과 몸이 보이는 사람 */
+.ea-ex-art.person { height: 260px; padding: var(--s3); }
+.ea-ex-art .person-art { width: 100%; max-width: 260px; height: 100%; }
+.person-art .f-skin { fill: var(--fig-skin); }
+.person-art .f-hair { fill: var(--fig-hair); }
+.person-art .f-shirt { fill: var(--fig-shirt); }
+.person-art .f-pants { fill: var(--fig-pants); }
+.person-art .f-shoe { fill: var(--fig-shoe); }
+.person-art .f-chair { fill: var(--fig-chair); }
+.person-art .f-chair-2 { fill: var(--fig-chair-2); }
+.person-art .f-cheek { fill: var(--fig-cheek); opacity: .7; }
+.person-art .f-eye { fill: var(--ink); }
+.person-art .f-line { fill: none; stroke: var(--ink); stroke-width: 2.4; stroke-linecap: round; }
+.person-art .f-arm { fill: none; stroke: var(--fig-sleeve); stroke-width: 13; stroke-linecap: round; stroke-linejoin: round; }
+.person-art .f-leg { fill: none; stroke: var(--fig-pants); stroke-width: 19; stroke-linecap: round; stroke-linejoin: round; }
+.person-art .f-move { fill: none; stroke: var(--t-body-fg); stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+.person-art .f-move-fill { fill: var(--t-body-fg); }
 .ea-ex-t { font-size: 30px; font-weight: 700; }
 .ea-pill { display: inline-flex; align-items: center; min-height: 40px; padding: 0 var(--s4); border-radius: var(--r-pill); background: var(--t-focus-bg); color: var(--t-focus-fg); font-size: 24px; font-weight: 700; justify-self: start; }
 .ea-ex-text { font-size: 26px; line-height: 1.55; }

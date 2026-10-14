@@ -365,7 +365,7 @@ export function checkChatReply(raw) {
 }
 
 // {호칭} 자리표시를 실제 호칭으로 (AI에게는 이름을 보내지 않는다)
-export const fillTitle = (text, title) => (text || '').replaceAll('{호칭}', (title || '').trim() || '어르신');
+export const fillTitle = (text, title) => (text || '').replaceAll('{호칭}', (title || '').trim() || '대상자님');
 
 // 인용 검사: quote가 어르신이 실제로 한 말 안에 그대로 있어야 남긴다 (띄어쓰기만 무시)
 export function keepQuoted(list, elderTexts) {

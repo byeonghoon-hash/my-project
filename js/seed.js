@@ -3,7 +3,7 @@
 // 통화 대화록은 점수와 맞게 만든다: 대답을 먼저 만들고 점수는 그 대답을 자동 채점한 값이다.
 
 import {
-  DEFAULT_SETTINGS, addDays, todayStr, nowStamp, personStatus, updateAlerts, riskOf, refreshZ, journalDraft, syncCistAlerts, callReward, gameReward
+  DEFAULT_SETTINGS, addDays, todayStr, nowStamp, personStatus, updateAlerts, riskOf, refreshZ, journalDraft, syncCistAlerts, syncSelfReportAlerts, callReward, gameReward
 } from './metrics.js';
 import {
   planForDate, scorePct, scoreItem, korNum, WEEKDAYS, SELF_QUESTIONS, CHAT_QUESTION, classifySleep, classifyMood, findRequests, itemSpec, DEFAULT_BANK,
@@ -12,7 +12,7 @@ import {
 import { pickVitals, recomputeRing } from './vitals.js';
 
 // 시드 버전. 올리면 저장된 시연 데이터를 새로 만든다 (회원 계정·링 실측 데이터는 유지).
-export const SEED_VERSION = 10;
+export const SEED_VERSION = 11;
 
 // 전화번호는 모두 가짜(010-0000-), 보호자 이름은 지어낸 것, 의료기관명은 '○○내과의원'.
 const phone = n => `010-0000-${n}`;
@@ -110,7 +110,7 @@ const PEOPLE = [
       devices: ['안경·돋보기'],
       contacts: [{ name: '오세훈', relation: '아들', phone: phone('3009'), priority: 1, consent: true }]
     }) },
-  { name: '윤병훈', sex: '남', age: 78, kind: 'mild', time: '14:00', manager: '박지연 간호사', tone: 1,
+  { name: '윤병훈', sex: '남', age: 26, kind: 'mild', time: '14:00', manager: '윤병훈 간호사', tone: 1,
     address: '울주군 웅촌면 대학길 27', lat: 35.456938, lng: 129.195938, // 실제 위치 (구글 플러스 코드 F54W+Q9)
     info: () => baseInfo({
       conditions: [{ name: '고혈압', year: 2015 }, { name: '이상지질혈증', year: 2019 }],
@@ -119,7 +119,7 @@ const PEOPLE = [
         { name: '로수바스타틴 10mg', dose: '1일 1회 저녁', start: '2019-03-01', changed: '', reason: '' }
       ],
       devices: ['안경·돋보기'],
-      call: { ...baseInfo().call, title: '윤병훈 어르신', rate: 0.9 },
+      call: { ...baseInfo().call, title: '윤병훈 님', rate: 0.9 },
       contacts: [{ name: '윤재석', relation: '아들', phone: phone('3010'), priority: 1, consent: true },
         { name: '김태식', relation: '마을 이장', phone: phone('3110'), priority: 2, consent: false }],
       device: { name: 'I-ME 링 (자작)', source: 'device', clockOffsetMin: 0, spo2OffsetPct: 0 }
@@ -149,7 +149,7 @@ export function makeSeed(settings = DEFAULT_SETTINGS, today = todayStr()) {
 
   PEOPLE.forEach((pf, i) => {
     const info = pf.info(today);
-    info.call.title ||= `${pf.name} 어르신`;
+    info.call.title ||= `${pf.name} 님`;
     info.consent = { ...info.consent, date: start, renewDate: addDays(start, 365) };
     // 대면 인지검사 기록: 4명 (한복남·이상철·김말순·윤병훈)
     const face = { 0: [26], 4: [22, 18], 6: [21], 9: [25] }[i];
@@ -176,7 +176,7 @@ export function makeSeed(settings = DEFAULT_SETTINGS, today = todayStr()) {
     data.vitals.push(...made.vitals);
   });
 
-  // ---- 정기 인지검사(전화형): 등록 직후 1회 + 4주마다 ----
+  // ---- 정기 인지검사(전화형): 등록 직후 1회 + 그동안 4주마다 (오늘부터 주기 2주) ----
   data.cistSessions = [];
   data.people.forEach((p, i) => data.cistSessions.push(...seedCist(p, i, today)));
 
@@ -201,6 +201,7 @@ export function makeSeed(settings = DEFAULT_SETTINGS, today = todayStr()) {
     refreshZ(data, p, today);
   }
   syncCistAlerts(data, today, nowStamp()); // '채점 확인 대기' · '정기검사 지연'
+  syncSelfReportAlerts(data, today, nowStamp()); // 통화에서 한 말로 만든 자기보고 알림
 
   // ---- 방문 예정 (앞으로 7일 안, 위험도 높음 2명 포함) ----
   // [대상자, 며칠 뒤, 시각, 분, 유형, 목적, 상태]
@@ -329,8 +330,8 @@ function cistAnswer(it, miss, date) {
 function seedCist(p, i, today) {
   const plan = CIST_PLAN[i];
   const shift = i % 3;
-  // 회차 날짜: 등록일(60일 전) · 32일 전 · 4일 전 (최영희는 60·37일 전 → 오늘 9일 지연, 이옥분 마지막은 어제)
-  const dates = i === 3 ? [addDays(today, -60), addDays(today, -37)] : [addDays(today, -60), addDays(today, -32 + shift), i === 1 ? addDays(today, -1) : addDays(today, -4 - shift)];
+  // 회차 날짜: 등록일(60일 전) · 32일 전 · 4일 전 (최영희는 60·23일 전 → 2주 주기로 오늘 9일 지연, 이옥분 마지막은 어제)
+  const dates = i === 3 ? [addDays(today, -60), addDays(today, -23)] : [addDays(today, -60), addDays(today, -32 + shift), i === 1 ? addDays(today, -1) : addDays(today, -4 - shift)];
   return plan.map((miss, n) => {
     const date = dates[n];
     const modes = { ...DEFAULT_CIST_MODES, ...(i === 8 && n > 0 ? { visuospatial: 'b' } : {}) };
@@ -417,7 +418,8 @@ function answerFor(item, score, rand, tone) {
 }
 
 const CONDITION = ['괜찮다, 별일 없다.', '그럭저럭 지낸다.', '오늘은 몸이 좀 가뿐하다.', '무릎이 좀 쑤시네.'];
-const RECENT = ['별거 없다.', '요새 깜빡깜빡한다, 안경을 어디 뒀는지 몰라가.', '딱히 없다.', '약 먹는 걸 한 번 잊어뿟다.'];
+// 기억 호소는 8개 중 2개 (자기보고 알림이 아무에게나 뜨지 않게). 점진적 저하(이상철)는 절반을 기억 호소로 고른다
+const RECENT = ['별거 없다.', '요새 깜빡깜빡한다, 안경을 어디 뒀는지 몰라가.', '딱히 없다.', '없다, 괜찮다.', '별일 없었다.', '약 먹는 걸 한 번 잊어뿟다.', '그냥 그렇다.', '불편한 거 없다.'];
 const SLEEP = { good: ['잘 잤다.', '푹 잤지예.', '그럭저럭 잤다.'], poor: ['어젯밤엔 잠을 좀 설쳤다.', '새벽에 자꾸 깼다 아이가.', '잠이 안 와가 뒤척였다.'] };
 const MOOD = { good: ['기분 좋다.', '오늘은 괜찮다, 기분 좋네.'], normal: ['그냥 그렇다.', '뭐 별일 없다.'], bad: ['좀 적적하다.', '기분이 안 좋다.'] };
 const CHAT = ['별일 없다. 텃밭에 나가 있었다.', '경로당 댕겨왔다.', '아들이 전화 왔더라.', '날이 좀 선선해졌네.'];
@@ -494,11 +496,18 @@ function generate(person, pf, i, attempt, start, settings) {
         selfReport.sleep.value = classifySleep(selfReport.sleep.answer);
         selfReport.mood.value = classifyMood(selfReport.mood.answer);
       }
-      const chatAnswer = rand() < 0.08 ? pick(rand, CHAT_REQ) : pick(rand, CHAT);
+      let chatAnswer = rand() < 0.08 ? pick(rand, CHAT_REQ) : pick(rand, CHAT);
+      if (kind === 'hearing' && fromEnd === 2) chatAnswer = '어제 화장실 가다가 미끄러졌다, 크게 다치진 않았다.'; // 김말순: 낙상 언급 (자기보고 알림)
       const chat = { question: CHAT_QUESTION, answer: chatAnswer };
       const S = plan.script;
+      // 점진적 저하(이상철)는 절반, 최근 1주는 매번 기억 호소 (난수를 쓰는 횟수는 예전과 같게)
+      const recentAnswer = () => {
+        if (kind !== 'decline') return pick(rand, RECENT);
+        const r0 = rand(), alt = r0 < 0.5 ? null : pick(rand, RECENT);
+        return r0 < 0.5 || fromEnd <= 6 ? RECENT[1] : alt;
+      };
       const opening = { hello: '네, 됩니다.', condition: { question: S.condition, answer: pick(rand, CONDITION), ai: false },
-        recent: { question: S.recent, answer: kind === 'decline' && rand() < 0.5 ? RECENT[1] : pick(rand, RECENT) } };
+        recent: { question: S.recent, answer: recentAnswer() } };
       const requests = [opening.condition.answer, opening.recent.answer, chat.answer, selfReport?.sleep.answer, selfReport?.mood.answer].flatMap(findRequests);
       calls.push({
         ...base, status: 'completed',
@@ -534,6 +543,7 @@ export function reseed(old) {
   if (old?.cistModes) d.cistModes = old.cistModes;
   if (old?.cistModeLog) d.cistModeLog = old.cistModeLog;
   if ((old?.seedVersion ?? 0) < 5 && d.settings.maxCallSec === 180) d.settings.maxCallSec = 240;
+  if ((old?.seedVersion ?? 0) < 11 && d.settings.cistIntervalWeeks === 4) d.settings.cistIntervalWeeks = 2; // 정기 검사 주기 4주 → 2주로 바뀜
   if ((old?.seedVersion ?? 0) < 9 && d.settings.rewardCall === 5000) d.settings.rewardCall = 1000; // 통화 적립 5,000원 → 1,000원으로 바뀜 // 새 문항 구성(인사·최근 문제·6개 영역)에 맞춰 4분
   const ids = new Set(d.people.map(p => p.id));
   d.calls.push(...(old?.calls || []).filter(c => c.source === 'real' && ids.has(c.personId)));

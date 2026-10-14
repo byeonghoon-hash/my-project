@@ -12,7 +12,7 @@ import {
   riskOf, aiSummary, recommendAction, filterPeople, completion7, refreshZ, isCallDay, spo2Threshold,
   primaryContact, validPhone, autoChecklist, trendAll, TREND_METRICS, METRIC, trendCsv, trendSentence,
   personEvents, journalDraft, daysBetween, visitChecks, visitStart, visitEnd, minToTime, VISIT_TYPES,
-  ageFrom, findDuplicates, insideBoundary, cistStatus, cistScore, cistChange, cistSessionsOf, confirmedCist, syncCistAlerts, cistOps, cistModeNotes, cistDue, cistReferralCut,
+  ageFrom, findDuplicates, insideBoundary, cistStatus, cistScore, cistChange, cistSessionsOf, confirmedCist, syncCistAlerts, syncSelfReportAlerts, selfReportSignals, callUtterances, SELF_RULES, cistOps, cistModeNotes, cistDue, cistReferralCut,
   pointsBalance, pointsOn, pointsHistory, callReward, gameReward, activityStats, activityOps, attendance, healthToday, noticeState, checkNotice,
   fmtDate, fmtMD, fmtMDW, fmtYMDW, fmtStamp, fmtDur, fmtNum, fmtUnit, timelineRange, layoutLabels, completionDelta
 } from './metrics.js';
@@ -31,7 +31,7 @@ const app = document.getElementById('app');
 
 const LEVEL = { watch: '관찰', caution: '주의', refer: '의뢰' };
 const LEVEL_CHIP = { watch: 'info', caution: 'mid', refer: 'high' };
-const TYPE = { cistReview: '정기검사 채점 확인 대기', cistOverdue: '정기검사 지연', emergency: '응급 표현 (통화 중)', cognition: '인지 기저선 이탈', spo2: '야간 저산소 (수면무호흡 의심)', hearing: '재질문 잦음 (난청 의심)', noAnswer: '연속 무응답 (안부 확인)' };
+const TYPE = { cistReview: '정기검사 채점 확인 대기', cistOverdue: '정기검사 지연', emergency: '응급 표현 (통화 중)', cognition: '인지 기저선 이탈', spo2: '야간 저산소 (수면무호흡 의심)', hearing: '재질문 잦음 (난청 의심)', noAnswer: '연속 무응답 (안부 확인)', selfReport: '통화 중 자기보고 (반복 호소·낙상)' };
 const STATUS = { open: '처리 전', referred: '연계됨', closed: '종결' };
 const CALL_STATUS = { completed: '완료', missed: '무응답', partial: '일부 (시간 초과)' };
 const CHECKS = { acute: '최근 급성 질환', sleep: '수면 부족', meds: '약물 변경', mood: '우울감', hearing: '청력 저하' };
@@ -41,10 +41,10 @@ const RISK_RANK = { high: 3, mid: 2, low: 1 };
 const JOBS = ['간호사', '사회복지사', '보건소 담당자', '기타'];
 const SETTING_LABEL = {
   baselineDays: '기저선 통화 수 (회)',
-  zWatch: '관찰 기준 z',
+  zWatch: '관찰 기준: 평소 대비 표준편차',
   cautionRun: '주의: 연속 이탈 횟수',
   referRun: '의뢰: 연속 이탈 횟수',
-  zRefer: '의뢰: 최근 7회 평균 z',
+  zRefer: '의뢰: 최근 7회 평균 (평소 대비 표준편차)',
   missedEscalateDays: '안부확인: 연속 무응답 (일)',
   sqiMin: '유효 측정 최소 신호품질 (0~1)',
   spo2Below90Alert: 'SpO2 90% 미만 기준 (분)',
@@ -56,6 +56,7 @@ const SETTING_LABEL = {
   sdMinSpo2: '변화 추이 표준편차 최솟값: SpO₂ (%p)',
   sdMinHr: '변화 추이 표준편차 최솟값: 심박 (bpm)',
   sdMinLatency: '변화 추이 표준편차 최솟값: 응답 지연 (초)',
+  personalBand: '개인 기저선 오차범위 (± %p)',
   visitBufferMin: '방문 이동 여유 시간 (분)',
   visitDailyLimit: '방문자 하루 방문 한도 (건)',
   cistDropAlert: '정기검사 원형 유지 점수 하락 기준 (점)',
@@ -234,6 +235,7 @@ function evaluate(ids) {
     updateAlerts(d.alerts, p.id, personStatus(p, d.calls, d.settings, todayStr(), getNightVitals).levels, nowStamp());
   }
   syncCistAlerts(d, todayStr(), nowStamp()); // 정기검사 '채점 확인 대기' · '정기검사 지연'
+  syncSelfReportAlerts(d, todayStr(), nowStamp()); // 통화에서 한 말 (낙상·잠 설침·통증 등)
   save();
 }
 
@@ -330,7 +332,7 @@ function redrawForOutsideChange() {
 
 // 어르신 ↔ 관리자 화면 전환 (관리자는 로그인 필요)
 const switchTop = which => `<nav class="switch-top" aria-label="화면 전환">
-  <a href="#/user" ${which === 'user' ? 'aria-current="page"' : ''}>어르신</a><a href="#/admin" ${which === 'admin' ? 'aria-current="page"' : ''}>관리자</a></nav>`;
+  <a href="#/user" ${which === 'user' ? 'aria-current="page"' : ''}>대상자</a><a href="#/admin" ${which === 'admin' ? 'aria-current="page"' : ''}>관리자</a></nav>`;
 
 // 아이콘 사이드바 + 페이지 머리 + 본문
 function shell(path, me, pg) {
@@ -427,14 +429,67 @@ const MATCH_SVG = {
   cloud: '<path d="M14 38a9 9 0 0 1-1-18A12 12 0 0 1 36 18a10 10 0 0 1-1 20z"/>',
   flower: '<circle cx="24" cy="13" r="7"/><circle cx="35" cy="21" r="7"/><circle cx="31" cy="34" r="7"/><circle cx="17" cy="34" r="7"/><circle cx="13" cy="21" r="7"/><circle class="soft" cx="24" cy="25" r="6"/>'
 };
-// 체조 동작: 의자에 앉은 사람 + 동작 표시
-const seat = (arms, legs, mark = '') => svg(`<path class="line soft-line" d="M10 46V32h22M30 32v14"/><circle cx="20" cy="9" r="5"/><path class="line" d="M20 15v15${legs}${arms}"/>${mark}`, 'fig');
+// 체조 동작 그림: 의자에 앉은 사람(얼굴·회색 머리·옷)이 동작하는 모습 + 주황 화살표로 움직임 표시
+const fsvg = body => `<svg class="person-art" viewBox="0 0 200 200" aria-hidden="true">${body}</svg>`;
+const arrowHead = (x, y, deg) => `<path class="f-move-fill" transform="translate(${x} ${y}) rotate(${deg})" d="M2 0-11-7v14z"/>`;
+// 앞모습 얼굴 (cx, cy = 얼굴 가운데)
+const faceFront = (cx, cy) => `
+  <circle class="f-skin" cx="${cx - 21}" cy="${cy + 3}" r="5"/><circle class="f-skin" cx="${cx + 21}" cy="${cy + 3}" r="5"/>
+  <circle class="f-skin" cx="${cx}" cy="${cy}" r="22"/>
+  <path class="f-hair" d="M${cx - 23} ${cy}c0-16 10-25 23-25s23 9 23 25c-5-9-12-13-23-13s-18 4-23 13z"/>
+  <path class="f-line" d="M${cx - 13} ${cy - 5}h7M${cx + 6} ${cy - 5}h7"/>
+  <circle class="f-eye" cx="${cx - 9}" cy="${cy + 2}" r="2.7"/><circle class="f-eye" cx="${cx + 9}" cy="${cy + 2}" r="2.7"/>
+  <circle class="f-cheek" cx="${cx - 13}" cy="${cy + 10}" r="4"/><circle class="f-cheek" cx="${cx + 13}" cy="${cy + 10}" r="4"/>
+  <path class="f-line" d="M${cx - 6} ${cy + 11}q6 5 12 0"/>`;
+// 옆모습 얼굴 (오른쪽을 본다)
+const faceSide = (cx, cy) => `
+  <circle class="f-skin" cx="${cx}" cy="${cy}" r="21"/>
+  <path class="f-skin" d="M${cx + 19} ${cy - 3}q8 5 1 9z"/>
+  <path class="f-hair" d="M${cx - 21} ${cy + 7}c-4-18 6-30 21-30 11 0 18 6 20 13-9-3-19-2-25 2-6 4-8 9-8 16z"/>
+  <circle class="f-skin" cx="${cx - 5}" cy="${cy + 4}" r="5.5"/>
+  <path class="f-line" d="M${cx + 7} ${cy - 7}h8"/>
+  <circle class="f-eye" cx="${cx + 11}" cy="${cy}" r="2.7"/>
+  <circle class="f-cheek" cx="${cx + 8}" cy="${cy + 9}" r="4"/>
+  <path class="f-line" d="M${cx + 10} ${cy + 13}q5 2 8-3"/>`;
+// 앞모습: 의자에 앉아 손을 무릎에 둔 사람. up = 어깨를 올린 만큼, head = 고개 기울기(도)
+const front = ({ up = 0, head = 0, mark = '' } = {}) => fsvg(`
+  <rect class="f-chair-2" x="58" y="64" width="84" height="76" rx="12"/>
+  <rect class="f-chair-2" x="62" y="140" width="8" height="50" rx="3"/><rect class="f-chair-2" x="130" y="140" width="8" height="50" rx="3"/>
+  <rect class="f-chair" x="50" y="126" width="100" height="16" rx="7"/>
+  <path class="f-leg" d="M86 134v42M114 134v42"/>
+  <ellipse class="f-shoe" cx="83" cy="184" rx="15" ry="7"/><ellipse class="f-shoe" cx="117" cy="184" rx="15" ry="7"/>
+  <rect class="f-skin" x="93" y="${62 + up}" width="14" height="18"/>
+  <path class="f-shirt" d="M68 136V${96 + up}q0-16 16-16h32q16 0 16 16v${40 - up}z"/>
+  <path class="f-arm" d="M75 ${92 + up}q-7 22 8 36M125 ${92 + up}q7 22-8 36"/>
+  <circle class="f-skin" cx="85" cy="130" r="7.5"/><circle class="f-skin" cx="115" cy="130" r="7.5"/>
+  <g transform="rotate(${head} 100 ${70 + up})">${faceFront(100, 46 + up)}</g>
+  ${mark}`);
+// 옆모습: 오른쪽을 보고 앉은 사람. leg = 움직이는 다리, arm = 팔 모양
+const side = ({ leg = '', arm = null, mark = '' } = {}) => fsvg(`
+  <rect class="f-chair-2" x="38" y="60" width="13" height="82" rx="6"/>
+  <rect class="f-chair-2" x="44" y="140" width="8" height="50" rx="3"/><rect class="f-chair-2" x="110" y="140" width="8" height="50" rx="3"/>
+  <rect class="f-chair" x="38" y="126" width="88" height="16" rx="7"/>
+  <path class="f-leg" d="M72 120h42v56"/><ellipse class="f-shoe" cx="124" cy="184" rx="17" ry="7"/>
+  ${leg}
+  <path class="f-shirt" d="M58 130V92q0-16 16-16h12q14 0 14 16v38z"/>
+  <rect class="f-skin" x="73" y="58" width="13" height="20"/>
+  ${faceSide(80, 42)}
+  ${arm ?? '<path class="f-arm" d="M80 88q2 24 20 30"/><circle class="f-skin" cx="106" cy="119" r="7.5"/>'}
+  ${mark}`);
 const EX_ART = {
-  neck: seat('M20 19l-6 9M20 19l6 9', 'h9v14', '<path class="line accent-line" d="M11 6a10 10 0 0 0 0 8M29 6a10 10 0 0 1 0 8"/>'),
-  shoulder: seat('M20 19l-6 9M20 19l6 9', 'h9v14', '<path class="line accent-line" d="M12 16v-7m-3 3 3-3 3 3M28 16v-7m-3 3 3-3 3 3"/>'),
-  arm: seat('M20 19h18', 'h9v14', '<circle class="accent-fill" cx="41" cy="19" r="3"/>'),
-  ankle: seat('M20 19l-6 9M20 19l6 9', 'l12 8', '<path class="line accent-line" d="M38 43a4 4 0 1 1 3-6"/>'),
-  knee: seat('M20 19l-6 9M20 19l6 9', 'h21', '<path class="line accent-line" d="M44 24v12"/>')
+  // 목 돌리기: 고개를 기울인 모습 + 머리 위 양쪽 화살표
+  neck: front({ head: -14, mark: `<path class="f-move" d="M58 24q42-26 84 0"/>${arrowHead(142, 24, 32)}${arrowHead(58, 24, 148)}` }),
+  // 어깨 으쓱: 어깨를 올린 모습 + 양옆 위쪽 화살표
+  shoulder: front({ up: -8, mark: `<path class="f-move" d="M46 108V74M154 108V74"/>${arrowHead(46, 68, -90)}${arrowHead(154, 68, -90)}` }),
+  // 팔 뻗어 주먹 쥐기: 팔을 앞으로 쭉 뻗고 주먹
+  arm: side({ arm: '<path class="f-arm" d="M80 88H146"/><circle class="f-skin" cx="153" cy="88" r="9"/><path class="f-line" d="M150 83v10"/>',
+    mark: '<path class="f-move" d="M170 76l9-5M172 88h10M170 100l9 5"/>' }),
+  // 발목 돌리기: 한쪽 발을 들고 발목 둘레에 도는 화살표
+  ankle: side({ leg: '<path class="f-leg" d="M72 114h46l22 32"/><ellipse class="f-shoe" cx="150" cy="154" rx="16" ry="7" transform="rotate(35 150 154)"/>',
+    mark: `<path class="f-move" d="M130 168a24 24 0 1 0 6-36"/>${arrowHead(138, 131, -20)}` }),
+  // 무릎 펴기: 다리를 앞으로 쭉 편 모습 + 아래에서 앞으로 올라가는 화살표
+  knee: side({ leg: '<path class="f-leg" d="M72 114H170"/><ellipse class="f-shoe" cx="178" cy="106" rx="7" ry="15"/>',
+    mark: `<path class="f-move" d="M134 176q38 0 44-40"/>${arrowHead(178, 134, -80)}` })
 };
 
 // 오늘 안부 전화 상태: done(검사 마침) · missed(받지 않음·통화 어려움) · off(통화 쉬는 날) · ring
@@ -459,7 +514,7 @@ const prepFor = p => prepareCall(p, getData().calls.filter(c => c.personId === p
   .sort((a, b) => (b.startedAt || b.date).localeCompare(a.startedAt || a.date)).map(c => c.aiSummary.summary), getData().settings);
 
 function userSelect() {
-  document.title = '어르신 · I-ME';
+  document.title = '대상자 · I-ME';
   const people = getData().people.filter(p => p.active);
   app.innerHTML = `
     ${switchTop('user')}
@@ -482,7 +537,7 @@ function elderPage([id, view = 'home', key]) {
   const att = attendance(d, p.id, today);
   const health = healthToday(d, today);
   if (view === 'health') return healthElder(p, health, key, today);
-  const tabs = `<nav class="ea-tabs" aria-label="어르신 메뉴">${[['home', '홈', '', 'home'], ['activities', '활동', '/activities', 'grid'], ['records', '기록', '/records', 'star'], ['points', '포인트', '/points', 'wallet']].map(([k, t, h, ic]) =>
+  const tabs = `<nav class="ea-tabs" aria-label="대상자 메뉴">${[['home', '홈', '', 'home'], ['activities', '활동', '/activities', 'grid'], ['records', '기록', '/records', 'star'], ['points', '포인트', '/points', 'wallet']].map(([k, t, h, ic]) =>
     `<a href="#/user/${p.id}${h}" ${view === k ? 'aria-current="page"' : ''}>${icon(ic, 20)}<span>${t}</span></a>`).join('')}</nav>`;
   const pageHead = title => `<header class="ea-head"><h1 class="ea-head-t">${title}</h1><a class="ea-iconbtn" href="#/user" aria-label="사람 바꾸기">${icon('users', 20)}</a></header>`;
   const doneKeys = new Set((d.activities || []).filter(a => a.personId === p.id && a.date === today).map(a => a.key));
@@ -575,7 +630,7 @@ function elderPage([id, view = 'home', key]) {
       </a></li>`;
     html = `
       <header class="ea-top">
-        <div><p class="ea-date">${dateKo(today)}</p><h1 class="ea-hello">${esc(p.name)} 어르신</h1></div>
+        <div><p class="ea-date">${dateKo(today)}</p><h1 class="ea-hello">${esc(p.name)} 님</h1></div>
         <a class="ea-iconbtn" href="#/user" aria-label="사람 바꾸기">${icon('users', 20)}</a>
       </header>
       ${pop}
@@ -727,7 +782,7 @@ function playPage(p, key) {
     const draw = () => {
       const st = EXERCISE_STEPS[i], last = i === EXERCISE_STEPS.length - 1;
       shell(`<div class="ea-ex">
-          <div class="ea-ex-art t-body">${EX_ART[st.art]}</div>
+          <div class="ea-ex-art person t-body">${EX_ART[st.art]}</div>
           <h2 class="ea-ex-t">${st.title}</h2>
           <span class="ea-pill">${st.count}</span>
           <p class="ea-ex-text">${st.text}</p>
@@ -1590,7 +1645,7 @@ function journalsPage(params) {
 }
 
 // ---------- 대상자 상세 ----------
-const TABS = [['summary', '요약'], ['info', '기본 정보'], ['trend', '변화 추이'], ['calls', '통화 기록'], ['cist', '정기 인지검사'], ['visits', '방문 · 요청'], ['journal', '돌봄일지'], ['alerts', '알림']];
+const TABS = [['summary', '요약'], ['info', '기본 정보'], ['trend', '변화 추이'], ['self', '자기보고'], ['calls', '통화 기록'], ['cist', '정기 인지검사'], ['visits', '방문 · 요청'], ['journal', '돌봄일지'], ['alerts', '알림']];
 const CONDITIONS = ['고혈압', '당뇨병', '이상지질혈증', '심부전', '부정맥', '만성폐쇄성폐질환(COPD)', '천식', '뇌졸중 과거력', '파킨슨병', '우울증', '수면무호흡 진단', '갑상선질환', '만성콩팥병', '관절염', '골다공증'];
 const DEVICES = ['안경·돋보기', '틀니', '지팡이', '보행기', '휠체어'];
 const JOURNAL_TYPES = ['전화 상담', '방문', '보호자 연락', '기관 연계', '기타'];
@@ -1601,7 +1656,12 @@ let openCallId = null;  // 통화 기록에서 펼쳐 둔 통화
 let journalSel = null;  // 돌봄일지에서 고른 일지
 let notifyOpen = null;  // 보호자 통보 기록을 입력 중인 알림
 
-const fmtV = (v, m) => (v == null ? '-' : m.key === 'z' ? v.toFixed(2) : String(Math.round(v * 10) / 10));
+// 지표 값 표시. 개인 기저선 대비 점수(%p)는 부호를 붙인다 (sign=false면 붙이지 않음)
+const fmtV = (v, m, sign = true) => {
+  if (v == null) return '-';
+  const r = m.key === 'z' ? (Math.abs(v) < 0.005 ? 0 : v).toFixed(2) : String(Math.round(v * 10) / 10);
+  return m.band && sign && v > 0 ? '+' + r : r;
+};
 const editedText = e => (e ? `최종 수정: ${esc(e.by)} · ${mdot(e.at.slice(0, 10))} ${e.at.slice(11, 16)}` : '');
 const telLink = (ph, label = ph) => (ph ? `<a href="tel:${esc(ph.replace(/[^0-9]/g, ''))}">${esc(label)}</a>` : '-');
 
@@ -1637,6 +1697,7 @@ function personPage([id, tab = 'summary'], params) {
     calls: d.calls.filter(c => c.personId === id).length,
     cist: cistSessionsOf(d, id).filter(x => x.status === 'draft').length,
     journal: (d.journals || []).filter(j => j.personId === id).length,
+    self: selfReportSignals(p, d, today).reasons.length,
     alerts: openCount
   };
 
@@ -1662,7 +1723,7 @@ function personPage([id, tab = 'summary'], params) {
       </div>
       <div class="stats">
         <div class="stat"><small>종합 케어 스코어</small><b>${r.score ?? '-'}<small>점</small></b></div>
-        <div class="stat"><small>최근 인지검사 · z</small><b>${st.lastScore == null ? '-' : `${fmtNum(st.lastScore, 1)}<small>%</small>`}</b><small class="sub">${st.base.ready ? (st.lastZ == null ? 'z -' : 'z ' + fmtNum(st.lastZ, 2)) : '기저선 형성 중'}</small></div>
+        <div class="stat"><small>최근 인지검사 · 평소 대비</small><b>${st.lastScore == null ? '-' : `${fmtNum(st.lastScore, 1)}<small>%</small>`}</b><small class="sub">${st.base.ready ? (st.lastZ == null ? '-' : `${fmtNum(st.lastZ, 2)} SD (표준편차)`) : '기저선 형성 중'}</small></div>
         <a class="stat" href="#/admin/p/${p.id}/cist"><small>최근 정기검사</small><b>${cistStat(r.signals.cist.status)}</b></a>
         <div class="stat"><small>최근 7일 통화 완료</small><b>${r.signals.completion.done}<small>/ ${r.signals.completion.days}</small></b></div>
       </div>
@@ -1673,7 +1734,7 @@ function personPage([id, tab = 'summary'], params) {
       <nav class="tabs" role="tablist" aria-label="대상자 상세">${TABS.map(([k, t]) => `<a role="tab" href="#/admin/p/${p.id}/${k}" aria-selected="${k === tab}" tabindex="${k === tab ? 0 : -1}">${t}${counts[k] ? ` <span class="cnt ${k === 'alerts' ? 'hot' : ''}">${counts[k]}</span>` : ''}</a>`).join('')}</nav>
     </div>`;
 
-  const T = tab === 'summary' || tab === 'trend' ? trendAll(d, p, trendOpt, today, getNightVitals) : null;
+  const T = tab === 'summary' || tab === 'trend' || tab === 'self' ? trendAll(d, p, trendOpt, today, getNightVitals) : null;
   const parts = {
     summary: () => summaryTab(p, ai, T),
     info: () => `
@@ -1684,6 +1745,7 @@ function personPage([id, tab = 'summary'], params) {
       ${infoTab(p)}`,
     visits: () => visitsTab(p),
     trend: () => trendTab(p, T, params.get('m')),
+    self: () => selfTab(p, T),
     calls: () => callsTab(p),
     cist: () => cistTab(p),
     journal: () => journalTab(p),
@@ -2142,26 +2204,28 @@ function sparkline(t, m) {
 function trendRow(m, t) {
   const delta = t.delta;
   const cls = delta == null || m.dir === 0 ? 'neu' : delta * m.dir > 0 ? 'good' : delta * m.dir < 0 ? 'bad' : 'neu';
-  const deltaHtml = delta == null ? '-' : `<span class="delta ${cls}">${delta > 0 ? '▲ +' : delta < 0 ? '▼ −' : '■ '}${fmtV(Math.abs(delta), m)}</span>`;
+  const deltaHtml = delta == null ? '-' : `<span class="delta ${cls}">${delta > 0 ? '▲ +' : delta < 0 ? '▼ −' : '■ '}${fmtV(Math.abs(delta), m, false)}</span>`;
   const stCls = { 악화: 'bad', 개선: 'good', 변화: 'neu', 유지: '', '데이터 부족': 'none' }[t.status];
   return `
     <tr class="click" data-act="metric" data-k="${m.key}" tabindex="0" aria-label="${m.label} 큰 그래프">
       <td class="first"><b>${m.label}</b>${t.real ? ' <span class="chip chip-info">실측</span>' : ''} <small>${m.unit}</small></td>
       <td data-label="최근 7일" class="n">${fmtV(t.recent7, m)}</td>
       <td data-label="이전 7일" class="n">${fmtV(t.prev7, m)}</td>
-      <td data-label="개인 기저선" class="n">${t.baseline ? `${fmtV(t.baseline.mean, m)} ± ${fmtV(t.baseline.sd, m)}` : '-'}</td>
+      <td data-label="개인 기저선" class="n">${!t.baseline ? '-' : m.band ? `평소 ${fmtNum(t.ref, 1)}% ± ${fmtV(t.sdEff, m, false)}` : `${fmtV(t.baseline.mean, m, false)} ± ${fmtV(t.baseline.sd, m, false)}`}</td>
       <td data-label="변화" class="n">${deltaHtml}</td>
       <td data-label="추이">${sparkline(t, m)}</td>
       <td data-label="상태"><span class="state ${stCls}">${t.status}</span>${t.alertLevel ? ' ' + levelChip(t.alertLevel) : ''}</td>
     </tr>`;
 }
 
-function trendTable(p, T, compact) {
-  let ms = TREND_METRICS.filter(m => !(m.domain || m.fold) || (!compact && trendOpt.domains));
+function trendTable(p, T, compact, only = null) {
+  // 자기보고(잠 설침·기분) 지표는 '자기보고' 탭에서만 보여 준다
+  let ms = only ? TREND_METRICS.filter(m => m.group === only)
+    : TREND_METRICS.filter(m => m.group !== '자기보고' && (!(m.domain || m.fold) || (!compact && trendOpt.domains)));
   if (trendOpt.byChange) ms = [...ms].sort((a, b) => (T[b.key].status === '악화') - (T[a.key].status === '악화') || T[b.key].score - T[a.key].score);
   let group = null;
   const rows = ms.map(m => {
-    const head = !trendOpt.byChange && m.group !== group ? `<tr class="group-row"><td colspan="7">${(group = m.group)}</td></tr>` : '';
+    const head = !only && !trendOpt.byChange && m.group !== group ? `<tr class="group-row"><td colspan="7">${(group = m.group)}</td></tr>` : '';
     return head + trendRow(m, T[m.key]);
   }).join('');
   return `
@@ -2169,6 +2233,43 @@ function trendTable(p, T, compact) {
       <thead><tr><th>지표</th><th class="n">최근 7일</th><th class="n">이전 7일</th><th class="n">개인 기저선</th><th class="n">변화</th><th>추이 (${trendOpt.days}일${trendOpt.weekly ? ' · 주별' : ''})</th><th>상태</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>`;
+}
+
+// 자기보고 탭: 통화에서 한 말(몸 상태·최근 문제·수면·기분·안부 대화)과 그 말로 만든 알림
+function selfTab(p, T) {
+  const d = getData(), today = todayStr();
+  const sig = selfReportSignals(p, d, today);
+  const open = d.alerts.find(a => a.personId === p.id && a.type === 'selfReport' && a.status !== 'closed');
+  const ruleText = r => `${r.label.replace(/ 반복$/, '')} ${r.min}회 이상${r.min > 1 ? ' (7일)' : ''} → ${LEVEL[r.level]}`;
+  const from = addDays(today, -13);
+  const calls = d.calls.filter(c => c.personId === p.id && c.status === 'completed' && !c.declined && c.kind !== 'cist' && c.date >= from).sort((a, b) => (b.date + (b.startedAt || '')).localeCompare(a.date + (a.startedAt || '')));
+  // 말 한 마디에 걸린 규칙 이름 (칩)
+  const hits = (c, u) => SELF_RULES.filter(r => r.sr ? (u.part === (r.sr === 'sleep' ? '수면' : '기분') && c.selfReport?.[r.sr]?.value === r.value) : r.words.some(w => u.text.includes(w)))
+    .map(r => `<span class="chip ${r.level === 'caution' ? 'chip-mid' : 'chip-info'}">${r.label.replace(/ 반복$/, '')}</span>`).join(' ');
+  const parts = ['몸 상태', '최근 문제', '수면', '기분', '안부 대화'];
+  return `
+    <section class="card">
+      <div class="card-head"><h2>자기보고 알림</h2><span class="sub">최근 7일 완료 통화 ${sig.calls}건 · 대상자 말 그대로</span>
+        ${open ? `<a class="btn btn-secondary btn-sm" href="#/admin/p/${p.id}/alerts">알림 처리</a>` : ''}</div>
+      ${sig.reasons.length ? `<ul class="self-list">${sig.reasons.map(r => `
+        <li><div class="row">${levelChip(r.level)}<b>${r.label}</b><span class="muted small">${r.count}회</span></div>
+          <ul class="self-quotes">${r.quotes.slice(-5).reverse().map(q => `<li><span class="muted small">${fmtMDW(q.date)} · ${q.part}</span> "${esc(q.text)}"</li>`).join('')}</ul></li>`).join('')}</ul>`
+        : empty('기록 없음', 'check')}
+      <p class="muted small">기준: ${SELF_RULES.map(ruleText).join(' · ')} · 응급 표현은 통화 중 바로 알림</p>
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>수면 · 기분</h2><span class="sub">자기보고 대답 비율 · 줄을 누르면 큰 그래프</span></div>
+      ${trendTable(p, T, true, '자기보고')}
+    </section>
+    <section class="card">
+      <div class="card-head"><h2>통화에서 한 말</h2><span class="sub">최근 14일 · ${calls.length}건</span></div>
+      ${calls.length ? `<div class="table-wrap"><table class="table compact rtable self-table">
+        <thead><tr><th>날짜</th>${parts.map(t => `<th>${t}</th>`).join('')}</tr></thead>
+        <tbody>${calls.map(c => { const us = callUtterances(c); return `<tr>
+          <td class="first"><a href="#/admin/p/${p.id}/calls?call=${c.id}">${fmtMDW(c.date)}</a></td>
+          ${parts.map(t => { const xs = us.filter(u => u.part === t); return `<td data-label="${t}">${xs.length ? xs.map(u => `"${esc(u.text)}" ${hits(c, u)}`).join('<br>') : '<span class="muted">-</span>'}</td>`; }).join('')}
+        </tr>`; }).join('')}</tbody></table></div>` : empty('기록 없음')}
+    </section>`;
 }
 
 function trendTab(p, T, mKey) {
@@ -2194,8 +2295,9 @@ function trendTab(p, T, mKey) {
       ${trendTable(p, T, false)}
     </section>
     <section class="card">
-      <div class="card-head"><h2>겹쳐 보기</h2>${legendHtml([['인지 z', 'var(--accent)'], ['야간 최저 SpO₂', 'var(--ink-2)'], ['안정 시 심박', 'var(--faint)'], ['관찰 기준', 'var(--high)', true]])}</div>
-      <div class="chartbox tall"><canvas id="personChart" role="img" aria-label="인지 z, 야간 SpO2, 안정 시 심박 겹쳐 보기"></canvas></div>
+      <div class="card-head"><h2>겹쳐 보기</h2>${legendHtml([['평소 대비 표준편차 (SD)', 'var(--accent)'], ['개인 기저선 대비 점수 (%p)', 'var(--mid)'], ['야간 최저 SpO₂', 'var(--ink-2)'], ['안정 시 심박', 'var(--faint)'], ['평소 범위', 'var(--accent-soft)'], ['관찰 기준', 'var(--high)', true]])}</div>
+      <div class="chartbox tall"><canvas id="personChart" role="img" aria-label="평소 대비 표준편차, 개인 기저선 대비 점수, 야간 SpO2, 안정 시 심박 겹쳐 보기"></canvas></div>
+      <p class="muted small">왼쪽 두 축은 0(평소)을 맞춰 그림: 표준편차 ±1 = 개인 기저선 ±${getData().settings.personalBand ?? 10}%p (오차범위). 가로 띠 = 평소 범위 · 세로 띠 = 기저선 기간</p>
     </section>`;
 }
 
@@ -2257,7 +2359,7 @@ function drawMetricChart(p, T, mKey) {
     const c = e?.callId && d.calls.find(x => x.id === e.callId);
     if (!c) return [];
     const wrong = c.items.filter(i => i.score != null && i.score < i.maxScore).map(i => `${i.domain} ${i.score}/${i.maxScore}`);
-    return [`점수 ${pctText(c.scorePct)}${c.z != null ? ` (z ${c.z})` : ''}`, wrong.length ? `틀린 문항: ${wrong.join(', ')}` : '틀린 문항 없음'];
+    return [`점수 ${pctText(c.scorePct)}${c.z != null ? ` (평소 대비 ${c.z} SD)` : ''}`, wrong.length ? `틀린 문항: ${wrong.join(', ')}` : '틀린 문항 없음'];
   };
   charts.push(new Chart(document.getElementById('metricChart'), {
     type: 'line',
@@ -2328,7 +2430,7 @@ function callRow(c, p) {
         <span class="st st-${c.status}">${CALL_STATUS[c.status]}</span>
         ${c.kind === 'cist' ? '<span class="chip chip-info">정기 인지검사</span>' : ''}
         ${c.status === 'missed' ? '' : `
-          ${c.kind === 'cist' ? '' : `<span>점수 <b class="num">${pctText(c.scorePct)}</b>${c.z != null ? ` <span class="muted">(z ${c.z})</span>` : ''}</span>`}
+          ${c.kind === 'cist' ? '' : `<span>점수 <b class="num">${pctText(c.scorePct)}</b>${c.z != null ? ` <span class="muted">(평소 대비 ${c.z} SD)</span>` : ''}</span>`}
           <span class="muted">${fmtDur(c.durationSec)}</span>
           <span class="muted">재질문 ${asks}회</span>`}
         ${c.source === 'real' ? '<span class="chip chip-info">실측</span>' : ''}
@@ -2410,7 +2512,7 @@ function cistTab(p) {
   return `
     <section class="card">
       <div class="card-head"><h2>정기 인지검사(전화형)</h2>
-        <div class="row"><span class="muted small">다음 검사일 ${fmtDate(st.due)}${st.delayed ? ' <span class="chip chip-mid">검사 지연</span>' : ''} · ${d.settings.cistIntervalWeeks || 4}주마다</span>
+        <div class="row"><span class="muted small">다음 검사일 ${fmtDate(st.due)}${st.delayed ? ' <span class="chip chip-mid">검사 지연</span>' : ''} · ${d.settings.cistIntervalWeeks || 2}주마다</span>
           <a class="btn btn-ghost btn-sm" href="#/admin/questions?tab=cist">방식 설정</a></div></div>
       ${all.length || tests.length ? `<div class="chartbox"><canvas id="cistChart" role="img" aria-label="정기검사 원형 유지 점수와 대면 검사 점수"></canvas></div>
         ${legendHtml([['원형 유지 점수', 'var(--accent)'], ['대면 검사 (오른쪽 축)', 'var(--ink-2)'], ['방식 변경', 'var(--faint)', true]])}` : ''}
@@ -2700,7 +2802,7 @@ function infoTab(p, form = false) {
       </dl>
 `, `
       <div class="form">
-        <label>호칭<input name="title" value="${esc(c.title || '')}" placeholder="윤병훈 어르신"></label>
+        <label>호칭<input name="title" value="${esc(c.title || '')}" placeholder="윤병훈 님"></label>
         <label>통화 시각 (±1시간)<input name="time" type="time" value="${esc(p.preferredTime)}"></label>
         <label>말 속도<select name="rate">${opts(['0.7', '0.8', '0.9', '1.0'], String(c.rate ?? 0.9).replace(/^1$/, '1.0'))}</select></label>
         <label>질문 다시 읽기 허용<select name="rereads">${opts(['0', '1', '2'], String(c.rereads ?? 1))}</select></label>
@@ -2899,6 +3001,7 @@ function alertCard(a, p) {
   return `
     <div class="alert-card lvb-${a.level} ${closed ? 'closed' : ''}">
       <div class="row"><b>${TYPE[a.type]}</b>${a.type === 'emergency' ? '<span class="chip chip-high">높음</span>' : levelChip(a.level)}<span class="chip">${STATUS[a.status]}</span></div>
+      ${a.type === 'selfReport' && a.reasons?.length ? `<p class="small">${a.reasons.map(esc).join(' · ')} · <a href="#/admin/p/${p.id}/self">자기보고 보기</a></p>` : ''}
       <div class="muted small">생성 ${stamp(a.createdAt)} · 보호자 통보 ${stamp(a.notifiedAt)}${a.notifiedTo ? ` (${esc(a.notifiedTo.name)}${a.notifiedTo.relation ? ' · ' + esc(a.notifiedTo.relation) : ''} ${esc(a.notifiedTo.phone)})` : ''} · 연계 ${stamp(a.referredAt)}</div>
       <div class="row">
         <button type="button" class="btn btn-secondary btn-sm" data-act="notify" data-id="${a.id}" ${closed ? 'disabled' : ''}>보호자 통보 기록</button>
@@ -2931,12 +3034,18 @@ function alertCard(a, p) {
     </div>`;
 }
 
-// 겹쳐 보기: 인지 z + 야간 최저 SpO2(오른쪽 축) + 안정 시 심박
+// 겹쳐 보기: 평소 대비 표준편차(z) + 개인 기저선 대비 점수(%p) + 야간 최저 SpO2 · 안정 시 심박(오른쪽 축)
+// 왼쪽 두 축은 0을 맞추고, 표준편차 1 = 오차범위(personalBand)가 같은 높이가 되게 그린다
 function drawPersonChart(p, st, s, today) {
   if (!window.Chart || !document.getElementById('personChart')) return;
   const range = trendOpt.days;
   const labels = [...Array(range)].map((_, i) => addDays(today, i - range + 1));
   const zByDate = Object.fromEntries(st.zs.map(x => [x.date, x.z]));
+  const band = s.personalBand ?? 10;
+  const pdevByDate = {};
+  if (st.base.ready) for (const c of getData().calls) if (c.personId === p.id && c.status === 'completed' && c.kind !== 'cist' && c.scorePct != null && zByDate[c.date] != null) pdevByDate[c.date] = Math.round((c.scorePct - st.base.mean) * 10) / 10;
+  const zVals = [...labels.map(dt => zByDate[dt]), ...labels.map(dt => pdevByDate[dt] / band)].filter(v => v != null && Number.isFinite(v));
+  const zMin = Math.min(-3, Math.floor(Math.min(...zVals, 0))), zMax = Math.max(3, Math.ceil(Math.max(...zVals, 0)));
   const nights = labels.map(dt => {
     const v = getNightVitals(p.id, dt);
     return isValidNight(v, s) ? v : null; // 무효 측정일은 빈칸
@@ -2956,6 +3065,19 @@ function drawPersonChart(p, st, s, today) {
       ctx.restore();
     }
   };
+  // 평소 범위 가로 띠: 표준편차 -1~+1 (= 개인 기저선 ±오차범위)
+  const normal = {
+    id: 'normalBand',
+    beforeDatasetsDraw(chart) {
+      if (!st.base.ready) return;
+      const { ctx, chartArea: area, scales: { y } } = chart;
+      ctx.save();
+      ctx.fillStyle = css('--accent-soft');
+      ctx.globalAlpha = 0.7;
+      ctx.fillRect(area.left, y.getPixelForValue(1), area.right - area.left, y.getPixelForValue(-1) - y.getPixelForValue(1));
+      ctx.restore();
+    }
+  };
   const line = (label, data, color, axis) => ({
     label, data, yAxisID: axis, borderColor: color, backgroundColor: color,
     pointHoverRadius: 5, pointBorderColor: css('--panel'), pointBorderWidth: 1.5, cubicInterpolationMode: 'monotone'
@@ -2965,8 +3087,9 @@ function drawPersonChart(p, st, s, today) {
     data: {
       labels: labels.map(dt => mmdd(dt)),
       datasets: [
-        line('인지 z-score', labels.map(dt => zByDate[dt] ?? null), SERIES()[0], 'y'),
-        { label: `관찰 기준 (z ${s.zWatch})`, data: labels.map(() => s.zWatch), yAxisID: 'y', borderColor: css('--high'), borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 0 },
+        line('평소 대비 표준편차 (SD)', labels.map(dt => zByDate[dt] ?? null), SERIES()[0], 'y'),
+        line('개인 기저선 대비 점수 (%p)', labels.map(dt => pdevByDate[dt] ?? null), css('--mid'), 'y3'),
+        { label: `관찰 기준 (${s.zWatch} SD)`, data: labels.map(() => s.zWatch), yAxisID: 'y', borderColor: css('--high'), borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 0 },
         line('야간 최저 SpO2 (%)', nights.map(v => v?.spo2Min ?? null), SERIES()[1], 'y1'),
         line('안정 시 심박 (bpm)', nights.map(v => v?.hrRest ?? null), SERIES()[2], 'y2')
       ]
@@ -2977,12 +3100,13 @@ function drawPersonChart(p, st, s, today) {
       interaction: { mode: 'index', intersect: false },
       scales: {
         x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkipPadding: 12 } },
-        y: { title: { display: true, text: 'z' }, border: { display: false } },
+        y: { min: zMin, max: zMax, title: { display: true, text: '표준편차 (SD)' }, border: { display: false } },
+        y3: { min: zMin * band, max: zMax * band, title: { display: true, text: '개인 기저선 대비 %p' }, grid: { drawOnChartArea: false }, border: { display: false } },
         y1: { position: 'right', title: { display: true, text: 'SpO2 %' }, grid: { drawOnChartArea: false }, border: { display: false } },
         y2: { position: 'right', title: { display: true, text: '심박' }, grid: { drawOnChartArea: false }, border: { display: false } }
       }
     },
-    plugins: [shade]
+    plugins: [shade, normal]
   }));
 }
 
@@ -3238,7 +3362,7 @@ function cistModesTab(d, me) {
     const at = nowStamp(), by = me ? displayName(me) : '';
     const changes = Object.keys(next).filter(k => next[k] !== cur[k]).map(k => ({ by, at, key: k, from: optLabel(k, cur[k]), to: optLabel(k, next[k]) }));
     const weeks = +f.weeks.value;
-    if (weeks !== (d.settings.cistIntervalWeeks || 4)) changes.push({ by, at, key: 'interval', from: `${d.settings.cistIntervalWeeks || 4}주`, to: `${weeks}주` });
+    if (weeks !== (d.settings.cistIntervalWeeks || 2)) changes.push({ by, at, key: 'interval', from: `${d.settings.cistIntervalWeeks || 4}주`, to: `${weeks}주` });
     if (!changes.length) { toast('바뀐 내용 없음'); return; }
     d.cistModes = next;
     d.settings.cistIntervalWeeks = weeks;
@@ -3251,7 +3375,7 @@ function cistModesTab(d, me) {
     <form class="card stack" data-submit="cistModesSave">
       <div class="card-head"><h2>정기 인지검사(전화형) 방식</h2><button class="btn btn-primary" type="submit">저장</button></div>
       <p class="chk warn-box">검사 도중 방식을 바꾸면 이전 회차와 점수를 비교할 수 없게 됩니다.</p>
-      <label class="field">검사 주기<select name="weeks">${[2, 4, 8].map(w => `<option value="${w}" ${(d.settings.cistIntervalWeeks || 4) === w ? 'selected' : ''}>${w}주마다${w === 4 ? ' ★' : ''}</option>`).join('')}</select>
+      <label class="field">검사 주기<select name="weeks">${[2, 4, 8].map(w => `<option value="${w}" ${(d.settings.cistIntervalWeeks || 2) === w ? 'selected' : ''}>${w}주마다${w === 2 ? ' ★' : ''}</option>`).join('')}</select>
         <span class="help">등록 직후 1회, 그 뒤 주기마다 · 검사일에는 매일 문항 대신 시행 (상한 ${Math.round((d.settings.cistMaxSec || 900) / 60)}분)</span></label>
       <p class="muted small">고정 ${fid('original')}: 1 시간 지남력 · 3 기억등록(문장 A/B 회차 교대, 두 번) · 4 숫자 바로 따라 말하기 · 9 언어추론 · 10 기억회상/재인 · 13 유창성(1분) · 고정 ${fid('adapted')}: 11 이름대기(그림 대신 말로 설명)</p>
       ${groups}
@@ -3345,7 +3469,7 @@ function questionsPage(params) {
   const parts = {
     script: () => `
       <form class="card stack" data-submit="qScript">
-        <div class="card-head"><h2>통화 대본</h2><span class="sub">{호칭} 자리에 대상자 호칭이 들어감 (예: 윤병훈 어르신)</span></div>
+        <div class="card-head"><h2>통화 대본</h2><span class="sub">{호칭} 자리에 대상자 호칭이 들어감 (예: 윤병훈 님)</span></div>
         ${Object.entries(SCRIPT_LABEL).map(([k, t]) => `
           <label class="field">${t}<span class="row" style="flex-wrap:nowrap;align-items:flex-start"><textarea name="${k}" rows="2" style="flex:1">${esc(bank.script[k])}</textarea>
             ${btn(icon('play', 16), `data-act="qSpeak" data-text="${esc(fillTitleLocal(bank.script[k]))}" aria-label="미리 듣기"`, 'ghost', 'sm btn-icon')}</span></label>`).join('')}
@@ -3545,7 +3669,7 @@ function questionsPage(params) {
   };
 }
 const DOMAIN_LABEL_MAP = { orientation: '지남력', attention: '주의력', language: '언어기능', executive: '집행기능' };
-const fillTitleLocal = t => t.replaceAll('{호칭}', '윤병훈 어르신');
+const fillTitleLocal = t => t.replaceAll('{호칭}', '윤병훈 님');
 
 // ---------- 대상자 추가·전체 수정 ----------
 const REFERRALS = ['보건소 의뢰', '방문간호 연계', '본인 신청', '보호자 신청', '기타'];
@@ -3708,7 +3832,7 @@ function personFormPage(params) {
       referral: F('referral').value || null, dementiaCenter: F('dementiaCenter').value || null
     });
     target.info.living = F('living').value;
-    target.info.call.title ||= `${target.name} 어르신`;
+    target.info.call.title ||= `${target.name} 님`;
     target.info.consent = {
       service: true, recording: radio('c-recording'), guardianShare: radio('c-share'), privacy: true,
       method: F('c-method').value, proxy: F('c-method').value === '대리인' ? { name: F('px-name').value.trim(), relation: F('px-rel').value.trim(), phone: F('px-phone').value.trim() } : null,

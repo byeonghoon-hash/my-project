@@ -22,9 +22,10 @@ export const DEFAULT_SETTINGS = {
   sdMinSpo2: 1,            //   SpO2 %p
   sdMinHr: 3,              //   심박 bpm
   sdMinLatency: 0.3,       //   응답 지연 초
+  personalBand: 10,        // 개인 기저선 오차범위: 평소 점수(처음 14회 평균) ± 10%p (= 문항 1개)
   visitBufferMin: 20,      // 방문 사이 이동 여유 시간(분). 웅촌면은 마을 간 이동 시간이 있다
   visitDailyLimit: 4,      // 방문자 하루 방문 한도(건)
-  cistIntervalWeeks: 4,    // 정기 인지검사(전화형) 주기: 2 / 4 / 8주
+  cistIntervalWeeks: 2,    // 정기 인지검사(전화형) 주기: 2 / 4 / 8주
   cistDropAlert: 3,        //   원형 유지 점수가 직전 확정 회차보다 3점 이상 하락 → 주의
   cistMaxSec: 900,         //   정기 검사 통화 상한 15분
   rewardCall: 1000,        // 복지포인트: 전화 인지검사를 마친 통화 (하루 한 번)
@@ -501,7 +502,9 @@ const nextReview = (level, today) => addDays(today, { high: 2, mid: 7, low: 14 }
 // =========================================================
 export const TREND_METRICS = [
   { key: 'score', group: '인지 (통화)', label: '인지검사 점수', unit: '%', dir: 1, sdMin: s => s.sdMinScore, kind: 'call' },
-  { key: 'z', group: '인지 (통화)', label: '기저선 대비 z', unit: '', dir: 1, sdMin: () => 0.5, kind: 'call' },
+  { key: 'z', group: '인지 (통화)', label: '평소 대비 표준편차', unit: 'SD', dir: 1, sdMin: () => 0.5, kind: 'call' },
+  // 개인 기저선: 평소 점수(처음 14회 평균)와의 차이. 표준편차 대신 정해 둔 오차범위(±personalBand %p)로 본다
+  { key: 'pdev', group: '인지 (통화)', label: '개인 기저선 대비 점수', unit: '%p', dir: 1, band: s => s.personalBand ?? 10, kind: 'call' },
   { key: 'd_orientation', group: '인지 (통화)', label: '지남력', unit: '%', dir: 1, sdMin: s => s.sdMinScore, kind: 'call', domain: '지남력' },
   { key: 'd_register', group: '인지 (통화)', label: '기억 등록', unit: '%', dir: 1, sdMin: s => s.sdMinScore, kind: 'call', domain: '기억 등록' },
   { key: 'd_recall', group: '인지 (통화)', label: '지연 회상', unit: '%', dir: 1, sdMin: s => s.sdMinScore, kind: 'call', domain: '지연 회상' },
@@ -575,6 +578,7 @@ function dailyValues(data, person, m, today, getV, st) {
     const done = c.status === 'completed';
     if (m.key === 'score' && done) value = c.scorePct;
     else if (m.key === 'z' && done) value = zBy.get(c.id) ?? null;
+    else if (m.key === 'pdev' && done && st.base.ready && c.scorePct != null) value = c.scorePct - st.base.mean;
     else if (m.domain && done) {
       const its = c.items.filter(i => i.domain === m.domain && i.score != null);
       if (its.length) value = (its.reduce((t, i) => t + i.score, 0) / its.reduce((t, i) => t + i.maxScore, 0)) * 100;
@@ -624,8 +628,9 @@ export function trendAll(data, person, opts, today, getV) {
       baseVals = daily.slice(0, s.baselineDays).map(x => x.value);
       if (baseVals.length < s.baselineDays) baseVals = [];
     }
-    const base = baseVals.length ? { mean: mean(baseVals), sd: sdOf(baseVals), n: baseVals.length } : null;
-    const sdEff = base ? Math.max(base.sd, m.sdMin(s)) : null;
+    // 오차범위를 정해 둔 지표(개인 기저선)는 기준이 0 ± 오차범위
+    const base = !baseVals.length ? null : m.band ? { mean: 0, sd: m.band(s), n: baseVals.length } : { mean: mean(baseVals), sd: sdOf(baseVals), n: baseVals.length };
+    const sdEff = base ? (m.band ? m.band(s) : Math.max(base.sd, m.sdMin(s))) : null;
     const recent7 = rec.length ? mean(rec) : null;
     const delta = base && recent7 != null ? recent7 - base.mean : null;
     let status = '데이터 부족';
@@ -651,6 +656,7 @@ export function trendAll(data, person, opts, today, getV) {
       key: m.key, recent7, recentN: rec.length, prev7: prev.length ? mean(prev) : null,
       baseline: base, sdEff, delta, status, series, daily,
       alertLevel: m.key === 'z' ? openCog : null,
+      ref: m.band && st.base.ready ? st.base.mean : null, // 개인 기저선 점수 (평소 점수 %)
       real: daily.some(x => x.source === 'real' && x.date >= addDays(today, -6)),
       score: delta != null && sdEff ? Math.abs(delta) / sdEff : 0
     };
@@ -674,6 +680,10 @@ export function personEvents(person, data) {
 // 한 줄 요약 (큰 그래프 아래)
 export function trendSentence(m, t, today) {
   if (!t.baseline || t.recent7 == null) return `${m.label} · 데이터 부족`;
+  if (m.band) { // 개인 기저선: 평소 점수 ± 오차범위 안인지
+    const inBand = Math.abs(t.recent7) < t.sdEff;
+    return `최근 7일 평균 ${f1(t.ref + t.recent7)}% · 개인 기저선 ${f1(t.ref)}% ± ${f1(t.sdEff)}%p 대비 ${t.recent7 >= 0 ? '+' : ''}${f1(t.recent7)}%p · ${inBand ? '오차범위 안' : t.recent7 < 0 ? '오차범위 아래' : '오차범위 위'}`;
+  }
   const unit = m.unit === '%' ? '%' : m.unit ? m.unit : '';
   let text = `최근 7일 ${m.label} ${f1(t.recent7)}${unit} · 기저선 ${f1(t.baseline.mean)}${unit} ± ${f1(t.baseline.sd)} 대비 ${f1(t.score)} 표준편차 ${t.delta >= 0 ? '상승' : '하락'}`;
   const lo = t.baseline.mean - t.sdEff, hi = t.baseline.mean + t.sdEff;
@@ -728,7 +738,7 @@ export function aiSummary(person, data, today, getV) {
   else {
     const z = st.lastZ;
     const trend = sc.prev7 == null || sc.recent7 == null ? '' : sc.recent7 - sc.prev7 <= -3 ? ', 2주간 하락 추세' : sc.recent7 - sc.prev7 >= 3 ? ', 2주간 상승 추세' : ', 2주간 안정';
-    const read = z <= s.zWatch ? `개인 기저선 대비 z ${f1(z)}` : `개인 기저선 범위 (z ${f1(z)})`;
+    const read = z <= s.zWatch ? `평소 대비 ${f1(z)} 표준편차` : `평소 범위 (${f1(z)} 표준편차)`;
     items.push({ label: '통화 인지검사', text: `인지검사 점수 ${f1(sc.recent7 ?? st.lastScore)}% · ${read}${trend}`, off: z <= s.zWatch || trend === ', 2주간 하락 추세' });
     // 가장 떨어진 영역
     const worst = TREND_METRICS.filter(m => m.domain).map(m => [m, t[m.key]])
@@ -831,7 +841,7 @@ export function journalDraft(person, data, today, getV) {
   const O = [
     `- 통화 완료 ${done}/${target} (${mmdd(from)}~${mmdd(today)})`,
     cs.latest ? `- 정기 인지검사(전화형) ${mmdd(cs.latest.date)}: 원형 유지 ${csc.original.score}/${csc.original.max} · 30점 환산 ${f1(csc.scaled30)}점${cs.change?.original.comparable ? ` · 직전 대비 ${cs.change.original.diff > 0 ? '+' : ''}${cs.change.original.diff}` : ''}` : null,
-    `- 인지검사 점수 최근 7일 ${f1(t.score.recent7)}%` + (st.base.ready ? ` · 최근 z ${f1(st.lastZ)} (기저선 ${f1(st.base.mean)}% ± ${f1(st.base.sd)})` : ` · 기저선 형성 중 (${st.base.n}/${data.settings.baselineDays}회)`),
+    `- 인지검사 점수 최근 7일 ${f1(t.score.recent7)}%` + (st.base.ready ? ` · 평소 대비 ${f1(st.lastZ)} 표준편차 (개인 기저선 ${f1(st.base.mean)}% ± ${f1(st.base.sd)})` : ` · 기저선 형성 중 (${st.base.n}/${data.settings.baselineDays}회)`),
     worst ? `- 가장 떨어진 영역: ${worst[0].label} 최근 7일 ${f1(worst[1].recent7)}${worst[0].unit} (기저선 ${f1(worst[1].baseline.mean)}${worst[0].unit})` : null,
     `- 응답 지연 ${f1(t.latency.recent7)}초 · 재질문 ${f1(t.repeats.recent7)}회/통화`,
     device && !t.validRate.daily.length ? '- 링 데이터 없음'
@@ -918,7 +928,7 @@ export const confirmedCist = (data, personId) => cistSessionsOf(data, personId).
 export function cistDue(person, data) {
   if (person.info?.call?.cistNext) return person.info.call.cistNext;
   const last = cistSessionsOf(data, person.id).at(-1);
-  return last ? addDays(last.date, (data.settings.cistIntervalWeeks || 4) * 7) : person.enrolledAt;
+  return last ? addDays(last.date, (data.settings.cistIntervalWeeks || 2) * 7) : person.enrolledAt;
 }
 // 한 사람의 정기 검사 상태 (대시보드·목록·상세·알림·위험도가 같이 쓴다)
 export function cistStatus(person, data, today) {
@@ -943,6 +953,68 @@ export function cistRisk(st, s) {
   if (d1 != null && d1 >= (s.cistDropAlert ?? 3)) return { level: 'mid', reason: `정기검사 원형 유지 ${d1}점 하락`, drop: d1 };
   return null;
 }
+// ---------- 자기보고: 통화에서 한 말로 알림 ----------
+// 최근 7일 완료 통화의 몸 상태·최근 문제·수면·기분·안부 대화 대답을 본다. 한 통화에서 같은 종류는 한 번만 센다.
+export const SELF_RULES = [
+  { key: 'fall', label: '낙상 언급', level: 'caution', min: 1, words: ['넘어졌', '넘어져', '넘어짐', '자빠졌', '미끄러졌', '엎어졌'] },
+  { key: 'sleep', label: '잠 설침 반복', level: 'caution', min: 3, sr: 'sleep', value: 'poor' },
+  { key: 'mood', label: '기분 저하 반복', level: 'caution', min: 3, sr: 'mood', value: 'bad' },
+  { key: 'pain', label: '통증 호소 반복', level: 'watch', min: 4, words: ['아프', '아파', '쑤시', '결리', '저리', '욱신'] },
+  { key: 'memory', label: '기억 저하 호소 반복', level: 'watch', min: 4, words: ['깜빡', '잊어', '까먹', '기억이 안', '생각이 안'] },
+  { key: 'meal', label: '식사 문제 호소', level: 'watch', min: 2, words: ['입맛이 없', '밥맛이 없', '밥을 못', '밥 안 먹', '끼니', '굶'] },
+  { key: 'lonely', label: '외로움·우울 표현 반복', level: 'watch', min: 3, words: ['외롭', '적적', '쓸쓸', '우울', '살맛'] }
+];
+// 한 통화에서 대상자가 한 말 [{ part, text }]
+export function callUtterances(c) {
+  const out = [];
+  if (c.opening?.condition?.answer) out.push({ part: '몸 상태', text: c.opening.condition.answer });
+  if (c.opening?.recent?.answer) out.push({ part: '최근 문제', text: c.opening.recent.answer });
+  if (c.selfReport?.sleep?.answer) out.push({ part: '수면', text: c.selfReport.sleep.answer });
+  if (c.selfReport?.mood?.answer) out.push({ part: '기분', text: c.selfReport.mood.answer });
+  const chat = (c.chatTurns || []).filter(t => t.role === 'elder').map(t => t.text);
+  if (chat.length) chat.forEach(text => out.push({ part: '안부 대화', text }));
+  else if (c.chat?.answer) out.push({ part: '안부 대화', text: c.chat.answer });
+  return out.filter(u => u.text && u.text.trim());
+}
+// 한 사람의 자기보고 신호: { level, reasons: [{ key, label, level, count, min, quotes: [{ date, part, text }] }], calls }
+export function selfReportSignals(person, data, today, days = 7) {
+  const from = addDays(today, -(days - 1));
+  const calls = data.calls.filter(c => c.personId === person.id && c.status === 'completed' && !c.declined && c.kind !== 'cist' && c.date >= from && c.date <= today).sort(byTime);
+  const reasons = [];
+  for (const r of SELF_RULES) {
+    const quotes = [];
+    for (const c of calls) {
+      let hit = null;
+      if (r.sr) { if (c.selfReport?.[r.sr]?.value === r.value) hit = { part: r.sr === 'sleep' ? '수면' : '기분', text: c.selfReport[r.sr].answer }; }
+      else hit = callUtterances(c).find(u => r.words.some(w => u.text.includes(w))) || null;
+      if (hit) quotes.push({ date: c.date, ...hit });
+    }
+    if (quotes.length >= r.min) reasons.push({ key: r.key, label: r.label, level: r.level, count: quotes.length, min: r.min, quotes });
+  }
+  const level = reasons.map(r => r.level).sort((a, b) => LEVEL_RANK[b] - LEVEL_RANK[a])[0] || null;
+  return { level, reasons, calls: calls.length };
+}
+// 알림 맞추기: 신호가 있으면 '자기보고' 알림을 만들거나 단계·사유를 고친다. 신호가 없어지면 처리 전 알림은 닫는다.
+// 담당자가 이번 주에 이미 처리(종결)한 알림이 있으면 새로 만들지 않는다.
+export function syncSelfReportAlerts(data, today, now) {
+  for (const p of data.people) {
+    const sig = p.active ? selfReportSignals(p, data, today) : { level: null, reasons: [] };
+    const mine = data.alerts.filter(a => a.personId === p.id && a.type === 'selfReport');
+    const open = mine.find(a => a.status !== 'closed');
+    const reasons = sig.reasons.map(r => `${r.label} (${r.count}회)`);
+    if (sig.level && open) {
+      if (LEVEL_RANK[sig.level] > LEVEL_RANK[open.level]) open.level = sig.level;
+      open.reasons = reasons;
+    } else if (sig.level && !mine.some(a => a.status === 'closed' && a.createdAt.slice(0, 10) >= addDays(today, -6))) {
+      data.alerts.push({ id: 'alself' + p.id + now.replace(/\D/g, ''), personId: p.id, createdAt: now, type: 'selfReport', level: sig.level, status: 'open',
+        referredAt: null, notifiedAt: null, notifiedTo: null, outcome: null, checklist: {}, note: '', reasons });
+    } else if (!sig.level && open && open.status === 'open') {
+      open.status = 'closed';
+      open.note = (open.note ? open.note + ' · ' : '') + '최근 7일 해당 발화 없음';
+    }
+  }
+}
+
 // 알림 맞추기: '채점 확인 대기'(초안이 있으면 관찰, 확정하면 닫힘) · '정기검사 지연'(예정일 +7일, 시행하면 닫힘)
 export function syncCistAlerts(data, today, now) {
   for (const p of data.people) {

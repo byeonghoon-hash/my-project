@@ -387,8 +387,8 @@ assert.deepEqual(sum.concerns.map(c => c.text), ['허리 통증']);
 assert.equal(checkSummary({ summary: '치매 의심', requests: [], concerns: [] }, elder).summary, '');
 assert.equal(checkSummary(null, elder), null);
 
-assert.equal(fillTitle('{호칭}, 오늘은 좀 어떠세요?', '윤병훈 어르신'), '윤병훈 어르신, 오늘은 좀 어떠세요?');
-assert.equal(fillTitle('{호칭}, 안녕하세요.', ''), '어르신, 안녕하세요.');
+assert.equal(fillTitle('{호칭}, 오늘은 좀 어떠세요?', '윤병훈 님'), '윤병훈 님, 오늘은 좀 어떠세요?');
+assert.equal(fillTitle('{호칭}, 안녕하세요.', ''), '대상자님, 안녕하세요.');
 assert.ok(!fillTitle(DEFAULT_BANK.script.greeting, '김말순 어르신').includes('{'));
 
 const agreed = { info: { consent: { ai: true } } }, refused = { info: { consent: { ai: false } } };
@@ -661,6 +661,81 @@ assert.equal(isOffTopic(regItem, '잘 모르겠는데 기억이 하나도 안 �
   assert.equal(d.points[0].amount, 999);
   assert.equal(d.people.length, 1);                                          // 서버에서 대상자는 받지 않음
   assert.equal(mergeRecords(d, remote, sent), false);                        // 같은 내용을 다시 받으면 바뀜 없음
+}
+
+// ======== 개인 기저선(오차범위) · 자기보고 알림 · 2주 주기 · 호칭 ========
+{
+  const M = await import('./metrics.js');
+  const day = '2026-10-14';
+  assert.equal(M.DEFAULT_SETTINGS.cistIntervalWeeks, 2);
+  assert.equal(M.DEFAULT_SETTINGS.personalBand, 10);
+  assert.equal(M.METRIC.z.label, '평소 대비 표준편차');                     // 'z'라는 말 대신
+  // 개인 기저선: 처음 14회 평균 80 → 최근 7일 68 이면 -12%p, 오차범위(±10) 밖이라 악화. 76이면 안이라 유지
+  const mk = (recent) => {
+    const person = { id: 'q1', enrolledAt: addDays(day, -30), info: { call: { days: [0, 1, 2, 3, 4, 5, 6] } } };
+    const calls = [];
+    for (let k = 30; k >= 0; k--) {
+      const dt = addDays(day, -k), v = k >= 7 ? (k % 2 ? 78 : 82) : recent;
+      calls.push({ id: 'cq' + k, personId: 'q1', date: dt, startedAt: dt + 'T10:00', status: 'completed', source: 'demo', scorePct: v, items: [], opening: null, selfReport: null, chatTurns: [] });
+    }
+    return { d: { settings: { ...M.DEFAULT_SETTINGS }, people: [person], calls, alerts: [], cistSessions: [], vitals: [], ringNights: [] }, person };
+  };
+  let { d, person } = mk(68);
+  let t = M.trendAll(d, person, { days: 30 }, day, () => null).pdev;
+  assert.equal(Math.round(t.recent7), -12);
+  assert.equal(t.sdEff, 10);
+  assert.equal(t.baseline.mean, 0);
+  assert.equal(Math.round(t.ref), 80);
+  assert.equal(t.status, '악화');
+  ({ d, person } = mk(76));
+  assert.equal(M.trendAll(d, person, { days: 30 }, day, () => null).pdev.status, '유지');
+  d.settings.personalBand = 3;                                                 // 오차범위를 좁히면 같은 점수도 밖
+  assert.equal(M.trendAll(d, person, { days: 30 }, day, () => null).pdev.status, '악화');
+
+  // 자기보고: 낙상 1번이면 주의, 통증 3번은 아직, 4번이면 관찰, 잠 설침 3번이면 주의
+  ({ d, person } = mk(80));
+  const recent = d.calls.filter(c => c.date >= addDays(day, -6));
+  recent[0].chatTurns = [{ role: 'elder', text: '어제 마당에서 넘어졌다' }];
+  let sig = M.selfReportSignals(person, d, day);
+  assert.equal(sig.level, 'caution');
+  assert.deepEqual(sig.reasons.map(r => r.key), ['fall']);
+  assert.equal(sig.reasons[0].quotes[0].text, '어제 마당에서 넘어졌다');       // 말 그대로
+  recent[0].chatTurns = [];
+  for (const c of recent.slice(0, 3)) c.opening = { condition: { answer: '무릎이 쑤시네' } };
+  assert.equal(M.selfReportSignals(person, d, day).level, null);
+  recent[3].opening = { condition: { answer: '허리가 아프다' } };
+  sig = M.selfReportSignals(person, d, day);
+  assert.equal(sig.level, 'watch');
+  assert.equal(sig.reasons[0].count, 4);
+  for (const c of recent.slice(0, 3)) c.selfReport = { sleep: { answer: '잠을 설쳤다', value: 'poor' }, mood: null };
+  assert.equal(M.selfReportSignals(person, d, day).level, 'caution');
+  // 알림: 만들고, 신호가 없어지면 처리 전 알림은 닫는다. 위험도 등급에는 쓰지 않는다
+  person.active = true;
+  M.syncSelfReportAlerts(d, day, day + 'T09:00');
+  assert.equal(d.alerts.filter(a => a.type === 'selfReport' && a.status === 'open').length, 1);
+  assert.equal(d.alerts[0].level, 'caution');
+  assert.ok(d.alerts[0].reasons.some(x => x.startsWith('잠 설침 반복')));
+  M.syncSelfReportAlerts(d, day, day + 'T09:05');
+  assert.equal(d.alerts.length, 1);                                            // 두 번 만들지 않음
+  for (const c of recent) { c.opening = null; c.selfReport = null; }
+  M.syncSelfReportAlerts(d, day, day + 'T10:00');
+  assert.equal(d.alerts[0].status, 'closed');
+
+  // 시드: 윤병훈 26세 · 담당 윤병훈 간호사, 호칭은 '님', 자기보고 알림은 일부만, 위험도 분포 그대로
+  const sd = makeSeed(undefined, day);
+  const yun = sd.people.find(x => x.name === '윤병훈');
+  assert.equal(yun.age, 26);
+  assert.equal(yun.manager, '윤병훈 간호사');
+  assert.ok(sd.people.every(x => x.info.call.title.endsWith(' 님')));
+  const selfAlerts = sd.alerts.filter(a => a.type === 'selfReport');
+  assert.ok(selfAlerts.length >= 1 && selfAlerts.length <= 4, selfAlerts.length);
+  assert.ok(selfAlerts.some(a => a.personId === sd.people.find(x => x.name === '김말순').id && a.reasons.some(r => r.startsWith('낙상'))));
+  const gv = (pid, dt) => pickVitals(sd, pid, dt);
+  assert.deepEqual(['high', 'mid', 'low'].map(l => sd.people.filter(x => riskOf(x, sd, day, gv).level === l).length), [2, 3, 5]);
+  // 2주 주기: 최영희 9일 지연
+  const choi = sd.people.find(x => x.name === '최영희');
+  assert.equal(M.cistStatus(choi, sd, day).delayed, true);
+  assert.equal(addDays(M.cistStatus(choi, sd, day).due, 9), day);
 }
 
 console.log('selftest 통과');
