@@ -87,7 +87,9 @@ export function toMinutes(parsed, sqiMin) {
     if (parsed.spo2[i] > 0) b.o.push(parsed.spo2[i]);
     if (parsed.hr[i] > 0) b.h.push(parsed.hr[i]);
   }
-  return [...map.entries()].sort((a, b) => a[0] - b[0]).map(([m, b]) => [
+  // 밤(22:00~07:00)에 쓰는 값만 남긴다. 시계 보정 여유로 앞뒤 1시간(21:00~08:00)까지. 낮 값은 저장·서버 전송량만 늘린다
+  const nightish = m => { const h = new Date(m * 60000).getHours(); return h >= 21 || h < 8; };
+  return [...map.entries()].filter(([m]) => nightish(m)).sort((a, b) => a[0] - b[0]).map(([m, b]) => [
     m, b.n, b.w, round(b.q, 2), b.o.length ? median(b.o) : null, b.h.length ? round(b.h.reduce((x, y) => x + y, 0) / b.h.length) : null
   ]);
 }

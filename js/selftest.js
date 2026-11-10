@@ -822,4 +822,29 @@ assert.equal(isOffTopic(regItem, '잘 모르겠는데 기억이 하나도 안 �
   assert.ok(gv('g1', day));
 }
 
+// ======== 링 기록 서버 저장: 머리 + 1분 값 조각으로 나눠 올리고, 받으면 다시 합친다 ========
+{
+  const { syncable, mergeRecords, fingerprint } = await import('./store.js');
+  const minutes = [...Array(4500)].map((_, k) => [29841060 + k, 60, 60, 54.2, 95, 63]);
+  const src = { calls: [], ringImports: [{ id: 'ri1', personId: 'p10', fileName: 'night.csv', intervalSec: 1, validNights: 3, shiftDays: 0, minutes }] };
+  const out = syncable(src).filter(x => x.kind.startsWith('ring'));
+  assert.deepEqual(out.map(x => x.kind), ['ringImports', 'ringParts', 'ringParts', 'ringParts']); // 2000개씩 3조각
+  assert.equal(out[0].rec.minutes, undefined);
+  assert.equal(out[0].rec.parts, 3);
+  assert.ok(out.every(x => JSON.stringify(x.rec).length < 200000));          // 서버 한 건 상한 안
+  const remote = { ringImports: [out[0].rec], ringParts: out.slice(1).map(x => x.rec) };
+  // 다른 기기(비어 있음)에서 받으면 1분 값이 그대로 되살아난다
+  const other = { ringImports: [] }, sent = {};
+  assert.equal(mergeRecords(other, remote, sent), true);
+  assert.equal(other.ringImports[0].minutes.length, 4500);
+  assert.deepEqual(other.ringImports[0].minutes.at(-1), minutes.at(-1));
+  assert.equal(other.ringImports[0].parts, undefined);
+  // 받은 것을 다시 올리지 않는다 (지문이 맞음)
+  assert.ok(syncable(other).filter(x => x.kind.startsWith('ring')).every(x => sent[x.kind + ':' + x.rec.id] === fingerprint(x.rec)));
+  // 조각이 덜 올라온 파일은 받지 않는다
+  const half = { ringImports: [] };
+  assert.equal(mergeRecords(half, { ringImports: remote.ringImports, ringParts: remote.ringParts.slice(0, 2) }, {}), false);
+  assert.equal(half.ringImports.length, 0);
+}
+
 console.log('selftest 통과');

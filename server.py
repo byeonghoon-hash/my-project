@@ -221,9 +221,9 @@ def chat_prompt(body):
 
 
 # ---------- 검사 기록 저장소 (Upstash Redis REST) ----------
-# 직접 한 통화·정기 검사·활동·적립·응급 알림·요청·건강정보를 종류별 해시(ime:<종류>)에 id로 저장한다.
+# 직접 한 통화·정기 검사·활동·적립·응급 알림·요청·건강정보·링 기록(머리 + 1분 값 조각)을 종류별 해시(ime:<종류>)에 id로 저장한다.
 # 대상자 이름·주소·전화(people)와 녹음·그림 파일은 올리지 않는다. 어느 기기에서 열어도 같은 기록이 보이게 하는 용도.
-RECORD_KINDS = ('calls', 'cistSessions', 'activities', 'points', 'alerts', 'requests', 'healthNotices')
+RECORD_KINDS = ('calls', 'cistSessions', 'activities', 'points', 'alerts', 'requests', 'healthNotices', 'ringImports', 'ringParts')
 RECORD_MAX = 200_000      # 기록 한 건 최대 글자 수
 RECORDS_BODY_MAX = 2_000_000
 
@@ -443,7 +443,7 @@ def selftest():
     assert check_records({'put': [{'kind': 'calls', 'rec': {'date': 'x'}}]}) is None          # id 없음
     assert check_records({'put': [{'kind': 'calls', 'rec': {'id': 'c1', 't': '가' * RECORD_MAX}}]}) is None
     assert check_records({'put': 'x'}) is None and check_records([]) is None
-    got = records_from([['c1', '{"id": "c1"}', 'c2', '깨짐'], None, [], [], [], [], []])
+    got = records_from([['c1', '{"id": "c1"}', 'c2', '깨짐'], None, [], [], [], [], [], [], []])
     assert got['calls'] == [{'id': 'c1'}] and got['cistSessions'] == [] and set(got) == set(RECORD_KINDS)
     configure({})
     assert health()['records'] is False

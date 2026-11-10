@@ -3,7 +3,7 @@
 // #/admin 전체 현황 · #/admin/people 대상자 관리 · #/admin/p/<id>[/<탭>] 대상자 상세
 
 import {
-  getData, setData, save, reloadData, saveAudio, getAudio, deleteAudio, clearAudio, startSync, removeRecord,
+  getData, setData, save, reloadData, saveAudio, getAudio, deleteAudio, clearAudio, startSync, removeRecord, removeRingImport,
   makeSalt, hashPassword, verifyPassword, displayName, currentAccount, setLogin
 } from './store.js';
 import { reseed, SEED_VERSION, baseInfo } from './seed.js';
@@ -1888,8 +1888,10 @@ function personPage([id, tab = 'summary'], params) {
     if (rec.bad?.length) modal({ title: `건너뛴 줄 ${rec.bad.length}개`, body: `<p class="desc">형식이 맞지 않아 계산에서 뺀 줄</p>${badList(rec.bad)}`, foot: '<button type="button" class="btn btn-primary" data-close>확인</button>' });
   };
   actions.delImport = async el => {
-    if (!(await confirmBox({ title: '불러오기 기록 삭제', text: '이 파일로 계산한 하룻밤 요약이 지워짐 (다른 파일의 밤은 남음)', ok: '삭제', danger: true }))) return;
+    if (!(await confirmBox({ title: '불러오기 기록 삭제', text: '이 파일로 계산한 하룻밤 요약이 지워짐 (다른 파일의 밤은 남음, 서버 저장분도 지워짐)', ok: '삭제', danger: true }))) return;
+    const imp = (d.ringImports || []).find(i => i.id === el.dataset.id);
     deleteRingImport(d, el.dataset.id);
+    if (imp) removeRingImport(imp);
     saveAndRender();
     toast('불러오기 기록 삭제됨');
   };
@@ -3942,4 +3944,12 @@ d0.accounts ??= [];
 window.addEventListener('hashchange', route);
 route();
 // 서버 기록 저장소가 연결돼 있으면 다른 기기에서 한 검사 기록을 받아 합친다
-startSync().then(changed => { if (changed) redrawForOutsideChange(); });
+startSync().then(changed => {
+  if (!changed) return;
+  // 서버에서 받은 링 기록으로 하룻밤 요약을 다시 계산하고 판정을 맞춘다
+  const d = getData();
+  const ringPeople = [...new Set((d.ringImports || []).map(i => i.personId))].filter(id => d.people.some(p => p.id === id));
+  for (const id of ringPeople) recomputeRing(d, id);
+  evaluate();
+  redrawForOutsideChange();
+});
