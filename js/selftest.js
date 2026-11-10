@@ -798,4 +798,28 @@ assert.equal(isOffTopic(regItem, '잘 모르겠는데 기억이 하나도 안 �
   assert.equal(other.info.call.cistEvery, undefined);                         // 다른 사람은 주기대로
 }
 
+// ======== 링 기록이 종합 케어 스코어에: 최근 7일 · 날짜 옮기기 · 심박 기저선 형성 중 ========
+{
+  const M = await import('./metrics.js');
+  const V = await import('./vitals.js');
+  const text = readFileSync(new URL('../sample/ring_sample.csv', import.meta.url), 'utf8');
+  const rp = { id: 'g1', enrolledAt: '2026-09-01', active: true, info: { call: { spo2Threshold: 90 }, device: { source: 'device', clockOffsetMin: 0, spo2OffsetPct: 0 } } };
+  const rd = { settings: { ...M.DEFAULT_SETTINGS }, people: [rp], calls: [], vitals: [], alerts: [], ringImports: [], ringNights: [] };
+  const rec = V.importRing(rd, 'g1', 'ring_sample.csv', text);
+  assert.equal(rec.lastNight, '2026-09-27');
+  const gv = (pid, dd) => V.pickVitals(rd, pid, dd);
+  const day = '2026-11-10';
+  let r = M.riskOf(rp, rd, day, gv);
+  assert.equal(r.signals.parts.spo2, null);                                   // 최근 7일 밖이라 안 셈
+  assert.equal(V.shiftRingImport(rd, rec.id, day), 44);
+  assert.equal(rd.ringImports[0].shiftDays, 44);
+  assert.ok(gv('g1', day)?.spo2Min);                                         // 옮긴 뒤 오늘 밤으로 읽힘
+  r = M.riskOf(rp, rd, day, gv);
+  assert.equal(r.signals.parts.spo2, 100);                                    // 기준 미만 3분 → 10분 기준 아래라 만점
+  assert.equal(r.signals.parts.heart, 100);                                   // 이전 30일 기록이 없어도 50~99 bpm이면 만점
+  assert.equal(r.signals.night.hrDelta, null);
+  rp.info.device.clockOffsetMin = 5; V.recomputeRing(rd, 'g1');               // 시계 보정을 바꿔도 옮긴 날짜는 유지
+  assert.ok(gv('g1', day));
+}
+
 console.log('selftest 통과');

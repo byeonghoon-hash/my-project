@@ -16,7 +16,7 @@ import {
   pointsBalance, pointsOn, pointsHistory, callReward, gameReward, activityStats, activityOps, attendance, healthToday, noticeState, checkNotice,
   fmtDate, fmtMD, fmtMDW, fmtYMDW, fmtStamp, fmtDur, fmtNum, fmtUnit, timelineRange, layoutLabels, completionDelta
 } from './metrics.js';
-import { getNightVitals, importRing, recomputeRing, deleteRingImport } from './vitals.js';
+import { getNightVitals, importRing, recomputeRing, deleteRingImport, shiftRingImport } from './vitals.js';
 import { startRing, runCall, nextItem, stopCall, prepareCall, summarizeCall, getHealth, fetchVoice } from './call.js';
 import {
   scorePct, scoreItem, orientationParts, countAnimals, SELF_QUESTIONS, checkSummary, AI_CONSENT_TEXT, SCRIPT,
@@ -1866,7 +1866,25 @@ function personPage([id, tab = 'summary'], params) {
       modal({ title: '불러오기 실패', body: `<p>${esc(file.name)} · ${esc(error.message)}</p>${error.bad?.length ? badList(error.bad) : ''}`, foot: '<button type="button" class="btn btn-primary" data-close>확인</button>' });
       return;
     }
+    evaluate([p.id]); // 야간 SpO2·심박 알림을 새 기록으로 다시 판정
+    render();
     toast(`링 데이터 ${rec.validNights + rec.invalidNights}밤 불러옴 (유효 ${rec.validNights})`);
+    if (!rec.validNights && !rec.invalidNights) {
+      modal({ title: '밤 기록 없음', body: '<p class="desc">22:00~07:00 사이 기록이 없음 · 낮에 잰 기록은 야간 생체신호·종합 케어 스코어에 쓰지 않음</p>', foot: '<button type="button" class="btn btn-primary" data-close>확인</button>' });
+      return;
+    }
+    // 마지막 밤이 최근 7일 밖이면 판정·케어 스코어에 들어가지 않는다 → 시험용 파일이면 날짜를 옮길 수 있게
+    if (rec.lastNight && rec.lastNight < addDays(today, -6)) {
+      const move = await confirmBox({ title: '최근 7일 밖의 기록', ok: '날짜 옮기기', cancel: '그대로 두기',
+        text: `마지막 밤이 ${fmtDate(rec.lastNight)}이라 최근 7일로 보는 종합 케어 스코어·야간 판정에 들어가지 않음. 시험용 파일이면 마지막 밤을 오늘(${fmtDate(today)})로 옮겨 불러올 수 있음 (불러오기 기록에 표시)` });
+      if (move) {
+        const n = shiftRingImport(d, rec.id, today);
+        evaluate([p.id]);
+        render();
+        toast(`측정 날짜 ${n}일 옮김`);
+      }
+      return;
+    }
     if (rec.bad?.length) modal({ title: `건너뛴 줄 ${rec.bad.length}개`, body: `<p class="desc">형식이 맞지 않아 계산에서 뺀 줄</p>${badList(rec.bad)}`, foot: '<button type="button" class="btn btn-primary" data-close>확인</button>' });
   };
   actions.delImport = async el => {
@@ -2118,7 +2136,10 @@ function summaryTab(p, ai, T) {
         <div class="card-head"><h2>종합 케어 스코어</h2><b class="score">${r.score ?? '-'}<small>점</small></b></div>
         ${Object.entries(CARE_LABEL).map(([k, [label, w]]) => {
           const val = r.signals.parts[k], lv = r.signals[k];
-          return `<div class="part"><div class="row"><span>${label} ${lv ? levelChip(lv) : ''}</span><b class="num">${val == null ? '측정 없음' : `${fmtNum((val * w) / 100, 1)}<small class="muted"> / ${w}점</small>`}</b></div>
+          const why = val != null ? '' : (k === 'spo2' || k === 'heart') && p.info?.device?.source === 'device'
+            ? ((getData().ringNights || []).some(n => n.personId === p.id) ? '최근 7일 유효한 밤 없음' : '링 데이터 없음')
+            : k === 'response' && !r.signals.status.resp?.ready ? '기저선 형성 중' : '측정 없음';
+          return `<div class="part"><div class="row"><span>${label} ${lv ? levelChip(lv) : ''}</span><b class="num">${val == null ? `<span class="muted small">${why}</span>` : `${fmtNum((val * w) / 100, 1)}<small class="muted"> / ${w}점</small>`}</b></div>
             <div class="bar ${val == null ? '' : val >= 75 ? 'low' : val >= 55 ? 'mid' : 'bad'}"><i style="width:${val ?? 0}%"></i></div></div>`;
         }).join('')}
         <p class="muted small">합계 ${getData().settings.riskMid ?? 75}점 이상 낮음 · ${getData().settings.riskHigh ?? 55}~${(getData().settings.riskMid ?? 75) - 1}점 주의 · ${getData().settings.riskHigh ?? 55}점 미만 높음(의뢰) · 지표별 주의·의뢰가 있으면 그 단계 · 측정 없는 지표는 빼고 환산</p>
@@ -2167,7 +2188,7 @@ function ringCard(p) {
       <div id="ring-body">
       ${device && !last ? `<p class="wait">링 데이터 없음 · CSV 불러오기 필요</p>` : last ? `
         <dl class="info">
-          <dt>측정일 (깬 날)</dt><dd>${fmtDate(last.date)} ${isValidNight(last, s) ? '' : '<span class="chip chip-mid">무효한 밤</span>'}</dd>
+          <dt>측정일 (깬 날)</dt><dd>${fmtDate(last.date)} ${isValidNight(last, s) ? '' : `<span class="chip chip-mid">무효한 밤 · ${last.wearHours < 4 ? '착용 4시간 미만' : last.sqi < s.sqiMin ? `신호품질 ${s.sqiMin} 미만` : 'SpO₂ 값 없음'}</span>`}${daysBetween(last.date, today) > 6 ? ' <span class="chip chip-neutral">최근 7일 밖 · 케어 스코어 미반영</span>' : ''}</dd>
           <dt>야간 최저 SpO₂</dt><dd class="num">${fmtUnit(last.spo2Min, '%')}</dd>
           <dt>${thr}% 미만 시간</dt><dd>${fmtUnit(last.spo2BelowMin, '분')}</dd>
           <dt>안정 시 심박</dt><dd>${fmtUnit(last.hrRest, 'bpm')}</dd>
@@ -2180,7 +2201,7 @@ function ringCard(p) {
         ${imports.length ? `<div class="table-wrap" style="margin-top:var(--s3)"><table class="table compact rtable">
           <thead><tr><th>파일</th><th>측정 기간</th><th class="n">샘플</th><th class="n">간격</th><th class="n">유효/무효 밤</th><th class="n">결측</th><th><span class="sr-only">삭제</span></th></tr></thead>
           <tbody>${imports.map(i => `<tr>
-            <td data-label="파일" class="clip" title="${esc(i.fileName)}">${esc(i.fileName)}</td><td data-label="측정 기간" class="num">${stamp(i.from)} ~ ${stamp(i.to)}</td>
+            <td data-label="파일" class="clip" title="${esc(i.fileName)}">${esc(i.fileName)}</td><td data-label="측정 기간" class="num">${stamp(i.from)} ~ ${stamp(i.to)}${i.shiftDays ? ` <span class="chip chip-info">날짜 ${i.shiftDays > 0 ? '+' : ''}${i.shiftDays}일 옮김</span>` : ''}</td>
             <td data-label="샘플" class="n">${fmtUnit(i.samples, '줄')}</td><td data-label="간격" class="n">${fmtUnit(i.intervalSec, '초', 1)}</td>
             <td data-label="유효/무효 밤" class="n">${i.validNights} / ${i.invalidNights}</td><td data-label="결측" class="n">${fmtUnit(i.missingPct, '%', 1)}</td>
             <td class="end">${btn(icon('trash', 16), `data-act="delImport" data-id="${i.id}" aria-label="불러오기 기록 삭제"`, 'danger', 'sm btn-icon')}</td></tr>`).join('')}</tbody>

@@ -172,6 +172,8 @@ getNightVitals(personId, date /* 'YYYY-MM-DD' */) → {
 
 첫 줄은 머리글 `timestamp,hr,spo2,sqi,worn`, 그다음 한 줄에 샘플 하나: `2026-10-01T23:00:00,62,95,0.91,1`. `timestamp`는 로컬 ISO 시각(`YYYY-MM-DDTHH:MM:SS`, 시간대 표기 없음) 또는 초 단위 유닉스 시간(숫자). `hr`은 bpm, `spo2`는 %, 둘 중 빈칸이나 0은 결측. `sqi`는 신호품질 0~1, `worn`은 착용 1 / 미착용 0. 측정 간격은 자유(타임스탬프 차이의 중앙값으로 계산)이고, 한 파일에 여러 밤이 들어가도 된다. 앱은 22:00~07:00을 하룻밤(날짜는 깬 날)으로 묶고, 착용 중이며 sqi ≥ 설정값(기본 0.6)인 샘플만 써서 1분 중앙값 SpO2의 최저값·개인 기준 미만 분 수, 1분 평균 심박 중 가장 낮은 연속 5분 평균, 착용 시간(worn 샘플 수 × 간격)을 계산한다. 착용 4시간 이상이고 평균 sqi ≥ 설정값인 밤만 유효하다. CSV를 읽는 코드는 `parseRingCsv` 하나뿐이라, 펌웨어 출력이 바뀌면 그 함수만 고친다. 시험용 파일: `sample/ring_sample.csv` (하룻밤, 1초 간격, 23:00~06:30, 15분 미착용·5분 잡음·SpO2 89% 3분).
 
+종합 케어 스코어·야간 판정은 최근 7일 밤만 쓴다. 불러온 파일의 마지막 밤이 7일보다 오래되면(시험용 파일) [날짜 옮기기]를 물어보고, 고르면 마지막 밤이 오늘이 되게 하루 단위로 옮긴다(`shiftRingImport`, 불러오기 기록 `shiftDays`·'날짜 +n일 옮김' 칩). 22:00~07:00 기록이 없으면 '밤 기록 없음' 안내, 무효한 밤은 사유(착용 4시간 미만·신호품질)를 칩으로 보여 준다. 링을 불러오면 바로 다시 판정(`evaluate`)한다.
+
 원본 샘플은 저장하지 않는다(2주면 100만 줄 이상). 1분 단위로 묶은 값(`ringImports[].minutes`)과 하룻밤 요약(`ringNights`)만 저장하고, 시계 보정(분)·SpO2 보정(%p)·개인 SpO2 기준을 바꾸면 1분 값으로 다시 계산한다. 같은 밤은 나중에 불러온 파일이 덮어쓴다. 시드를 다시 만들어도 링 데이터는 지우지 않는다.
 
 ## 데이터 (js/store.js)
@@ -203,7 +205,7 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
              selfReport: { sleep: { answer, value }, mood: { answer, value } } | null,
              chat: { question, answer } | null, requests: ['대상자 말 그대로', ...], edited: { by, at }, audioId }],
   vitals: [{ personId, date, hrRest, spo2Min, spo2BelowMin, wearHours, sqi, steps }],       // 모의
-  ringImports: [{ id, personId, fileName, importedAt, samples, intervalSec, missingPct, from, to, validNights, invalidNights, minutes }],
+  ringImports: [{ id, personId, fileName, importedAt, samples, intervalSec, missingPct, from, to, validNights, invalidNights, lastNight, shiftDays?, minutes }],
   ringNights: [{ personId, date, importId, hrRest, spo2Min, spo2BelowMin, wearHours, sqi, valid }], // 링 실측
   alerts: [{ id, personId, createdAt, type: 'cognition'|'response'|'spo2'|'heart'|'hearing'|'noAnswer'|'emergency'|'cistReview'|'cistOverdue'|'selfReport',
              level: 'watch'|'caution'|'refer', status: 'open'|'referred'|'closed',
@@ -294,7 +296,7 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 | 통화 인지검사 | 40 | 최근 7회 평균이 평소 점수(처음 14회 평균)보다 1점(%p) 낮을 때마다 1점 감점 | 오차범위(`personalBand` 10점) 넘는 하락이 3회(`cautionRun`) 연속 | 10점 넘는 하락 5회(`referRun`) 연속, 또는 최근 7회 평균 15점(`referDrop`) 이상 하락 |
 | 통화 응답(지연·휴지) | 25 | 문항당 응답 지연+휴지가 평소(처음 14회)보다 1초 늘 때마다 10점 감점 | +1.0초(`respCaution`) | +2.0초(`respRefer`) |
 | 야간 SpO₂ | 20 | 최근 7일 유효한 밤 중 기준 미만 10분 이상(`spo2Below90Alert`)인 밤이 아닌 비율 | 그런 밤 2밤(`spo2CautionNights`) | 3밤(`spo2AlertNights`) 이상 |
-| 안정 시 심박 | 15 | 최근 7일 평균이 이전 30일 평균과 5 bpm 넘게 다르면 1 bpm당 1.5점 감점 | ±8 bpm(`hrCaution`) | ±15 bpm(`hrRefer`), 또는 7일 평균 100 bpm 이상·50 bpm 미만 |
+| 안정 시 심박 | 15 | 최근 7일 평균이 이전 30일 평균과 5 bpm 넘게 다르면 1 bpm당 1.5점 감점 (이전 30일에 7밤 미만이면 7일 평균 50~99 bpm 만점, 밖이면 0점) | ±8 bpm(`hrCaution`) | ±15 bpm(`hrRefer`), 또는 7일 평균 100 bpm 이상·50 bpm 미만 |
 | 합계 | 100 | 측정값이 없는 지표는 빼고 100점으로 환산 | 75점(`riskMid`) 미만 | 55점(`riskHigh`) 미만 |
 
 - 인지 단계 = 위 점수 기준(`pointLevel`)과 표준편차 기준(`cognitionLevel`: −1.5 SD 하루 관찰 · 3회 연속 주의 · 5회 연속 또는 7회 평균 −2.0 SD 의뢰) 중 높은 것. 기저선 형성 중이면 인지 단계 없음, 인지 점수는 최근 점수(%), 통화 응답은 계산에서 뺀다.

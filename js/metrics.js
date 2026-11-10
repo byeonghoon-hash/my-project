@@ -290,7 +290,8 @@ export function personStatus(person, allCalls, s, today, getV) {
       // 야간 SpO2: 기준 미만 10분 이상인 밤이 최근 7일 중 2밤 주의 · 3밤 의뢰
       spo2: bad >= s.spo2AlertNights ? 'refer' : bad >= (s.spo2CautionNights ?? 2) ? 'caution' : null,
       // 안정 시 심박: 이전 30일 대비 변화 또는 7일 평균이 범위 밖
-      heart: hrOff == null ? null : hrOff >= (s.hrRefer ?? 15) || night.hrNow >= 100 || night.hrNow < 50 ? 'refer' : hrOff >= (s.hrCaution ?? 8) ? 'caution' : null,
+      heart: night.hrNow != null && (night.hrNow >= 100 || night.hrNow < 50) ? 'refer'
+        : hrOff == null ? null : hrOff >= (s.hrRefer ?? 15) ? 'refer' : hrOff >= (s.hrCaution ?? 8) ? 'caution' : null,
       // 청력 저하 기록이 있는 사람은 난청 의심 알림 대신 '보청기 착용·배터리 확인'으로 안내한다
       hearing: hearingFlag && !hearingKnown(person) ? 'watch' : null
     }
@@ -439,8 +440,9 @@ function nightSummary(personId, today, s, getV) {
   };
   const recent = [...Array(7)].map((_, k) => valid(k)).filter(Boolean);
   const before = [...Array(30)].map((_, k) => valid(k + 7)).filter(Boolean);
-  const hrNow = recent.length ? mean(recent.map(v => v.hrRest)) : null;
-  const hrBase = before.length >= 7 ? mean(before.map(v => v.hrRest)) : null;
+  const hrs = xs => xs.map(v => v.hrRest).filter(v => v != null);
+  const hrNow = hrs(recent).length ? mean(hrs(recent)) : null;
+  const hrBase = hrs(before).length >= 7 ? mean(hrs(before)) : null; // 이전 30일에 7밤 이상 있어야 변화를 본다
   return {
     validNights: recent.length,
     badNights: recent.filter(v => v.spo2BelowMin >= s.spo2Below90Alert).length,
@@ -461,7 +463,9 @@ function careParts(st, comp, night) {
     cognition: st.base.ready && st.recentDrop != null ? clamp(100 + 2.5 * Math.min(0, st.recentDrop)) : st.lastScore,
     response: st.resp?.ready ? clamp(100 - 40 * Math.max(0, st.resp.delta)) : null,
     spo2: night.validNights ? 100 * (1 - night.badNights / night.validNights) : null,
-    heart: night.hrDelta == null ? null : clamp(100 - Math.max(0, Math.abs(night.hrDelta) - 5) * 10)
+    // 심박: 이전 30일 기록이 모자라면(기저선 형성 중) 7일 평균이 50~99 bpm이면 만점, 밖이면 0점
+    heart: night.hrDelta != null ? clamp(100 - Math.max(0, Math.abs(night.hrDelta) - 5) * 10)
+      : night.hrNow != null ? (night.hrNow >= 50 && night.hrNow < 100 ? 100 : 0) : null
   };
 }
 

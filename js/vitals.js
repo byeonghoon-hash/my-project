@@ -162,15 +162,28 @@ export function recomputeRing(data, personId) {
   const opts = personOpts(data, person);
   const merged = new Map();
   for (const imp of (data.ringImports || []).filter(i => i.personId === personId)) {
-    const nights = nightsFromMinutes(imp.minutes, imp.intervalSec, opts);
+    // shiftDays: 시험용 파일의 날짜를 하루 단위로 옮겨 불러온 경우 (불러오기 기록에 표시)
+    const o = { ...opts, clockOffsetMin: opts.clockOffsetMin + (imp.shiftDays || 0) * 1440 };
+    const nights = nightsFromMinutes(imp.minutes, imp.intervalSec, o);
     imp.validNights = nights.filter(n => n.valid).length;
     imp.invalidNights = nights.length - imp.validNights;
-    const stamp = m => nowStamp(new Date((m + opts.clockOffsetMin) * 60000));
+    imp.lastNight = nights.at(-1)?.date ?? null;
+    const stamp = m => nowStamp(new Date((m + o.clockOffsetMin) * 60000));
     imp.from = stamp(imp.firstMin);
     imp.to = stamp(imp.lastMin);
     for (const n of nights) merged.set(n.date, { personId, importId: imp.id, ...n });
   }
   data.ringNights = [...(data.ringNights || []).filter(n => n.personId !== personId), ...merged.values()];
+}
+
+// 불러온 파일의 날짜를 옮긴다: 마지막 밤이 toDate(깬 날)가 되게. 시험용 파일을 최근 7일 판정에 넣어 볼 때 쓴다
+export function shiftRingImport(data, importId, toDate) {
+  const imp = (data.ringImports || []).find(i => i.id === importId);
+  if (!imp?.lastNight) return 0;
+  const days = Math.round((Date.parse(toDate + 'T00:00:00') - Date.parse(imp.lastNight + 'T00:00:00')) / 86400000);
+  imp.shiftDays = (imp.shiftDays || 0) + days;
+  recomputeRing(data, imp.personId);
+  return days;
 }
 
 export function deleteRingImport(data, importId) {
