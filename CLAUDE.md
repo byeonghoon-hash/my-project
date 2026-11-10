@@ -25,7 +25,7 @@ server.py         앱 파일 제공 + API 중계 (표준 라이브러리만). /a
 .env.example      키 칸 견본 (.env는 사용자가 복사해 키를 넣는다, git에 올리지 않음)
 .gitignore        .env · cache/ · public/ · .vercel · __pycache__/
 vercel.json       Vercel 배포: 앱 파일만 public/으로 복사해 내보내고, api/*.py를 함수로
-api/              Vercel 함수 (health·tts·chat·summarize·records). 처리 코드는 server.py 것을 그대로 쓰고 키는 Vercel 환경 변수에서
+api/              Vercel 함수 (health·tts·chat·summarize·records). 처리 코드는 server.py 것을 그대로 쓰고 키는 Vercel 환경 변수에서. Vercel은 함수 파일을 경로로 직접 불러와 api 폴더가 import 경로에 없으므로, 파일마다 맨 위에서 자기 폴더를 sys.path에 넣는다(server selftest가 같은 방식으로 불러 본다)
 cache/tts/        고정 문장 mp3 캐시 (server.py가 만든다)
 index.html        단일 페이지. 해시 라우팅: #/ (첫 화면) · #/user · #/user/<id>[/activities|records|points|health[/<공지 id>]|play/<key>] (어르신 앱) · #/login · #/signup
                   · #/admin (전체 현황) · #/admin/people[?view=requests|journals] (대상자 관리) · #/admin/people/new[?id=] (대상자 추가·전체 수정)

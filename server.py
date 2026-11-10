@@ -495,6 +495,18 @@ def selftest():
     except urllib.error.HTTPError as e:
         assert e.code == 403
     srv.shutdown()
+
+    # Vercel 함수: Vercel 실행기처럼 파일 경로로 직접 불러와도(api 폴더가 import 경로에 없음) handler가 있어야 한다
+    import importlib.util
+    for f in sorted((ROOT / 'api').glob('[!_]*.py')):
+        saved_path = list(sys.path)
+        sys.modules.pop('_vercel', None)
+        sys.path[:] = [p for p in sys.path if Path(p or '.').resolve() != ROOT / 'api']  # 매번 api 폴더 없이 시작
+        spec = importlib.util.spec_from_file_location('api.' + f.stem, f)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        assert issubclass(mod.handler, BaseHTTPRequestHandler), f.name
+        sys.path[:] = saved_path
     print('server selftest 통과')
 
 
