@@ -12,7 +12,7 @@ import {
 import { pickVitals, recomputeRing } from './vitals.js';
 
 // 시드 버전. 올리면 저장된 시연 데이터를 새로 만든다 (회원 계정·링 실측 데이터는 유지).
-export const SEED_VERSION = 11;
+export const SEED_VERSION = 12;
 
 // 전화번호는 모두 가짜(010-0000-), 보호자 이름은 지어낸 것, 의료기관명은 '○○내과의원'.
 const phone = n => `010-0000-${n}`;
@@ -119,7 +119,7 @@ const PEOPLE = [
         { name: '로수바스타틴 10mg', dose: '1일 1회 저녁', start: '2019-03-01', changed: '', reason: '' }
       ],
       devices: ['안경·돋보기'],
-      call: { ...baseInfo().call, title: '윤병훈 님', rate: 0.9 },
+      call: { ...baseInfo().call, title: '윤병훈 님', rate: 0.9, cistEvery: true }, // 매 통화 정기 인지검사
       contacts: [{ name: '윤재석', relation: '아들', phone: phone('3010'), priority: 1, consent: true },
         { name: '김태식', relation: '마을 이장', phone: phone('3110'), priority: 2, consent: false }],
       device: { name: 'I-ME 링 (자작)', source: 'device', clockOffsetMin: 0, spo2OffsetPct: 0 }

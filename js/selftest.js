@@ -780,4 +780,22 @@ assert.equal(isOffTopic(regItem, '잘 모르겠는데 기억이 하나도 안 �
   assert.equal(M.riskOf(pp, { settings: { ...s, riskMid: 60, riskHigh: 50 }, people: [pp], calls: low, alerts: [] }, '2026-09-27', () => null).level, 'low');
 }
 
+// ======== 매 통화 정기 인지검사 (윤병훈) ========
+{
+  const M = await import('./metrics.js');
+  const day = '2026-11-10';
+  const sd = makeSeed(undefined, day);
+  const yun = sd.people.find(x => x.name === '윤병훈');
+  assert.equal(yun.info.call.cistEvery, true);
+  let st = M.cistStatus(yun, sd, day);
+  assert.equal(st.isDueToday, true);                                          // 오늘 아직 안 했으면 정기 검사
+  assert.equal(st.delayed, false);
+  sd.cistSessions.push({ id: 'sx', personId: yun.id, date: day, status: 'draft', items: [], modes: {} });
+  st = M.cistStatus(yun, sd, day);
+  assert.equal(st.isDueToday, false);                                         // 오늘 했으면 끝
+  assert.equal(st.due, addDays(day, 1));                                      // 내일 또
+  const other = sd.people.find(x => x.name === '한복남');
+  assert.equal(other.info.call.cistEvery, undefined);                         // 다른 사람은 주기대로
+}
+
 console.log('selftest 통과');

@@ -1007,14 +1007,17 @@ export function cistStatus(person, data, today) {
   const all = cistSessionsOf(data, person.id);
   const conf = all.filter(x => x.status === 'confirmed');
   const latest = conf.at(-1) || null, prev = conf.at(-2) || null, prev2 = conf.at(-3) || null;
-  const due = cistDue(person, data);
+  const doneToday = all.some(x => x.date === today);
+  // 매 통화 정기 인지검사(info.call.cistEvery): 매일 문항 대신 통화할 때마다 정기 검사. 예정일은 오늘(했으면 내일), 지연 없음
+  const every = !!person.info?.call?.cistEvery;
+  const due = every ? (doneToday ? addDays(today, 1) : today) : cistDue(person, data);
   return {
     latest, prev, draft: all.filter(x => x.status === 'draft').at(-1) || null, count: all.length,
     score: latest ? cistScore(latest) : null,
     change: cistChange(prev, latest), change2: cistChange(prev2, prev),
-    due, doneToday: all.some(x => x.date === today),
-    isDueToday: person.active && due <= today && !all.some(x => x.date === today),
-    delayed: person.active && daysBetween(due, today) >= 7 && !all.some(x => x.date >= due)
+    due, doneToday, every,
+    isDueToday: person.active && due <= today && !doneToday,
+    delayed: !every && person.active && daysBetween(due, today) >= 7 && !all.some(x => x.date >= due)
   };
 }
 // 위험도 규칙: 확정 회차끼리, 원형 문항이 같은 비교만. 절단점(점수 자체로 정상·이상)은 쓰지 않는다.

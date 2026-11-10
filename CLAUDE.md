@@ -128,7 +128,7 @@ I-ME 로고와 큰 버튼 두 개: **[대상자 화면]** **[관리자 화면]**
 
 ## 정기 인지검사(전화형) — 화면에 'CIST'라고 쓰지 않는다
 
-- 매일 통화와 별개. 등록 직후 1회, 그 뒤 `settings.cistIntervalWeeks`(2/4/8주, 기본 2)마다. 검사일(`cistDue`: 기본 정보 ③ '다음 정기 검사일' → 없으면 마지막 회차 + 주기)에는 매일 문항 대신 이것을 한다. 상한 `cistMaxSec` 900초. AI 대화는 끝에 한 번만.
+- 매일 통화와 별개. 등록 직후 1회, 그 뒤 `settings.cistIntervalWeeks`(2/4/8주, 기본 2)마다. 대상자별로 '매 통화'(기본 정보 ③ `info.call.cistEvery`)를 고르면 매일 문항 대신 통화할 때마다 정기 검사를 한다(예정일 = 오늘, 했으면 내일, 지연 알림 없음, `cistStatus().every`). 이때 매일 문항 지표(인지검사 점수·표준편차·개인 기저선·응답 지연·휴지)는 그 사람의 새 통화로는 채워지지 않는다. 검사일(`cistDue`: 기본 정보 ③ '다음 정기 검사일' → 없으면 마지막 회차 + 주기)에는 매일 문항 대신 이것을 한다. 상한 `cistMaxSec` 900초. AI 대화는 끝에 한 번만.
 - 기준 문서: 인지선별검사(CIST) 검사지·시행 매뉴얼(보건복지부·중앙치매센터). 지시문·순서·채점 기준을 그대로 따르고, 전화로 할 수 없는 부분만 바꾼다. 그림 자극(그림1~5)은 넣지 않았다.
 - 순서(`cistPlan`, 검사지 번호 `no`): 인사·소개('지금부터 {호칭}의 기억력과 사고력을…') → 1 시간(연·월·일·요일) → 2 장소 → 3 기억등록(문장 A/B 회차 교대, 정확히 두 번, '/'마다 0.4초, 채점 안 함) → 4 숫자 바로 따라 말하기(6-9-7-3 · 5-7-2-8-4, 한 번만 1초 간격, 다시 요청하면 '최대한 생각나시는 대로…'만) → 5 거꾸로 말하기(대상자 이름으로 연습, 한 번 더 불러 주기 가능) → 6 도형모사 → 7·8 시각추론 → 9 언어추론(비문해용 읽어 주기 지시문, 다시 읽기 1번) → 10 기억회상(등록 3분 뒤, 모자라면 잡담 한 문항) → '더 이상 생각나는 것은 없으신가요?' → 재인(못 떠올린 낱말만, 앞 재인 대답에서 말한 낱말도 재인 인정) → 11 이름대기(그림 대신 말로 설명) → 12 이해력(한 번 더 불러 주기 가능) → 13 유창성(마지막) → 끝인사 → 안부 한 번.
 - 매뉴얼 채점: 고친 대답은 마지막 대답으로. 연도는 네 자리만 정답(두 자리·육십갑자면 한 번 되묻기 `yearFollowUp`). 순우리말 날짜(초하루~그믐)·정월·동짓달·섣달 인정. 유창성은 가공 음식·곡류·해조류 '제외'(옥수수·견과류·뿌리채소는 인정), 중복은 하나. 이름대기는 사투리(그누·주사우) 인정.
@@ -181,7 +181,7 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 ```js
 {
   settings: {...},                       // 아래 판정 파라미터
-  seedVersion: 11,                        // 올리면 시연 데이터를 새로 만든다 (accounts·settings·링 데이터는 유지)
+  seedVersion: 12,                        // 올리면 시연 데이터를 새로 만든다 (accounts·settings·링 데이터는 유지)
   people: [{ id, name, sex, birth, age, phone, phoneType, education, canRead, guardianPhone, preferredTime, enrolledAt,
              active, closed: { reason, date, by } | null,    // 삭제하지 않고 종결 (active=false)
              referral, dementiaCenter: '예'|'아니요'|'모름',
@@ -190,7 +190,7 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
                conditions: [{ name, year }], acute: [{ name, start, end, hospitalized, memo }],
                meds: [{ name, dose, start, changed, reason }],
                devices: ['보청기 우측', ...], hearing, vision, speech, mobility, living, bodyMemo,
-               call: { title, days: [0..6], rate, rereads, retry: { count, interval }, selfReport, pause: { from, to, reason } | null, spo2Threshold, firstCall },
+               call: { title, days: [0..6], rate, rereads, retry: { count, interval }, selfReport, pause: { from, to, reason } | null, spo2Threshold, firstCall, cistNext, cistEvery },
                contacts: [{ name, relation, phone, priority, consent }], clinic: { name, phone },
                agencies: { center: { name, phone }, dementia: { name, phone } },
                device: { name, source: 'none'|'mock'|'device', clockOffsetMin, spo2OffsetPct },
@@ -414,7 +414,7 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 
 처음 실행해서 저장된 데이터가 없거나 `seedVersion`이 바뀌었으면 자동 생성(회원 계정·설정·링 실측 데이터 유지). 대상자 10명, 61일치(오늘 포함). **오늘 통화는 만들지 않는다**(아직 받지 않은 상태라 어르신 화면에서 전화가 울린다). 건강정보 공지 4건(3일 간격). 위험도 분포는 **높음 2 · 주의 3 · 낮음 5**가 되도록 사람마다 난수 시드를 바꿔 가며 만든다.
 - 안정 5명(한복남·이옥분·박순자·최영희·오금례, 낮음) · 점진적 저하 이상철(인지 '의뢰' → 높음) · COPD·야간 저산소 서정길(SpO2 기준 88%, 높음) · 보청기·재질문 김말순(청력 저하 기록 → 주의, 그제 안부 대화에서 낙상 언급 → 자기보고 알림 주의) · 무응답 정두만(어제·그제 미응답 → 주의) · 윤병훈(최근 2주 지연 회상 하락, z ≈ −1.6~−1.8 → '인지 경미한 저하', 주의).
-- 윤병훈: 남 26세 독거, 울주군 웅촌면 대학길 27 (실제 위치 35.456938, 129.195938), 담당 윤병훈 간호사, 데이터 출처 '기기'(모의 생체신호 없음, 링 CSV로 채움).
+- 윤병훈: 남 26세 독거, 울주군 웅촌면 대학길 27 (실제 위치 35.456938, 129.195938), 담당 윤병훈 간호사, 데이터 출처 '기기'(모의 생체신호 없음, 링 CSV로 채움). 정기 인지검사 '매 통화'(`cistEvery`): 오늘부터 전화를 받으면 매번 정기 인지검사. 지난 기록(매일 문항 61일치·정기 검사 3회)은 그대로.
 - 한복남: 급성질환 '감기' 5일 전부터 진행 중. 이상철: 복용약 9일 전 변경. 김말순: 보청기 우측·청력 중등도 이상·거동 대부분 도움.
 - 담당자: 박지연 간호사 · 윤병훈 간호사 · 김민수 사회복지사.
 - 위치: 나머지 9명은 법정리 9곳에 임의 좌표, 주소는 '울주군 웅촌면 ○○리'처럼 리까지만. 박순자(검단리)는 표의 좌표가 경계 밖이라 가장 가까운 경계 안쪽으로 옮겼다.

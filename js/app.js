@@ -2520,7 +2520,7 @@ function cistTab(p) {
   return `
     <section class="card">
       <div class="card-head"><h2>정기 인지검사(전화형)</h2>
-        <div class="row"><span class="muted small">다음 검사일 ${fmtDate(st.due)}${st.delayed ? ' <span class="chip chip-mid">검사 지연</span>' : ''} · ${d.settings.cistIntervalWeeks || 2}주마다</span>
+        <div class="row"><span class="muted small">${st.every ? '매 통화 정기 인지검사 (매일 문항 대신)' : `다음 검사일 ${fmtDate(st.due)}${st.delayed ? ' <span class="chip chip-mid">검사 지연</span>' : ''} · ${d.settings.cistIntervalWeeks || 2}주마다`}</span>
           <a class="btn btn-ghost btn-sm" href="#/admin/questions?tab=cist">방식 설정</a></div></div>
       ${all.length || tests.length ? `<div class="chartbox"><canvas id="cistChart" role="img" aria-label="정기검사 원형 유지 점수와 대면 검사 점수"></canvas></div>
         ${legendHtml([['원형 유지 점수', 'var(--accent)'], ['대면 검사 (오른쪽 축)', 'var(--ink-2)'], ['방식 변경', 'var(--faint)', true]])}` : ''}
@@ -2799,7 +2799,8 @@ function infoTab(p, form = false) {
         <dt>호칭</dt><dd>${esc(c.title || '-')}</dd>
         <dt>통화 시각·요일</dt><dd>${esc(p.preferredTime)} (±1시간) · ${(c.days || []).length === 7 ? '매일' : (c.days || []).map(k => DAYS[k]).join('·')}</dd>
         <dt>첫 통화일</dt><dd>${fmtDate(c.firstCall)}</dd>
-        <dt>다음 정기 검사일</dt><dd>${fmtDate(cistDue(p, getData()))}${c.cistNext ? ' <span class="chip chip-info">직접 지정</span>' : ''}</dd>
+        <dt>정기 인지검사</dt><dd>${c.cistEvery ? '매 통화 (매일 문항 대신)' : `${getData().settings.cistIntervalWeeks || 2}주마다`}</dd>
+        ${c.cistEvery ? '' : `<dt>다음 정기 검사일</dt><dd>${fmtDate(cistDue(p, getData()))}${c.cistNext ? ' <span class="chip chip-info">직접 지정</span>' : ''}</dd>`}
         <dt>평소 통화 장소</dt><dd>${esc(c.place || '집')}</dd>
         <dt>말 속도</dt><dd>${c.rate ?? 0.9}</dd><dt>질문 다시 읽기</dt><dd>최대 ${c.rereads ?? 1}회</dd>
         <dt>무응답 재발신</dt><dd>${c.retry?.count ?? 0}회 · ${c.retry?.interval ?? 30}분 간격</dd>
@@ -2820,6 +2821,7 @@ function infoTab(p, form = false) {
         ${form ? '' : `<label>외부 AI 서비스 이용 동의<select name="ai-consent">${opts(['동의', '미동의'], i.consent?.ai === true ? '동의' : '미동의')}</select><span class="help">${AI_CONSENT_TEXT}</span></label>`}
         <label>SpO₂ 알림 기준 (%)<input name="spo2" type="number" step="1" min="80" max="95" value="${c.spo2Threshold ?? 90}"></label>
         <label>첫 통화일<input name="firstCall" type="date" value="${c.firstCall || ''}"></label>
+        <label>정기 인지검사<select name="cistEvery">${opts(['주기마다', '매 통화'], c.cistEvery ? '매 통화' : '주기마다')}</select><span class="help">매 통화: 매일 문항 대신 통화할 때마다 정기 인지검사(전화형)</span></label>
         <label>다음 정기 검사일<input name="cistNext" type="date" value="${c.cistNext || (form ? '' : cistDue(p, getData()) || '')}"><span class="help">비우면 마지막 회차 + 주기</span></label>
         <label>평소 통화 장소<input name="place" value="${esc(c.place || '집')}" placeholder="집"></label>
       </div>
@@ -2921,7 +2923,7 @@ function saveInfoSection(p, sec, f) {
       days: [...f.querySelectorAll('[name=day]:checked')].map(x => +x.value),
       pause: from ? { from, to: F('p-to').value, reason: F('p-reason').value.trim() } : null,
       spo2Threshold: +F('spo2').value || 90, firstCall: F('firstCall').value,
-      place: F('place').value.trim() || '집'
+      place: F('place').value.trim() || '집', cistEvery: F('cistEvery').value === '매 통화'
     };
     // 다음 정기 검사일: 계산값과 같으면 저장하지 않는다 (직접 바꾼 날만 남긴다)
     const next = F('cistNext').value;
