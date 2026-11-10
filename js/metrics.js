@@ -23,6 +23,15 @@ export const DEFAULT_SETTINGS = {
   sdMinHr: 3,              //   심박 bpm
   sdMinLatency: 0.3,       //   응답 지연 초
   personalBand: 10,        // 개인 기저선 오차범위: 평소 점수(처음 14회 평균) ± 10%p (= 문항 1개)
+  // 위험도 판정 기준 (지표별 주의·의뢰 + 합계)
+  referDrop: 15,           // 인지 의뢰: 최근 7회 평균이 기저선보다 15점(%p) 이상 낮음 (주의는 오차범위 밖 하락이 cautionRun회 연속)
+  respCaution: 1.0,        // 통화 응답: 응답 지연+휴지(초/문항)가 기저선보다 1.0초 이상 늘면 주의
+  respRefer: 2.0,          //   2.0초 이상이면 의뢰
+  spo2CautionNights: 2,    // 야간 SpO2: 최근 7일 중 기준 미만 10분 이상인 밤 2밤이면 주의 (spo2AlertNights 3밤이면 의뢰)
+  hrCaution: 8,            // 안정 시 심박: 최근 7일 평균이 이전 30일 평균과 8 bpm 이상 다르면 주의
+  hrRefer: 15,             //   15 bpm 이상 다르거나 7일 평균이 100 bpm 이상·50 bpm 미만이면 의뢰
+  riskMid: 75,             // 종합 케어 스코어 75점 미만 → 주의
+  riskHigh: 55,            //   55점 미만 → 높음(의뢰)
   visitBufferMin: 20,      // 방문 사이 이동 여유 시간(분). 웅촌면은 마을 간 이동 시간이 있다
   visitDailyLimit: 4,      // 방문자 하루 방문 한도(건)
   cistIntervalWeeks: 2,    // 정기 인지검사(전화형) 주기: 2 / 4 / 8주
@@ -179,6 +188,33 @@ export function cognitionLevel(zs, s) {
   return null;
 }
 
+// 점수 기준(개인 기저선): drops = 기저선 기간 이후 완료 통화의 (점수 − 평소 점수) %p, 시간 순서
+// 오차범위(personalBand) 밖 하락이 cautionRun회 연속 → 주의, referRun회 연속 또는 최근 7회 평균이 referDrop 이상 낮음 → 의뢰
+export function pointLevel(drops, s) {
+  if (!drops.length) return null;
+  const band = s.personalBand ?? 10;
+  let run = 0;
+  for (let i = drops.length - 1; i >= 0 && drops[i] <= -band; i--) run++;
+  const last7 = drops.slice(-7);
+  if (run >= s.referRun || (last7.length === 7 && mean(last7) <= -(s.referDrop ?? 15))) return 'refer';
+  if (run >= s.cautionRun) return 'caution';
+  return null;
+}
+const higher = (a, b) => ((LEVEL_RANK[a] || 0) >= (LEVEL_RANK[b] || 0) ? a : b) || null;
+
+// 통화 응답(지연·휴지): 통화마다 문항 평균 (응답 지연 + 휴지) 초. 기저선 = 처음 baselineDays회, 최근 = 마지막 7회
+export const respValue = c => {
+  const its = (c.items || []).filter(i => i.latencySec != null);
+  return its.length ? mean(its.map(i => i.latencySec + (i.pauseSec || 0))) : null;
+};
+export function responseStatus(scored, s) {
+  const vals = scored.map(respValue).filter(v => v != null);
+  if (vals.length < s.baselineDays) return { ready: false, n: vals.length, base: null, recent: null, delta: null, level: null };
+  const base = mean(vals.slice(0, s.baselineDays)), recent = mean(vals.slice(-7)), delta = recent - base;
+  const level = delta >= (s.respRefer ?? 2) ? 'refer' : delta >= (s.respCaution ?? 1) ? 'caution' : null;
+  return { ready: true, n: vals.length, base, recent, delta, level };
+}
+
 // 최근 30일 추세 기울기 (최소제곱 회귀, 하루당 점수 변화 %p)
 export function slope30(scored, today) {
   const from = addDays(today, -29);
@@ -225,8 +261,13 @@ export function personStatus(person, allCalls, s, today, getV) {
   const scored = calls.filter(c => c.status === 'completed' && c.scorePct != null);
   const base = baseline(scored.map(c => c.scorePct), s);
   const zs = base.ready ? scored.map(c => ({ date: c.date, callId: c.id, z: zScore(c.scorePct, base) })) : [];
+  const drops = base.ready ? scored.slice(s.baselineDays).map(c => c.scorePct - base.mean) : [];
   const lastScored = scored.at(-1);
   const hearingFlag = hearingCount(calls, s) >= s.hearingCalls;
+  const resp = responseStatus(scored.filter(c => c.kind !== 'cist'), s);
+  const night = getV ? nightSummary(person.id, today, s, getV) : { validNights: 0, badNights: 0, hrDelta: null, hrNow: null };
+  const bad = night.badNights;
+  const hrOff = night.hrDelta == null ? null : Math.abs(night.hrDelta);
   return {
     base,
     zs,
@@ -235,12 +276,21 @@ export function personStatus(person, allCalls, s, today, getV) {
     lastCallDate: calls.at(-1)?.date ?? null,
     lastScore: lastScored?.scorePct ?? null,
     lastZ: zs.at(-1)?.z ?? null,
+    // 최근 7회 평균 (점수 − 평소 점수) %p, 오차범위 밖 하락 연속 횟수
+    recentDrop: drops.length ? mean(drops.slice(-7)) : null,
     slope: slope30(scored, today),
     hearingFlag,
+    resp, night,
     levels: {
-      cognition: base.ready ? cognitionLevel(zs.slice(s.baselineDays).map(x => x.z), s) : null,
+      // 인지: 표준편차 기준(z)과 점수 기준(개인 기저선) 중 높은 단계
+      cognition: base.ready ? higher(cognitionLevel(zs.slice(s.baselineDays).map(x => x.z), s), pointLevel(drops, s)) : null,
       noAnswer: missedRun(calls, person) >= s.missedEscalateDays ? 'caution' : null,
-      spo2: spo2Nights(person.id, today, s, getV) >= s.spo2AlertNights ? 'caution' : null,
+      // 통화 응답: 응답 지연+휴지 증가
+      response: resp.level,
+      // 야간 SpO2: 기준 미만 10분 이상인 밤이 최근 7일 중 2밤 주의 · 3밤 의뢰
+      spo2: bad >= s.spo2AlertNights ? 'refer' : bad >= (s.spo2CautionNights ?? 2) ? 'caution' : null,
+      // 안정 시 심박: 이전 30일 대비 변화 또는 7일 평균이 범위 밖
+      heart: hrOff == null ? null : hrOff >= (s.hrRefer ?? 15) || night.hrNow >= 100 || night.hrNow < 50 ? 'refer' : hrOff >= (s.hrCaution ?? 8) ? 'caution' : null,
       // 청력 저하 기록이 있는 사람은 난청 의심 알림 대신 '보청기 착용·배터리 확인'으로 안내한다
       hearing: hearingFlag && !hearingKnown(person) ? 'watch' : null
     }
@@ -394,18 +444,22 @@ function nightSummary(personId, today, s, getV) {
   return {
     validNights: recent.length,
     badNights: recent.filter(v => v.spo2BelowMin >= s.spo2Below90Alert).length,
-    hrDelta: hrNow != null && hrBase != null ? hrNow - hrBase : null
+    hrDelta: hrNow != null && hrBase != null ? hrNow - hrBase : null,
+    hrNow
   };
 }
 
 // 종합 케어 스코어 (0~100, 높을수록 양호). 항목 가중치: 인지 40 · 통화 응답 25 · 야간 SpO2 20 · 안정 시 심박 15
 // 측정값이 없는 항목은 빼고 나머지 가중치로 계산한다.
 const CARE_WEIGHTS = { cognition: 40, response: 25, spo2: 20, heart: 15 };
+// 항목 점수는 0~100 (가중치를 곱해 배점이 된다)
+// 인지: 최근 7회 평균이 평소보다 1점(%p) 낮을 때마다 배점 40 중 1점 감점 (기저선 형성 중이면 최근 점수 %)
+// 통화 응답: 응답 지연+휴지가 평소보다 1초 늘 때마다 배점 25 중 10점 감점 (기저선 형성 중이면 뺀다)
 function careParts(st, comp, night) {
   const clamp = v => Math.max(0, Math.min(100, v));
   return {
-    cognition: st.base.ready && st.lastZ != null ? clamp(100 + 20 * st.lastZ) : st.lastScore,
-    response: comp.rate,
+    cognition: st.base.ready && st.recentDrop != null ? clamp(100 + 2.5 * Math.min(0, st.recentDrop)) : st.lastScore,
+    response: st.resp?.ready ? clamp(100 - 40 * Math.max(0, st.resp.delta)) : null,
     spo2: night.validNights ? 100 * (1 - night.badNights / night.validNights) : null,
     heart: night.hrDelta == null ? null : clamp(100 - Math.max(0, Math.abs(night.hrDelta) - 5) * 10)
   };
@@ -431,12 +485,14 @@ export function riskOf(person, data, today, getV) {
   const signals = {
     emergency: !!openLevel('emergency'), // 통화 중 응급 표현 (열린 알림)
     cognition: openLevel('cognition'),
-    spo2: !!openLevel('spo2'),
+    spo2: openLevel('spo2'),          // 'caution'(2밤) | 'refer'(3밤 이상) | null
+    response: openLevel('response'),  // 통화 응답 지연·휴지 증가
+    heart: openLevel('heart'),        // 안정 시 심박 변화
     // 난청 의심: 열린 난청 알림, 또는 청력 저하 기록이 있는 사람의 재질문 잦음
     hearing: !!openLevel('hearing') || (knownHearing && st.hearingFlag),
     hearingKnown: knownHearing,
     missedRun: missedRun(calls, person),
-    hrChange: night.hrDelta != null && Math.abs(night.hrDelta) >= 8,
+    hrChange: !!openLevel('heart'),
     mobilityLimited: mobilityLimited(person),
     status: st, completion: comp, night, parts
   };
@@ -445,9 +501,12 @@ export function riskOf(person, data, today, getV) {
   const cst = cistStatus(person, data, today);
   const cr = cistRisk(cst, s);
   signals.cist = { status: cst, risk: cr };
-  const high = signals.emergency || cr?.level === 'high' || (score != null && score < 55) || signals.cognition === 'refer'
-    || signals.missedRun >= s.missedEscalateDays || signals.spo2;
-  const mid = (score != null && score < 75) || signals.cognition === 'watch' || signals.cognition === 'caution'
+  // 위험도 = 합계 구간과 지표별 단계 중 가장 높은 것 (높음 = 의뢰 단계)
+  const riskHigh = s.riskHigh ?? 55, riskMid = s.riskMid ?? 75;
+  const ind = [signals.cognition, signals.response, signals.spo2, signals.heart];
+  const high = signals.emergency || cr?.level === 'high' || (score != null && score < riskHigh) || ind.includes('refer')
+    || signals.missedRun >= s.missedEscalateDays;
+  const mid = (score != null && score < riskMid) || signals.cognition === 'watch' || ind.includes('caution')
     || signals.missedRun >= 2 || signals.hearing || cr?.level === 'mid';
 
   const reasons = [];
@@ -457,10 +516,11 @@ export function riskOf(person, data, today, getV) {
   if (signals.cognition === 'caution') reasons.push('인지 저하 신호 · 연속 이탈');
   if (signals.cognition === 'watch') reasons.push('인지 경미한 저하');
   if (signals.missedRun >= 2) reasons.push(`최근 ${signals.missedRun}일 미응답`);
-  if (signals.spo2) reasons.push('야간 저산소 반복');
+  if (signals.response) reasons.push(signals.response === 'refer' ? '통화 응답 지연·휴지 크게 증가' : '통화 응답 지연·휴지 증가');
+  if (signals.spo2) reasons.push(signals.spo2 === 'refer' ? '야간 저산소 반복' : '야간 저산소');
   if (signals.hearing) reasons.push(knownHearing ? '청력 저하 기록 · 보청기 착용·배터리 확인' : '난청 의심 · 재질문 잦음');
   if (signals.hrChange) reasons.push('안정 시 심박 변화');
-  if (score != null && score < 75) reasons.push(`종합 케어 스코어 ${score}점`);
+  if (score != null && score < riskMid) reasons.push(`종합 케어 스코어 ${score}점`);
 
   return { level: high ? 'high' : mid ? 'mid' : 'low', score, reasons, signals };
 }
@@ -491,7 +551,8 @@ export function recommendAction(risk) {
   const add = [];
   if (risk.signals.emergency) add.unshift('응급 표현 즉시 전화 확인');
   if (risk.signals.cognition === 'refer') add.push('치매안심센터 2단계 검사 연계 검토');
-  if (risk.signals.spo2) add.push('수면무호흡 검사 의뢰 검토');
+  if (risk.signals.spo2 === 'refer') add.push('수면무호흡 검사 의뢰 검토');
+  if (risk.signals.heart === 'refer') add.push('의료기관 심박 확인 연계 검토');
   if (risk.signals.hearing) add.push(risk.signals.hearingKnown ? '보청기 착용·배터리 확인' : '청력검사 연계 검토');
   return [base, ...add].join(' · ');
 }
@@ -512,6 +573,7 @@ export const TREND_METRICS = [
   { key: 'd_language', group: '인지 (통화)', label: '언어기능', unit: '%', dir: 1, sdMin: s => s.sdMinScore, kind: 'call', domain: '언어기능' },
   { key: 'd_executive', group: '인지 (통화)', label: '집행기능', unit: '%', dir: 1, sdMin: s => s.sdMinScore, kind: 'call', domain: '집행기능' },
   { key: 'latency', group: '통화 반응', label: '응답 지연', unit: '초', dir: -1, sdMin: s => s.sdMinLatency, kind: 'call' },
+  { key: 'pause', group: '통화 반응', label: '휴지 (답변 중 멈춤)', unit: '초/문항', dir: -1, sdMin: () => 0.3, kind: 'call' },
   { key: 'repeats', group: '통화 반응', label: '재질문', unit: '회/통화', dir: -1, sdMin: () => 0.3, kind: 'call' },
   { key: 'completion', group: '통화 반응', label: '통화 완료율', unit: '%', dir: 1, sdMin: () => 10, kind: 'call' },
   { key: 'duration', group: '통화 반응', label: '통화 시간', unit: '분', dir: 0, sdMin: () => 0.3, kind: 'call' },
@@ -584,6 +646,9 @@ function dailyValues(data, person, m, today, getV, st) {
       if (its.length) value = (its.reduce((t, i) => t + i.score, 0) / its.reduce((t, i) => t + i.maxScore, 0)) * 100;
     } else if (m.key === 'latency') {
       const l = c.items.map(i => i.latencySec).filter(v => v != null);
+      if (l.length) value = mean(l);
+    } else if (m.key === 'pause') {
+      const l = c.items.filter(i => i.latencySec != null).map(i => i.pauseSec || 0);
       if (l.length) value = mean(l);
     } else if (m.key === 'repeats') value = c.items.reduce((t, i) => t + (i.repeatAsked || 0), 0);
     else if (m.key === 'duration' && done) value = c.durationSec / 60;
@@ -780,6 +845,13 @@ export function aiSummary(person, data, today, getV) {
   else items.push({
     label: '통화 응답', text: `최근 7일 통화 완료 ${comp.done}/${comp.days}` + (run >= 2 ? ` · ${run}일 연속 미응답` : comp.rate != null && comp.rate < 80 ? ' · 목표 80% 미달' : ' · 응답 양호'),
     off: run >= 2 || (comp.rate != null && comp.rate < 80)
+  });
+  // 응답 지연·휴지 (문항당 초, 평소 대비)
+  const rs = st.resp;
+  if (rs?.ready) items.push({
+    label: '응답 지연·휴지', text: `문항당 ${f1(rs.recent)}초 · 평소 ${f1(rs.base)}초 대비 ${rs.delta >= 0 ? '+' : ''}${f1(rs.delta)}초`
+      + (rs.level === 'refer' ? ' · 크게 늘어남' : rs.level === 'caution' ? ' · 늘어남' : ' · 평소 범위'),
+    off: !!rs.level
   });
 
   // 재질문

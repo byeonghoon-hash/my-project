@@ -128,8 +128,9 @@ const rp = { id: 'r1', enrolledAt: '2026-09-01', active: true };
 const okCalls = [20, 21, 22, 23, 24, 25, 26].map(dd => ({ personId: 'r1', date: `2026-09-${dd}`, status: 'completed', scorePct: 80, items: [] }));
 const rdata = (alerts = [], calls = okCalls) => ({ settings: S, people: [rp], calls, alerts });
 assert.equal(riskOf(rp, rdata(), today, () => null).level, 'low'); // 아무 조건 없음 → 낮음
-const spo2Alert = { personId: 'r1', type: 'spo2', level: 'caution', status: 'open' };
-assert.equal(riskOf(rp, rdata([spo2Alert]), today, () => null).level, 'high'); // 야간 SpO2 알림 하나만 → 높음
+const spo2Alert = { personId: 'r1', type: 'spo2', level: 'refer', status: 'open' };
+assert.equal(riskOf(rp, rdata([spo2Alert]), today, () => null).level, 'high'); // 야간 SpO2 의뢰(3밤) 알림 하나만 → 높음
+assert.equal(riskOf(rp, rdata([{ ...spo2Alert, level: 'caution' }]), today, () => null).level, 'mid'); // 주의(2밤) → 주의
 const missed3 = [24, 25, 26].map(dd => ({ personId: 'r1', date: `2026-09-${dd}`, status: 'missed', items: [] }));
 assert.equal(riskOf(rp, rdata([], [...okCalls.slice(0, 4), ...missed3]), today, () => null).level, 'high'); // 연속 무응답 3일 → 높음
 assert.equal(riskOf(rp, rdata([{ ...spo2Alert, type: 'hearing', status: 'closed' }]), today, () => null).level, 'low'); // 종결된 알림은 안 셈
@@ -181,7 +182,7 @@ const rd = { settings: { ...S, spo2Below90Alert: 3, spo2AlertNights: 1 }, people
 importRing(rd, 'r2', 'ring_sample.csv', ringText);
 const rgetV = (pid, dd) => pickVitals(rd, pid, dd);
 assert.equal(rgetV('r2', '2026-09-27').spo2BelowMin, 3);
-assert.equal(personStatus(rp2, [], rd.settings, today, rgetV).levels.spo2, 'caution');
+assert.equal(personStatus(rp2, [], rd.settings, today, rgetV).levels.spo2, 'refer'); // 기준 밤 수(1) 이상 → 의뢰
 rp2.info.call.spo2Threshold = 88; recomputeRing(rd, 'r2');
 assert.equal(rgetV('r2', '2026-09-27').spo2BelowMin, 0);
 assert.equal(personStatus(rp2, [], rd.settings, today, rgetV).levels.spo2, null);
@@ -736,6 +737,47 @@ assert.equal(isOffTopic(regItem, '잘 모르겠는데 기억이 하나도 안 �
   const choi = sd.people.find(x => x.name === '최영희');
   assert.equal(M.cistStatus(choi, sd, day).delayed, true);
   assert.equal(addDays(M.cistStatus(choi, sd, day).due, 9), day);
+}
+
+// ======== 위험도 판정 기준: 지표별 주의·의뢰 + 합계 ========
+{
+  const M = await import('./metrics.js');
+  const s = { ...M.DEFAULT_SETTINGS };
+  // 인지(점수 기준): 오차범위(10점) 밖 하락이 3회 연속 → 주의, 5회 연속 또는 최근 7회 평균 15점 이상 하락 → 의뢰
+  assert.equal(M.pointLevel([0, -12, -10, -11], s), 'caution');
+  assert.equal(M.pointLevel([0, -12, -10, 2], s), null);                     // 연속이 끊기면 아님
+  assert.equal(M.pointLevel([-10, -10, -10, -10, -10], s), 'refer');
+  assert.equal(M.pointLevel([-20, -20, -20, -5, -20, -20, -5], s), 'refer'); // 7회 평균 -15.7
+  assert.equal(M.pointLevel([-9, -9, -9, -9, -9], s), null);                 // 오차범위 안
+  // 통화 응답(지연·휴지): 기저선 14회 평균 대비 최근 7회 +1초 주의, +2초 의뢰
+  const callR = (lat, pause) => ({ status: 'completed', items: [{ latencySec: lat, pauseSec: pause }, { latencySec: lat, pauseSec: pause }] });
+  const base14 = [...Array(14)].map(() => callR(2, 0.2));
+  assert.equal(M.responseStatus([...base14, ...[...Array(7)].map(() => callR(2.5, 0.8))], s).level, 'caution');   // +1.1초
+  assert.equal(M.responseStatus([...base14, ...[...Array(7)].map(() => callR(3.5, 0.8))], s).level, 'refer');     // +2.1초
+  assert.equal(M.responseStatus([...base14, ...[...Array(7)].map(() => callR(2.3, 0.3))], s).level, null);
+  assert.equal(M.responseStatus(base14.slice(0, 10), s).ready, false);                                            // 기저선 형성 중
+  assert.equal(M.respValue({ items: [{ latencySec: 2 }, { latencySec: 3, pauseSec: 1 }] }), 3);                    // 예전 기록(휴지 없음)도 읽힘
+  // 지표별 단계가 위험도로: 주의 → 주의, 의뢰 → 높음 (응답·심박도)
+  const pp = { id: 'k1', enrolledAt: '2026-09-01', active: true };
+  const ok = [20, 21, 22, 23, 24, 25, 26].map(dd => ({ personId: 'k1', date: `2026-09-${dd}`, status: 'completed', scorePct: 80, items: [] }));
+  const dd = alerts => ({ settings: s, people: [pp], calls: ok, alerts });
+  const al = (type, level) => ({ personId: 'k1', type, level, status: 'open' });
+  assert.equal(M.riskOf(pp, dd([al('response', 'caution')]), '2026-09-27', () => null).level, 'mid');
+  assert.equal(M.riskOf(pp, dd([al('response', 'refer')]), '2026-09-27', () => null).level, 'high');
+  assert.equal(M.riskOf(pp, dd([al('heart', 'caution')]), '2026-09-27', () => null).level, 'mid');
+  assert.equal(M.riskOf(pp, dd([al('heart', 'refer')]), '2026-09-27', () => null).level, 'high');
+  // 안정 시 심박: 이전 30일 60 bpm → 최근 7일 69 bpm 이면 주의, 76 bpm 이면 의뢰
+  const hp = { id: 'h1', enrolledAt: '2026-08-01', active: true };
+  const hv = now => (pid, dt) => ({ hrRest: dt >= '2026-09-21' ? now : 60, spo2Min: 95, spo2BelowMin: 0, wearHours: 7, sqi: 0.9 });
+  assert.equal(M.personStatus(hp, [], s, '2026-09-27', hv(69)).levels.heart, 'caution');
+  assert.equal(M.personStatus(hp, [], s, '2026-09-27', hv(76)).levels.heart, 'refer');
+  assert.equal(M.personStatus(hp, [], s, '2026-09-27', hv(64)).levels.heart, null);
+  // 합계 기준도 설정으로: 주의 75점 미만, 높음 55점 미만
+  const low = [20, 21, 22, 23, 24, 25, 26].map(d2 => ({ personId: 'k1', date: `2026-09-${d2}`, status: 'completed', scorePct: 60, items: [] }));
+  const r60 = M.riskOf(pp, { settings: s, people: [pp], calls: low, alerts: [] }, '2026-09-27', () => null);
+  assert.equal(r60.score, 60);                                               // 기저선 형성 중: 최근 점수 60%만 측정
+  assert.equal(r60.level, 'mid');
+  assert.equal(M.riskOf(pp, { settings: { ...s, riskMid: 60, riskHigh: 50 }, people: [pp], calls: low, alerts: [] }, '2026-09-27', () => null).level, 'low');
 }
 
 console.log('selftest 통과');

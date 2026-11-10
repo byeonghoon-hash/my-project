@@ -31,7 +31,7 @@ const app = document.getElementById('app');
 
 const LEVEL = { watch: '관찰', caution: '주의', refer: '의뢰' };
 const LEVEL_CHIP = { watch: 'info', caution: 'mid', refer: 'high' };
-const TYPE = { cistReview: '정기검사 채점 확인 대기', cistOverdue: '정기검사 지연', emergency: '응급 표현 (통화 중)', cognition: '인지 기저선 이탈', spo2: '야간 저산소 (수면무호흡 의심)', hearing: '재질문 잦음 (난청 의심)', noAnswer: '연속 무응답 (안부 확인)', selfReport: '통화 중 자기보고 (반복 호소·낙상)' };
+const TYPE = { cistReview: '정기검사 채점 확인 대기', cistOverdue: '정기검사 지연', emergency: '응급 표현 (통화 중)', cognition: '인지 기저선 이탈', spo2: '야간 저산소 (수면무호흡 의심)', hearing: '재질문 잦음 (난청 의심)', noAnswer: '연속 무응답 (안부 확인)', response: '통화 응답 지연·휴지 증가', heart: '안정 시 심박 변화', selfReport: '통화 중 자기보고 (반복 호소·낙상)' };
 const STATUS = { open: '처리 전', referred: '연계됨', closed: '종결' };
 const CALL_STATUS = { completed: '완료', missed: '무응답', partial: '일부 (시간 초과)' };
 const CHECKS = { acute: '최근 급성 질환', sleep: '수면 부족', meds: '약물 변경', mood: '우울감', hearing: '청력 저하' };
@@ -48,7 +48,7 @@ const SETTING_LABEL = {
   missedEscalateDays: '안부확인: 연속 무응답 (일)',
   sqiMin: '유효 측정 최소 신호품질 (0~1)',
   spo2Below90Alert: 'SpO2 90% 미만 기준 (분)',
-  spo2AlertNights: '최근 7일 중 해당 밤 수',
+  spo2AlertNights: '야간 SpO₂ 의뢰: 최근 7일 중 해당 밤 수',
   hearingRepeatAsks: '통화당 재질문 기준 (회)',
   hearingCalls: '최근 5통화 중 해당 통화 수',
   maxCallSec: '통화 상한 (초)',
@@ -56,7 +56,15 @@ const SETTING_LABEL = {
   sdMinSpo2: '변화 추이 표준편차 최솟값: SpO₂ (%p)',
   sdMinHr: '변화 추이 표준편차 최솟값: 심박 (bpm)',
   sdMinLatency: '변화 추이 표준편차 최솟값: 응답 지연 (초)',
-  personalBand: '개인 기저선 오차범위 (± %p)',
+  personalBand: '개인 기저선 오차범위 (± %p) · 인지 주의: 이보다 큰 하락이 연속',
+  referDrop: '인지 의뢰: 최근 7회 평균 하락 (점)',
+  respCaution: '통화 응답 주의: 지연+휴지 증가 (초/문항)',
+  respRefer: '통화 응답 의뢰: 지연+휴지 증가 (초/문항)',
+  spo2CautionNights: '야간 SpO₂ 주의: 최근 7일 중 해당 밤 수',
+  hrCaution: '안정 시 심박 주의: 평소 대비 변화 (bpm)',
+  hrRefer: '안정 시 심박 의뢰: 평소 대비 변화 (bpm)',
+  riskMid: '종합 케어 스코어 주의 기준 (점 미만)',
+  riskHigh: '종합 케어 스코어 높음(의뢰) 기준 (점 미만)',
   visitBufferMin: '방문 이동 여유 시간 (분)',
   visitDailyLimit: '방문자 하루 방문 한도 (건)',
   cistDropAlert: '정기검사 원형 유지 점수 하락 기준 (점)',
@@ -66,7 +74,7 @@ const SETTING_LABEL = {
   rewardGameDailyMax: '복지포인트: 미니게임 하루 적립 한도 (판)'
 };
 const SETTING_HIDDEN = ['cistIntervalWeeks', 'voiceId']; // 정기 검사 주기는 '정기 인지검사 방식'에서 고른다
-const CARE_LABEL = { cognition: ['통화 인지검사', 40], response: ['통화 응답', 25], spo2: ['야간 SpO₂', 20], heart: ['안정 시 심박', 15] };
+const CARE_LABEL = { cognition: ['통화 인지검사', 40], response: ['통화 응답 (지연·휴지)', 25], spo2: ['야간 SpO₂', 20], heart: ['안정 시 심박', 15] };
 
 // 색은 style.css의 :root 변수에서만 읽는다 (차트·지도도 같은 값)
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -2109,11 +2117,11 @@ function summaryTab(p, ai, T) {
       <section class="card">
         <div class="card-head"><h2>종합 케어 스코어</h2><b class="score">${r.score ?? '-'}<small>점</small></b></div>
         ${Object.entries(CARE_LABEL).map(([k, [label, w]]) => {
-          const val = r.signals.parts[k];
-          return `<div class="part"><div class="row"><span>${label} <span class="muted small">가중치 ${w}</span></span><b class="num">${val == null ? '측정 없음' : Math.round(val)}</b></div>
+          const val = r.signals.parts[k], lv = r.signals[k];
+          return `<div class="part"><div class="row"><span>${label} ${lv ? levelChip(lv) : ''}</span><b class="num">${val == null ? '측정 없음' : `${fmtNum((val * w) / 100, 1)}<small class="muted"> / ${w}점</small>`}</b></div>
             <div class="bar ${val == null ? '' : val >= 75 ? 'low' : val >= 55 ? 'mid' : 'bad'}"><i style="width:${val ?? 0}%"></i></div></div>`;
         }).join('')}
-        <p class="muted small">75점 이상 낮음 · 55~74점 주의 · 55점 미만 높음</p>
+        <p class="muted small">합계 ${getData().settings.riskMid ?? 75}점 이상 낮음 · ${getData().settings.riskHigh ?? 55}~${(getData().settings.riskMid ?? 75) - 1}점 주의 · ${getData().settings.riskHigh ?? 55}점 미만 높음(의뢰) · 지표별 주의·의뢰가 있으면 그 단계 · 측정 없는 지표는 빼고 환산</p>
       </section>
     </div>
 
@@ -2462,7 +2470,7 @@ function callRow(c, p) {
             <div class="grade">
               <span>정답 ${expectedHtml(c, it)}</span>
               <span>점수 <input type="number" min="0" max="${it.maxScore}" step="any" value="${it.score ?? ''}" data-change="score" data-id="${c.id}" data-i="${i}"> / ${it.maxScore}</span>
-              <span class="muted">응답 지연 ${it.latencySec ?? '-'}초${it.repeatAsked ? ` · 재질문 ${it.repeatAsked}회` : ''}${it.startMs != null ? ` · 녹음 ${t(it.startMs)}~${t(it.endMs)}` : ''}</span>
+              <span class="muted">응답 지연 ${it.latencySec ?? '-'}초${it.pauseSec ? ` · 휴지 ${it.pauseSec}초` : ''}${it.repeatAsked ? ` · 재질문 ${it.repeatAsked}회` : ''}${it.startMs != null ? ` · 녹음 ${t(it.startMs)}~${t(it.endMs)}` : ''}</span>
             </div>
           </div>`).join('')}
         ${c.selfReport ? `

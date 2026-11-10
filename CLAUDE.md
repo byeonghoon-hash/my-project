@@ -79,6 +79,7 @@ I-ME 로고와 큰 버튼 두 개: **[대상자 화면]** **[관리자 화면]**
    - 질문은 `speechSynthesis`(ko-KR, 속도 0.9)로 읽는다.
    - 질문을 다 읽은 뒤부터 답변 구간. 말이 끝나고 **3초 침묵**이면 다음 문항으로 넘어간다. 문항별 최대 시간을 두고(기본 20초) 예비용 [다음] 버튼도 둔다.
    - 통화 전체를 `MediaRecorder` 한 파일로 녹음하고, 문항별 시작·끝 시각을 표시해 둔다.
+   - 문항마다 응답 지연(질문이 끝나고 말을 시작하기까지)과 휴지(말을 시작한 뒤 1초 이상 멈춘 시간의 합)를 잰다.
    - 크롬이면 `SpeechRecognition`(ko-KR, continuous, interimResults)으로 받아쓰기를 함께 돌린다. 지원하지 않는 브라우저면 받아쓰기 없이 녹음만 저장하고 관리자가 채점한다.
    - 답변에 "네?", "뭐라고", "다시", "잘 안 들려" 같은 재질문이 있으면 해당 질문을 다시 읽고(허용 횟수만큼), 재질문 횟수를 센다 (난청 의심 지표).
 7. 끝 인사: "오늘도 통화해 주셔서 감사합니다." + 적립된 복지포인트 + [홈으로]. **점수나 위험도는 대상자에게 절대 보여주지 않는다** (결과는 보건소·의료진을 통해서만 알린다 — 계획서 윤리 원칙).
@@ -198,13 +199,13 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
                edited: { <섹션>: { by, at } } } }],
   calls:  [{ id, personId, date, time, startedAt, status: 'completed'|'missed'|'partial', source: 'demo'|'real',
              durationSec, scorePct, z, declined, voice, chatMode, greeting, opening: { hello, condition, recent }, chatTurns, emergencies, aiSummary,
-             items: [{ key, qid, domain, question, answer, expected, score, maxScore, latencySec, repeatAsked, startMs, endMs, part|words|digits|word|sentence|answers }],
+             items: [{ key, qid, domain, question, answer, expected, score, maxScore, latencySec, pauseSec, pauses, repeatAsked, startMs, endMs, part|words|digits|word|sentence|answers }],
              selfReport: { sleep: { answer, value }, mood: { answer, value } } | null,
              chat: { question, answer } | null, requests: ['대상자 말 그대로', ...], edited: { by, at }, audioId }],
   vitals: [{ personId, date, hrRest, spo2Min, spo2BelowMin, wearHours, sqi, steps }],       // 모의
   ringImports: [{ id, personId, fileName, importedAt, samples, intervalSec, missingPct, from, to, validNights, invalidNights, minutes }],
   ringNights: [{ personId, date, importId, hrRest, spo2Min, spo2BelowMin, wearHours, sqi, valid }], // 링 실측
-  alerts: [{ id, personId, createdAt, type: 'cognition'|'spo2'|'hearing'|'noAnswer'|'emergency'|'cistReview'|'cistOverdue'|'selfReport',
+  alerts: [{ id, personId, createdAt, type: 'cognition'|'response'|'spo2'|'heart'|'hearing'|'noAnswer'|'emergency'|'cistReview'|'cistOverdue'|'selfReport',
              level: 'watch'|'caution'|'refer', status: 'open'|'referred'|'closed',
              referredAt, notifiedAt, notifiedTo: { name, relation, phone }, outcome: null|'confirmed'|'normal', checklist: {...}, note, reasons? }],   // reasons: 자기보고 사유
   visits: [{ id, personId, date, startTime, durationMin: 30|60|90|120, type, visitor, purpose,
@@ -255,7 +256,15 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
   hearingRepeatAsks: 2,    // 통화당 재질문 2회 이상이
   hearingCalls: 3,         //   최근 5통화 중 3회 이상 → 난청 의심 알림
   maxCallSec: 240,
-  personalBand: 10,       // 개인 기저선 오차범위: 평소 점수 ± 10%p (문항 1개)
+  personalBand: 10,        // 개인 기저선 오차범위: 평소 점수 ± 10%p (문항 1개) · 인지 주의 기준
+  referDrop: 15,           // 인지 의뢰: 최근 7회 평균 15점 이상 하락
+  respCaution: 1.0,        // 통화 응답(지연+휴지, 초/문항) 주의 +1초
+  respRefer: 2.0,          //   의뢰 +2초
+  spo2CautionNights: 2,    // 야간 SpO2 주의 2밤 (의뢰는 spo2AlertNights 3밤)
+  hrCaution: 8,            // 안정 시 심박 주의 ±8 bpm
+  hrRefer: 15,             //   의뢰 ±15 bpm
+  riskMid: 75,             // 종합 케어 스코어 주의 75점 미만
+  riskHigh: 55,            //   높음(의뢰) 55점 미만
   visitBufferMin: 20,      // 방문 사이 이동 여유 시간(분)
   visitDailyLimit: 4,      // 방문자 하루 방문 한도
   cistIntervalWeeks: 2,    // 정기 인지검사 주기 (2/4/8주)
@@ -276,26 +285,33 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 
 ## 위험도 — `riskOf(person, data, today, getV)` 하나만 쓴다
 
-지도 점 색, 위험도 분포, 우선 확인 목록, 대상자 목록, 상세 칩이 **모두 이 함수만** 쓴다. 반환: `{ level: 'low'|'mid'|'high', score, reasons, signals }`.
+지도 점 색, 위험도 분포, 우선 확인 목록, 대상자 목록, 상세 칩이 **모두 이 함수만** 쓴다. 반환: `{ level: 'low'|'mid'|'high', score, reasons, signals }`. 위험도 '주의' = 주의 단계, '높음' = 의뢰 단계.
 
-- **종합 케어 스코어** (0~100, 높을수록 양호) = 측정 항목의 가중 평균. 측정값이 없는 항목은 빼고 계산한다.
-  - 통화 인지검사 40: 기저선이 있으면 `100 + 20 × 최근 z` (0~100), 없으면 최근 점수(%)
-  - 통화 응답 25: 최근 7일 통화 완료율
-  - 야간 SpO₂ 20: 최근 7일 유효한 밤 중 90% 미만이 기준 이상인 밤이 아닌 비율
-  - 안정 시 심박 15: 최근 7일 평균이 그 전 30일 평균과 5bpm 넘게 다르면 1bpm당 10점 감점
-- **high**: 스코어 < 55, 또는 열린 인지 알림 '의뢰', 또는 연속 무응답 ≥ missedEscalateDays(3), 또는 열린 야간 SpO₂ 알림
-- **mid**: 스코어 55–74, 또는 열린 인지 알림 '관찰'·'주의', 또는 연속 무응답 2일, 또는 열린 난청 의심 알림
-- **low**: 그 밖
-- `reasons`: '인지 기저선 이탈 · 연계 검토' / '인지 저하 신호 · 연속 이탈' / '인지 경미한 저하' / '최근 n일 미응답' / '야간 저산소 반복' / '난청 의심 · 재질문 잦음' / '안정 시 심박 변화' / '종합 케어 스코어 n점'
+**위험도 판정 기준표** (보고서와 같은 표, 숫자는 모두 `settings`에서 바꿀 수 있다)
+
+| 지표 | 배점 | 점수 계산 | 주의 | 의뢰 |
+|---|---|---|---|---|
+| 통화 인지검사 | 40 | 최근 7회 평균이 평소 점수(처음 14회 평균)보다 1점(%p) 낮을 때마다 1점 감점 | 오차범위(`personalBand` 10점) 넘는 하락이 3회(`cautionRun`) 연속 | 10점 넘는 하락 5회(`referRun`) 연속, 또는 최근 7회 평균 15점(`referDrop`) 이상 하락 |
+| 통화 응답(지연·휴지) | 25 | 문항당 응답 지연+휴지가 평소(처음 14회)보다 1초 늘 때마다 10점 감점 | +1.0초(`respCaution`) | +2.0초(`respRefer`) |
+| 야간 SpO₂ | 20 | 최근 7일 유효한 밤 중 기준 미만 10분 이상(`spo2Below90Alert`)인 밤이 아닌 비율 | 그런 밤 2밤(`spo2CautionNights`) | 3밤(`spo2AlertNights`) 이상 |
+| 안정 시 심박 | 15 | 최근 7일 평균이 이전 30일 평균과 5 bpm 넘게 다르면 1 bpm당 1.5점 감점 | ±8 bpm(`hrCaution`) | ±15 bpm(`hrRefer`), 또는 7일 평균 100 bpm 이상·50 bpm 미만 |
+| 합계 | 100 | 측정값이 없는 지표는 빼고 100점으로 환산 | 75점(`riskMid`) 미만 | 55점(`riskHigh`) 미만 |
+
+- 인지 단계 = 위 점수 기준(`pointLevel`)과 표준편차 기준(`cognitionLevel`: −1.5 SD 하루 관찰 · 3회 연속 주의 · 5회 연속 또는 7회 평균 −2.0 SD 의뢰) 중 높은 것. 기저선 형성 중이면 인지 단계 없음, 인지 점수는 최근 점수(%), 통화 응답은 계산에서 뺀다.
+- 지표별 단계는 알림(`cognition`·`response`·`spo2`·`heart`)으로 만들고(`personStatus().levels` → `updateAlerts`), 위험도는 열린 알림의 단계를 쓴다.
+- 최종 위험도 = 합계 구간과 지표별 단계 중 가장 높은 단계. 그 밖에 높음: 응급 표현 · 연속 무응답 3일(`missedEscalateDays`) · 정기검사 연속 하락(합 4점). 주의: 인지 관찰 · 연속 무응답 2일 · 난청 의심 · 정기검사 원형 유지 3점 하락. 자기보고 알림은 등급에 쓰지 않는다.
+- 휴지 = 답변을 시작한 뒤 1초 이상 멈췄다가 다시 말한 시간의 합(문항별 `pauseSec`·`pauses`, call.js `PAUSE_MS`). 3초 멈추면 답변 끝.
+- `reasons`: '인지 기저선 이탈 · 연계 검토' / '인지 저하 신호 · 연속 이탈' / '인지 경미한 저하' / '최근 n일 미응답' / '통화 응답 지연·휴지 (크게) 증가' / '야간 저산소 (반복)' / '난청 의심 · 재질문 잦음' / '안정 시 심박 변화' / '종합 케어 스코어 n점'
+- 상세 요약 탭 '종합 케어 스코어' 칸: 지표마다 '25.0 / 40점'과 주의·의뢰 칩.
 - 색은 style.css `:root`의 `--low` · `--mid` · `--high`(+ `-bg`·`-fg`) 한 곳에서 정한다.
 
 ## AI 종합 분석 — `aiSummary(person, data, today, getV)` → `{ bullets, action }`
 
 지금은 규칙 기반 문장이다 (함수 위 `// ponytail:` 주석: 실제 LLM 연동 시 이 함수만 교체).
-- 항목 형식은 '측정값 · 기준 대비 해석'. 통화 인지검사, 야간 SpO₂, 안정 시 심박(변화가 있을 때만), 통화 응답, 재질문, 야간 착용.
+- 항목 형식은 '측정값 · 기준 대비 해석'. 통화 인지검사, 야간 SpO₂, 안정 시 심박(변화가 있을 때만), 통화 응답, 응답 지연·휴지(평소 대비 초), 재질문, 야간 착용.
 - 기준을 벗어난 항목을 먼저, 최대 7줄.
 - 권장 조치(`recommendAction`): 높음 '48시간 내 방문 확인' / 주의 '이번 주 내 전화 상담, 1주 후 재평가' / 낮음 '현 관리 유지'.
-  인지 '의뢰'면 '치매안심센터 2단계 검사 연계 검토', 야간 SpO₂ 알림이면 '수면무호흡 검사 의뢰 검토', 난청 의심이면 '청력검사 연계 검토'를 덧붙인다.
+  인지 '의뢰'면 '치매안심센터 2단계 검사 연계 검토', 야간 SpO₂ '의뢰'면 '수면무호흡 검사 의뢰 검토', 심박 '의뢰'면 '의료기관 심박 확인 연계 검토', 난청 의심이면 '청력검사 연계 검토'를 덧붙인다.
 - 맨 아래 문구: '선별 보조 자료이며 최종 판단은 담당자가 함.'
 
 ## 로그인 (시연용, 서버 없음)
@@ -360,7 +376,7 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 - 거동 '대부분 도움'·'와상' → 우선 확인 목록에 '거동 제한' 칩 (등급은 안 바꿈).
 
 ### 변화 추이 — `trendAll` / `trendSummary(data, person, key, { days, weekly }, today, getV)`
-표·큰 그래프·CSV·AI 분석·돌봄일지 초안 O가 모두 이 계산을 쓴다. 지표: 인지검사 점수, 평소 대비 표준편차(z, 화면에는 'z'라고 쓰지 않고 'SD'), 개인 기저선 대비 점수(%p), 영역별 6개(지남력·기억 등록·지연 회상·주의력·언어기능·집행기능, 접어 둠), 응답 지연, 재질문, 통화 완료율, 통화 시간, 잠 설침 비율·기분 나쁨 비율(자기보고 탭에만), 야간 최저 SpO2, 기준 미만 시간, 안정 시 심박, 착용 시간, 유효한 밤 비율.
+표·큰 그래프·CSV·AI 분석·돌봄일지 초안 O가 모두 이 계산을 쓴다. 지표: 인지검사 점수, 평소 대비 표준편차(z, 화면에는 'z'라고 쓰지 않고 'SD'), 개인 기저선 대비 점수(%p), 영역별 6개(지남력·기억 등록·지연 회상·주의력·언어기능·집행기능, 접어 둠), 응답 지연, 휴지(답변 중 멈춤, 초/문항), 재질문, 통화 완료율, 통화 시간, 잠 설침 비율·기분 나쁨 비율(자기보고 탭에만), 야간 최저 SpO2, 기준 미만 시간, 안정 시 심박, 착용 시간, 유효한 밤 비율.
 - 개인 기저선 대비 점수(`pdev`): 그날 점수 − 평소 점수(처음 14회 완료 통화 평균). 표준편차 대신 정해 둔 오차범위 `personalBand`(±10%p)로 본다: 최근 7일 평균이 범위 밖이면 악화/개선. 표의 기저선 칸은 '평소 81.4% ± 10'.
 - 열: 최근 7일 · 이전 7일 · 개인 기저선(인지·통화 = 처음 14회 통화, 링 = 처음 유효한 7밤) · 변화(최근 7일 − 기저선, 화살표·부호·색) · 스파크라인(기저선 ±1SD 띠) · 상태.
 - 상태: 최근 7일 값 4개 미만이거나 기저선 없음 → 데이터 부족. |변화| ≥ max(기저선 SD, 설정 최솟값) → 개선/악화(방향 없는 지표는 '변화'). 그 밖은 유지. 인지 z는 열린 인지 알림이 있으면 '악화' + 단계 칩.
@@ -403,6 +419,7 @@ localStorage 키 하나(`cogcare-v1`)에 JSON으로 저장:
 - 담당자: 박지연 간호사 · 윤병훈 간호사 · 김민수 사회복지사.
 - 위치: 나머지 9명은 법정리 9곳에 임의 좌표, 주소는 '울주군 웅촌면 ○○리'처럼 리까지만. 박순자(검단리)는 표의 좌표가 경계 밖이라 가장 가까운 경계 안쪽으로 옮겼다.
 - 자기보고 알림: 서정길(잠 설침), 김말순(낙상 언급), 이상철(기억 저하 호소, 최근 1주 '깜빡' 대답). 기억 호소 대답은 8개 중 2개라 다른 사람에게는 잘 안 뜬다.
+- 응답 지연·휴지: 보통 문항당 지연 1.2~3.4초·휴지 0~0.6초(틀린 대답이면 +0.5초). 이상철은 후반 지연 +1.2초·휴지 +0.8초(통화 응답 주의~의뢰), 윤병훈은 최근 2주 +0.6초·+0.3초. 휴지는 따로 만든 난수(`side`)로 정해 기존 난수 순서를 바꾸지 않는다.
 - 통화 대화록: 대답을 경상도 말투로 먼저 만들고, 점수는 그 대답을 자동 채점한 값이다(대답과 점수가 항상 맞음).
 - 전화번호는 모두 `010-0000-` 가짜, 보호자 이름은 지어낸 것, 의료기관명은 '○○내과의원'. 생년월일·동의·일부 대면 검사(CIST) 기록 포함.
 - 방문 7건(예정 5 · 완료 1 · 취소 1, 시각·유형·방문자 포함), 어르신 요청사항(최근 10일 대화에서 찾은 요청), 대상자마다 확정 돌봄일지 1~3건, 과거 알림 몇 건(PPV·오경보율 계산용).

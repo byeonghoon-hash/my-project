@@ -133,7 +133,7 @@ const EDU = [[6, '가능'], [3, '가능'], [9, '가능'], [0, '어려움'], [6, 
 const WANT = {
   stable: r => r.level === 'low',
   decline: r => r.level === 'high' && r.signals.cognition === 'refer',
-  hypoxia: r => r.level === 'high' && r.signals.spo2 && !r.signals.cognition,
+  hypoxia: r => r.level === 'high' && r.signals.spo2 === 'refer' && !r.signals.cognition,
   hearing: r => r.level === 'mid' && r.signals.hearing && !r.signals.cognition,
   noAnswer: r => r.level === 'mid' && r.signals.missedRun === 2 && !r.signals.cognition,
   mild: r => r.level === 'mid' && r.signals.cognition === 'watch' && r.signals.missedRun < 2
@@ -425,6 +425,13 @@ const MOOD = { good: ['기분 좋다.', '오늘은 괜찮다, 기분 좋네.'], 
 const CHAT = ['별일 없다. 텃밭에 나가 있었다.', '경로당 댕겨왔다.', '아들이 전화 왔더라.', '날이 좀 선선해졌네.'];
 const CHAT_REQ = ['허리가 좀 쑤시고… 반찬 좀 갖다주면 좋겠다 카이.', '무릎이 아파가 병원 좀 데려다 줬으면 싶다.', '보일러가 고장 나서 좀 도와주면 좋겠다.'];
 
+// 휴지(답변 중 멈춤) 값은 따로 만든 난수로 정한다 (통화·점수를 만드는 난수 순서를 바꾸지 않게)
+function side(key) {
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 16777619);
+  return ((h >>> 0) % 10000) / 10000;
+}
+
 // 한 사람의 통화·생체신호 기록 (k = 0..60, 마지막 날이 오늘)
 function generate(person, pf, i, attempt, start, settings) {
   let x = 20260927 + i * 7919 + attempt * 104729;
@@ -476,14 +483,19 @@ function generate(person, pf, i, attempt, start, settings) {
       const asks = kind === 'hearing' ? 2 + Math.floor(rand() * 2) : rand() < 0.04 ? 1 : 0;
       const askAt = new Set([...Array(asks)].map(() => Math.floor(rand() * plan.items.length)));
       const slow = (kind === 'decline' && dayNo > 35 ? 1.2 : 0) + (kind === 'mild' && fromEnd <= 14 ? 0.6 : 0);
+      // 휴지: 보통 문항당 0~0.6초, 틀린 대답이면 조금 더. 점진적 저하는 후반 +0.8초, 경미한 저하는 최근 2주 +0.3초
+      const pauseMore = (kind === 'decline' && dayNo > 35 ? 0.8 : 0) + (kind === 'mild' && fromEnd <= 14 ? 0.3 : 0);
       const items = plan.items.map((it, j) => {
         let answer = answerFor(it, pts[j], rand, pf.tone);
         const repeatAsked = askAt.has(j) ? (kind === 'hearing' && rand() < 0.4 ? 2 : 1) : 0;
         if (repeatAsked) answer = (kind === 'hearing' ? '네? 뭐라꼬예? ' : '예? 다시 한번 말해 주이소. ') + answer;
+        const score = scoreItem(it, answer);
+        const u = side(`${id}|${k}|${attempt}|${j}`);
+        const pauseSec = r1(Math.max(0, u * 0.6 + (score < it.maxScore ? 0.5 : 0) + pauseMore * (0.6 + u * 0.8)));
         return {
           ...itemSpec(it), question: it.question, answer, expected: it.expected,
-          score: scoreItem(it, answer), maxScore: it.maxScore,
-          latencySec: r1(1.2 + rand() * 2.2 + slow), repeatAsked
+          score, maxScore: it.maxScore,
+          latencySec: r1(1.2 + rand() * 2.2 + slow), pauseSec, pauses: pauseSec >= 1 ? Math.round(pauseSec) : 0, repeatAsked
         };
       });
       const sleepV = rand() < (kind === 'hypoxia' ? 0.45 : 0.15) ? 'poor' : 'good';

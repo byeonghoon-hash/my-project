@@ -13,6 +13,7 @@ import { todayStr, nowStamp } from './metrics.js';
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const SILENCE_MS = 3000;   // 말이 끝나고 3초 침묵 → 다음 문항
 const VOICE_LEVEL = 0.02;  // 이 음량(RMS)보다 크면 말하는 중으로 본다
+const PAUSE_MS = 1000;     // 말을 시작한 뒤 1초 이상 멈췄다가 다시 말하면 '휴지'로 센다 (3초 침묵이면 답변 끝)
 const ECHO_MS = 300;       // 앱 목소리가 끝나고 이만큼 지난 뒤부터 어르신 말을 받는다
 const TTS_MS = 8000;       // AI 음성 한 문장 제한 시간
 const CHAT_MS = 8500;      // AI 대화 한 턴 제한 시간 (서버 8초 + 여유)
@@ -271,7 +272,7 @@ export async function runCall(settings, ui, person, prep, bank, cist = null) {
   // 한 문항 묻고 듣기 (재질문이면 허용 횟수만큼 천천히 다시 읽는다, 딴 이야기면 한 번 다시 묻는다)
   // limit: { rereads(다시 읽기 허용 횟수), noOff(딴 이야기 확인 안 함) }
   const ask = async (question, item, phase = 'item', opts = {}, limit = {}) => {
-    const r = { answer: '', latencySec: null, repeatAsked: 0, startMs: Math.round(performance.now() - t0), endMs: null, emergency: false, segments: 0 };
+    const r = { answer: '', latencySec: null, pauseSec: null, pauses: 0, repeatAsked: 0, startMs: Math.round(performance.now() - t0), endMs: null, emergency: false, segments: 0 };
     let left = limit.rereads ?? rereads, offLeft = phase === 'item' && !limit.noOff ? 1 : 0, slow = false;
     const said = [];
     for (;;) {
@@ -287,6 +288,7 @@ export async function runCall(settings, ui, person, prep, bank, cist = null) {
       if (ans.wantReread) { left--; slow = true; continue; }
       if (off) { offLeft--; slow = false; await say(SCRIPT.offTopic, { phase: 'offtopic' }); continue; }
       r.latencySec = ans.latencyMs == null ? null : Math.round(ans.latencyMs / 100) / 10;
+      if (r.latencySec != null) { r.pauseSec = Math.round(ans.pauseMs / 100) / 10; r.pauses = ans.pauses; }
       break;
     }
     r.answer = said.filter(Boolean).join(' ');
@@ -499,7 +501,7 @@ export async function runCall(settings, ui, person, prep, bank, cist = null) {
     results.push({
       ...itemSpec(item), question: item.question, answer: r.answer, expected: item.expected,
       score: ctx.useSR ? scoreItem(item, r.answer) : null, // 받아쓰기가 없으면 관리자가 채점
-      maxScore: item.maxScore, latencySec: r.latencySec, repeatAsked: r.repeatAsked, startMs: r.startMs, endMs: r.endMs
+      maxScore: item.maxScore, latencySec: r.latencySec, pauseSec: r.pauseSec, pauses: r.pauses, repeatAsked: r.repeatAsked, startMs: r.startMs, endMs: r.endMs
     });
   }
   const allDone = results.length === plan.items.length;
@@ -595,7 +597,7 @@ function listen(ctx, item, canReread) {
   return new Promise(resolve => {
     const start = performance.now();
     const useSilence = item.key !== 'fluency' && item.key !== 'draw';
-    let spokeAt = null, lastVoice = 0, finals = '', interim = '', asks = 0, recog = null, finished = false, segments = 0;
+    let spokeAt = null, lastVoice = 0, finals = '', interim = '', asks = 0, recog = null, finished = false, segments = 0, pauseMs = 0, pauses = 0;
 
     const finish = wantReread => {
       if (finished) return;
@@ -604,7 +606,7 @@ function listen(ctx, item, canReread) {
       skip = null;
       if (recog) { recog.onend = null; recog.abort(); }
       ctx.ui.level(0);
-      resolve({ text: (finals + ' ' + interim).trim(), latencyMs: spokeAt ? Math.round(spokeAt - start) : null, asks, wantReread, segments });
+      resolve({ text: (finals + ' ' + interim).trim(), latencyMs: spokeAt ? Math.round(spokeAt - start) : null, asks, wantReread, segments, pauseMs: Math.round(pauseMs), pauses });
     };
 
     // 받아쓰기: 답변 구간마다 새로 시작한다 (질문 읽는 소리가 받아써지지 않도록)
@@ -642,6 +644,7 @@ function listen(ctx, item, canReread) {
       ctx.ui.level(lv);
       if (lv > VOICE_LEVEL) {
         if (!lastVoice || now - lastVoice > 250) segments++;
+        if (spokeAt && now - lastVoice >= PAUSE_MS) { pauseMs += now - lastVoice; pauses++; } // 답변 중 멈춤 (휴지)
         spokeAt ??= now;
         lastVoice = now;
       }
