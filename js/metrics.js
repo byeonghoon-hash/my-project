@@ -892,7 +892,10 @@ export function aiSummary(person, data, today, getV) {
   // 야간 착용
   if (!noDevice && (ringNights.length || !device)) {
     const worn = t.wear.daily.filter(x => x.date >= addDays(today, -6) && x.value >= 4).length;
-    items.push({ label: '야간 착용', text: `야간 착용 ${worn}/7밤 · ${worn >= 5 ? '측정 양호' : '착용 권장 필요'}${tag}`, off: worn < 5 });
+    // 등록한 지 7일이 안 된 사람은 등록 뒤 지난 밤 수로 본다 (등록 전 밤은 세지 않으므로)
+    const span = person.enrolledAt > addDays(today, -6) ? Math.max(1, daysBetween(person.enrolledAt, today) + 1) : 7;
+    const good = worn >= Math.min(5, span);
+    items.push({ label: '야간 착용', text: `야간 착용 ${worn}/${span}밤 · ${good ? '측정 양호' : '착용 권장 필요'}${tag}`, off: !good });
   }
 
   const bullets = [...items.filter(i => i.off), ...items.filter(i => !i.off)].slice(0, 7);

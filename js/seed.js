@@ -1,4 +1,4 @@
-// 시연용 대상자 10명과 61일치(오늘 포함) 가상 기록 생성. 날짜는 오늘 기준으로 거꾸로 만든다.
+// 시연용 대상자 10명(+ 시연 시나리오 3명)과 61일치(오늘 포함) 가상 기록 생성. 날짜는 오늘 기준으로 거꾸로 만든다.
 // 사람마다 원하는 성향(위험도 높음 2 · 주의 3 · 낮음 5)이 나올 때까지 난수 시드를 바꿔 가며 만든다.
 // 통화 대화록은 점수와 맞게 만든다: 대답을 먼저 만들고 점수는 그 대답을 자동 채점한 값이다.
 
@@ -12,7 +12,7 @@ import {
 import { pickVitals, recomputeRing } from './vitals.js';
 
 // 시드 버전. 올리면 저장된 시연 데이터를 새로 만든다 (회원 계정·링 실측 데이터는 유지).
-export const SEED_VERSION = 12;
+export const SEED_VERSION = 13;
 
 // 전화번호는 모두 가짜(010-0000-), 보호자 이름은 지어낸 것, 의료기관명은 '○○내과의원'.
 const phone = n => `010-0000-${n}`;
@@ -180,6 +180,9 @@ export function makeSeed(settings = DEFAULT_SETTINGS, today = todayStr()) {
   data.cistSessions = [];
   data.people.forEach((p, i) => data.cistSessions.push(...seedCist(p, i, today)));
 
+  // ---- 시연 시나리오(첨부 1) 3명: 오늘 등록 → 링 예시 자료 → 안부전화 한 번을 마친 상태 ----
+  seedScenario(data, today);
+
   // ---- 과거 알림 (연계·수검 결과가 있어 PPV·오경보율이 계산되게) ----
   const past = (personId, daysAgo, referredAfter, outcome, checklist) => {
     const created = addDays(today, -daysAgo);
@@ -232,7 +235,7 @@ export function makeSeed(settings = DEFAULT_SETTINGS, today = todayStr()) {
   }
 
   // ---- 돌봄일지: 대상자마다 확정 1~3건 (첫 건은 자동 초안을 다듬은 모양) ----
-  data.people.forEach((p, i) => {
+  data.people.slice(0, PEOPLE.length).forEach((p, i) => { // 시나리오 3명은 오늘 등록이라 일지 없음
     const dates = [[-8], [-20, -8], [-30, -18, -6]][i % 3].map(k => addDays(today, k));
     dates.forEach((d, k) => {
       const draft = journalDraft(p, data, d, getV);
@@ -260,7 +263,7 @@ export function makeSeed(settings = DEFAULT_SETTINGS, today = todayStr()) {
 }
 
 // 사람마다 하루에 앱을 열 확률 (윤병훈 자주 · 정두만 거의 안 함 · 이상철 점점 줄어듦)
-const APP_USE = [0.6, 0.5, 0.7, 0.3, 0.6, 0.4, 0.2, 0.05, 0.5, 0.8];
+const APP_USE = [0.6, 0.5, 0.7, 0.3, 0.6, 0.4, 0.2, 0.05, 0.5, 0.8]; // 시나리오 3명은 앱 기록 없음 (통화 적립만)
 function seedApp(data, today) {
   const s = data.settings;
   data.activities = [];
@@ -271,7 +274,7 @@ function seedApp(data, today) {
     const rand = () => { st = (st * 16807) % 2147483647; return st / 2147483647; };
     for (let k = 28; k >= 1; k--) {
       const date = addDays(today, -k);
-      const use = APP_USE[i] * (i === 4 ? k / 28 : 1);
+      const use = (APP_USE[i] || 0) * (i === 4 ? k / 28 : 1);
       if (rand() < use) {
         const n = 1 + Math.floor(rand() * 3);
         for (let j = 0; j < n; j++) {
@@ -546,6 +549,93 @@ function generate(person, pf, i, attempt, start, settings) {
   return { calls, vitals };
 }
 
+// 시연 시나리오(첨부 1) 3명 --------------------------------------------------------
+// 평가자가 등록 → 안부전화 → 위험도 확인까지 마친 결과. 오늘 등록, 링 예시 자료 3밤(sample/scenario*.csv와 같은 값), 오늘 통화 한 번.
+// 정옥희 모두 정답·바로(100%) → 유지 · 박영철 날짜 틀림·단어 1개 못 떠올림·조금 늦게(80%) → 주의
+// 이말순 날짜 틀림·단어 3개 모두 못 떠올림·재질문(60%, SpO2 97%) → 주의
+const SCENARIO = [
+  { name: '정옥희', sex: '여', age: 79, living: '독거', time: '09:00', spo2: 96, hr: 68, file: 'scenario1_jeongokhee.csv',
+    address: '울주군 웅촌면 석천리', lat: 35.4412, lng: 129.1990, guardian: ['정수진', '딸'], // 임의 좌표
+    wrong: {}, latency: 1.5, repeat: [] },
+  { name: '박영철', sex: '남', age: 82, living: '부부', time: '09:20', spo2: 93, hr: 78, file: 'scenario2_parkyoungchul.csv',
+    address: '울주군 웅촌면 대복리', lat: 35.4740, lng: 129.2070, guardian: ['김순례', '배우자'], // 임의 좌표
+    wrong: { orientation: 'all', recall: 1 }, latency: 3.2, repeat: [] },
+  { name: '이말순', sex: '여', age: 85, living: '독거', time: '09:40', spo2: 97, hr: 88, file: 'scenario3_leemalsoon.csv',
+    address: '울주군 웅촌면 은현리', lat: 35.4628, lng: 129.1880, guardian: ['이동욱', '아들'], // 임의 좌표
+    wrong: { orientation: 'all', recall: 'all' }, latency: 2.5, repeat: ['orientation', 'recall'] }
+];
+
+// 링 1분 값 [분, 샘플 수, 착용 샘플 수, sqi 합, SpO2 중앙값, 심박 평균] (30초 간격 → 1분에 2샘플)
+// 23:00~06:30, 새벽 3시 무렵 10분 동안 SpO2·심박이 가장 낮다 (그 값이 하룻밤 최저 SpO2·안정 시 심박이 된다)
+function scenarioMinutes(sc, today) {
+  const rows = [];
+  for (let back = 2; back >= 0; back--) {
+    const [y, m, d] = addDays(today, -back - 1).split('-').map(Number);
+    const from = Math.floor(new Date(y, m - 1, d, 23, 0).getTime() / 60000);
+    for (let k = 0; k < 450; k++) {
+      const low = k >= 240 && k < 250;
+      const w = (k * 7 + back * 3) % 11;
+      rows.push([from + k, 2, 2, 1.82, low ? sc.spo2 : Math.min(99, sc.spo2 + 1 + (w % 3)), low ? sc.hr : sc.hr + 3 + (w % 4)]);
+    }
+  }
+  return rows;
+}
+
+function seedScenario(data, today) {
+  const s = data.settings;
+  data.ringImports ??= [];
+  SCENARIO.forEach((sc, j) => {
+    const i = PEOPLE.length + j, id = 'p' + (i + 1);
+    const info = baseInfo({
+      living: sc.living, contacts: [{ name: sc.guardian[0], relation: sc.guardian[1], phone: phone(String(3011 + j)), priority: 1, consent: true }],
+      device: { name: 'I-ME 링 (자작)', source: 'device', clockOffsetMin: 0, spo2OffsetPct: 0 }
+    });
+    info.call.title = `${sc.name} 님`;
+    info.consent = { ...info.consent, date: today, renewDate: addDays(today, 365) };
+    const person = {
+      id, name: sc.name, sex: sc.sex, birth: `${+today.slice(0, 4) - sc.age}-0${4 + j}-1${j}`, age: sc.age,
+      phone: phone(String(1011 + j)), phoneType: '휴대폰', education: [9, 6, 0][j], canRead: ['가능', '가능', '어려움'][j],
+      guardianPhone: info.contacts[0].phone, preferredTime: sc.time, enrolledAt: today, active: true, closed: null,
+      referral: '보건소 의뢰', dementiaCenter: '아니요',
+      address: sc.address, lat: sc.lat, lng: sc.lng, manager: '윤병훈 간호사', info
+    };
+    data.people.push(person);
+
+    // 링 예시 자료 (불러온 파일 하나)
+    const minutes = scenarioMinutes(sc, today);
+    data.ringImports.push({
+      id: 'ri-' + id, personId: id, fileName: sc.file, importedAt: `${today}T${sc.time}`, samples: minutes.length * 2, intervalSec: 30, missingPct: 0,
+      firstMin: minutes[0][0], lastMin: minutes.at(-1)[0], minutes, source: 'demo'
+    });
+    recomputeRing(data, id);
+
+    // 오늘 안부전화 (대답을 먼저 만들고 자동 채점)
+    let x = 7001 + j * 131;
+    const rand = () => { x = (x * 16807) % 2147483647; return x / 2147483647; };
+    const plan = planForDate(today, DEFAULT_BANK);
+    const items = plan.items.map((it, k) => {
+      const miss = sc.wrong[it.key];
+      const target = miss === 'all' ? 0 : it.maxScore - (miss || 0);
+      let answer = answerFor(it, target, rand, 0);
+      const repeatAsked = sc.repeat.includes(it.key) ? 1 : 0;
+      if (repeatAsked) answer = '네? 다시 한번 말해 주이소. ' + answer;
+      const score = scoreItem(it, answer);
+      const latencySec = Math.round((sc.latency + (k % 3) * 0.2) * 10) / 10;
+      return { ...itemSpec(it), question: it.question, answer, expected: it.expected, score, maxScore: it.maxScore, latencySec, pauseSec: 0, pauses: 0, repeatAsked };
+    });
+    const S = plan.script;
+    const call = {
+      id: `c-sc-${j + 1}`, personId: id, date: today, time: sc.time, startedAt: `${today}T${sc.time}`, source: 'demo', audioId: null,
+      status: 'completed', durationSec: 168 + j * 12, items, scorePct: scorePct(items), z: null,
+      opening: { hello: '네, 됩니다.', condition: { question: S.condition, answer: ['괜찮다, 별일 없다.', '그럭저럭 지낸다.', '무릎이 좀 쑤시네.'][j], ai: false },
+        recent: { question: S.recent, answer: ['딱히 없다.', '별거 없다.', '요새 깜빡깜빡한다, 안경을 어디 뒀는지 몰라가.'][j] } },
+      selfReport: { sleep: { answer: '잘 잤다.', value: classifySleep('잘 잤다.') }, mood: { answer: '그냥 그렇다.', value: classifyMood('그냥 그렇다.') } },
+      chat: { question: CHAT_QUESTION, answer: CHAT[j] }, requests: []
+    };
+    data.calls.push(call);
+  });
+}
+
 // 시연 데이터 다시 만들기: 회원 계정·설정·링 실측 데이터는 그대로 둔다
 // 직접 한 통화(source 'real')와 그 응급 표현 알림, 문항 관리에서 고친 뱅크도 남긴다
 export function reseed(old) {
@@ -568,7 +658,8 @@ export function reseed(old) {
   // 대상자 앱에서 직접 한 활동·적립은 남긴다
   d.activities.push(...(old?.activities || []).filter(a => a.source === 'real' && ids.has(a.personId)));
   d.points.push(...(old?.points || []).filter(x => x.source === 'real' && ids.has(x.personId)));
-  d.ringImports = (old?.ringImports || []).filter(r => d.people.some(p => p.id === r.personId));
+  // 직접 불러온 링 기록은 남긴다 (시나리오 3명의 예시 링 기록은 새 시드 것을 쓴다)
+  d.ringImports = [...d.ringImports, ...(old?.ringImports || []).filter(r => r.source !== 'demo' && d.people.some(p => p.id === r.personId))];
   for (const pid of new Set(d.ringImports.map(r => r.personId))) recomputeRing(d, pid);
   return d;
 }

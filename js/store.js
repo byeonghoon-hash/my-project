@@ -59,7 +59,7 @@ export function syncable(d) {
   const real = new Set((d.calls || []).filter(c => c.source === 'real').map(c => c.id));
   return [
     ...Object.entries(SYNC_KINDS).flatMap(([kind, ok]) => (d[kind] || []).filter(x => x?.id && ok(x, real)).map(rec => ({ kind, rec }))),
-    ...(d.ringImports || []).filter(x => x?.id).flatMap(imp => [{ kind: 'ringImports', rec: ringHead(imp) }, ...ringParts(imp).map(rec => ({ kind: 'ringParts', rec }))])
+    ...(d.ringImports || []).filter(x => x?.id && x.source !== 'demo').flatMap(imp => [{ kind: 'ringImports', rec: ringHead(imp) }, ...ringParts(imp).map(rec => ({ kind: 'ringParts', rec }))])
   ];
 }
 // 서버 기록을 합친다. 이 기기에서 고치고 아직 못 올린 기록은 이 기기 것을 둔다. 바뀐 게 있으면 true.

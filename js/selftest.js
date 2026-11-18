@@ -154,15 +154,21 @@ assert.ok(!(await verifyPassword(acc, 'secret2')));
 // ---- aiSummary: 시연 대상자 10명 모두 문장이 있고, 진단 표현이 없음 ----
 const seed = makeSeed(S, today);
 const getV = (pid, dd) => pickVitals(seed, pid, dd);
-assert.equal(seed.people.length, 10);
+assert.equal(seed.people.length, 13); // 시연 대상자 10명 + 시나리오 3명
 for (const p of seed.people) {
   const ai = aiSummary(p, seed, today, getV);
   assert.ok(ai.bullets.length >= 1, p.name);
   const text = ai.bullets.map(b => b.text).join(' ') + ai.action + ai.risk.reasons.join(' ');
   assert.ok(!/치매|진단/.test(text.replace('치매안심센터', '')), p.name + ': ' + text);
 }
-const levels = seed.people.map(p => riskOf(p, seed, today, getV).level);
+const levels = seed.people.slice(0, 10).map(p => riskOf(p, seed, today, getV).level);
 assert.deepEqual(['high', 'mid', 'low'].map(l => levels.filter(x => x === l).length), [2, 3, 5]);
+// 시나리오 3명: 오늘 등록, 오늘 통화 한 번 → 유지 · 주의(80%) · 주의(60%)
+const scen = seed.people.slice(10);
+assert.deepEqual(scen.map(p => p.name), ['정옥희', '박영철', '이말순']);
+assert.deepEqual(scen.map(p => seed.calls.find(c => c.personId === p.id && c.date === today)?.scorePct), [100, 80, 60]);
+assert.deepEqual(scen.map(p => riskOf(p, seed, today, getV).level), ['low', 'mid', 'mid']);
+assert.ok(scen.every(p => seed.ringNights.filter(n => n.personId === p.id && n.valid).length === 3));
 
 // ======== 기본 정보 연결 ========
 const bp = { id: 'b1', enrolledAt: '2026-09-01', active: true, info: { call: { pause: null } } };
@@ -300,7 +306,7 @@ const before = dash2(cd, 7, today, cgetV);
 const cp = cd.people[0];
 cp.closed = { reason: '이사', date: today }; cp.active = false;
 const after = dash2(cd, 7, today, cgetV);
-assert.equal(cd.people.filter(p => p.active).length, 9);
+assert.equal(cd.people.filter(p => p.active).length, cd.people.length - 1);
 // 분모(발신 대상일)에서 빠졌는지: 종결 전후 완료율 계산에 쓰인 대상일 수 비교
 const targetDays = data => { let n = 0; for (const p of data.people.filter(p => p.active)) n += completion7(p, data.calls, today).days; return n; };
 cp.active = true; const tBefore = targetDays(cd); cp.active = false; const tAfter = targetDays(cd);
@@ -534,14 +540,14 @@ assert.equal(isOffTopic(regItem, '잘 모르겠는데 기억이 하나도 안 �
   assert.equal(sd.cistSessions.map(x => cistScore(x).original.score).join(), before);
   assert.equal(cistPlan({ date: tdate, modes: sd.cistModes, prevCount: 0 }).items.find(i => i.id === 'v_draw').status, 'omitted');
   // 시드: 10명 모두 2~3회, 초안 1명(확인 필요 2), 9일 지연 1명, 시공간 방식 바뀐 1명, 위험도 2·3·5 유지
-  const per = sd.people.map(p => sd.cistSessions.filter(x => x.personId === p.id).length);
+  const per = sd.people.slice(0, 10).map(p => sd.cistSessions.filter(x => x.personId === p.id).length);
   assert.ok(per.every(n => n >= 2 && n <= 3));
   const drafts = sd.cistSessions.filter(x => x.status === 'draft');
   assert.equal(drafts.length, 1);
   assert.equal(cistScore(drafts[0]).pending, 2);
   assert.equal(sd.people.filter(p => cistStatus(p, sd, tdate).delayed).length, 1);
   assert.ok(sd.cistSessions.some((x, n, a) => n && x.personId === a[n - 1].personId && x.modes.visuospatial !== a[n - 1].modes.visuospatial));
-  const lv = sd.people.map(p => risk2(p, sd, tdate, gv).level);
+  const lv = sd.people.slice(0, 10).map(p => risk2(p, sd, tdate, gv).level);
   assert.deepEqual(['high', 'mid', 'low'].map(l => lv.filter(x => x === l).length), [2, 3, 5]);
   assert.equal(sd.people.filter(p => (p.info.tests || []).length).length, 4);
   // 다음 정기 검사일 직접 지정
@@ -616,9 +622,9 @@ assert.equal(isOffTopic(regItem, '잘 모르겠는데 기억이 하나도 안 �
   assert.deepEqual(checkNotice({ title: '물', body: 'x', from: day }), {});
   // 시드: 오늘 통화는 아직 없음(어르신 화면에서 전화가 울림), 건강정보 4건 게시 중, 위험도 분포는 그대로
   const sd = makeSeed(S, day);
-  assert.equal(sd.calls.filter(c => c.date === day).length, 0);
+  assert.equal(sd.calls.filter(c => c.date === day && !c.id.startsWith('c-sc-')).length, 0); // 시나리오 3명만 오늘 통화를 마친 상태
   assert.equal(healthToday(sd, day).length, 4);
-  const lv = sd.people.map(p => riskOf(p, sd, day, (pid, dt) => pickVitals(sd, pid, dt)).level);
+  const lv = sd.people.slice(0, 10).map(p => riskOf(p, sd, day, (pid, dt) => pickVitals(sd, pid, dt)).level);
   assert.deepEqual(['high', 'mid', 'low'].map(l => lv.filter(x => x === l).length), [2, 3, 5]);
 }
 
@@ -732,7 +738,7 @@ assert.equal(isOffTopic(regItem, '잘 모르겠는데 기억이 하나도 안 �
   assert.ok(selfAlerts.length >= 1 && selfAlerts.length <= 4, selfAlerts.length);
   assert.ok(selfAlerts.some(a => a.personId === sd.people.find(x => x.name === '김말순').id && a.reasons.some(r => r.startsWith('낙상'))));
   const gv = (pid, dt) => pickVitals(sd, pid, dt);
-  assert.deepEqual(['high', 'mid', 'low'].map(l => sd.people.filter(x => riskOf(x, sd, day, gv).level === l).length), [2, 3, 5]);
+  assert.deepEqual(['high', 'mid', 'low'].map(l => sd.people.slice(0, 10).filter(x => riskOf(x, sd, day, gv).level === l).length), [2, 3, 5]);
   // 2주 주기: 최영희 9일 지연
   const choi = sd.people.find(x => x.name === '최영희');
   assert.equal(M.cistStatus(choi, sd, day).delayed, true);
