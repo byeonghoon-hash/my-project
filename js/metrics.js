@@ -30,6 +30,11 @@ export const DEFAULT_SETTINGS = {
   spo2CautionNights: 2,    // 야간 SpO2: 최근 7일 중 기준 미만 10분 이상인 밤 2밤이면 주의 (spo2AlertNights 3밤이면 의뢰)
   hrCaution: 8,            // 안정 시 심박: 최근 7일 평균이 이전 30일 평균과 8 bpm 이상 다르면 주의
   hrRefer: 15,             //   15 bpm 이상 다르거나 7일 평균이 100 bpm 이상·50 bpm 미만이면 의뢰
+  // 기저선 형성 중(처음 14회 전)인 새 대상자: 마지막 매일 통화 하나로 임시 판정
+  earlyCaution: 80,        //   점수 80% 이하(2문항 이상 틀림) → 주의
+  earlyRefer: 50,          //   점수 50% 미만 → 의뢰
+  earlyResp: 4.0,          //   문항당 응답 지연+휴지 4초 이상 → 주의
+  earlyRepeats: 2,         //   재질문 2회 이상 → 주의
   riskMid: 75,             // 종합 케어 스코어 75점 미만 → 주의
   riskHigh: 55,            //   55점 미만 → 높음(의뢰)
   visitBufferMin: 20,      // 방문 사이 이동 여유 시간(분). 웅촌면은 마을 간 이동 시간이 있다
@@ -43,7 +48,7 @@ export const DEFAULT_SETTINGS = {
 };
 
 export const LEVEL_RANK = { watch: 1, caution: 2, refer: 3 };
-export const RISK_LABEL = { high: '높음', mid: '주의', low: '낮음' };
+export const RISK_LABEL = { high: '의뢰', mid: '주의', low: '유지' };
 export const ALERT_LEVEL_LABEL = { watch: '관찰', caution: '주의', refer: '의뢰' };
 
 // ---------- 날짜 ('YYYY-MM-DD' 문자열로 다룬다) ----------
@@ -215,6 +220,16 @@ export function responseStatus(scored, s) {
   return { ready: true, n: vals.length, base, recent, delta, level };
 }
 
+// 기저선 형성 중 임시 판정: 통화 한 번의 점수·응답 지연·재질문
+export function earlyLevel(call, s) {
+  if (call?.scorePct == null) return null;
+  if (call.scorePct < (s.earlyRefer ?? 50)) return 'refer';
+  const rv = respValue(call);
+  const asks = (call.items || []).reduce((t, i) => t + (i.repeatAsked || 0), 0);
+  if (call.scorePct <= (s.earlyCaution ?? 80) || (rv != null && rv >= (s.earlyResp ?? 4)) || asks >= (s.earlyRepeats ?? 2)) return 'caution';
+  return null;
+}
+
 // 최근 30일 추세 기울기 (최소제곱 회귀, 하루당 점수 변화 %p)
 export function slope30(scored, today) {
   const from = addDays(today, -29);
@@ -265,6 +280,7 @@ export function personStatus(person, allCalls, s, today, getV) {
   const lastScored = scored.at(-1);
   const hearingFlag = hearingCount(calls, s) >= s.hearingCalls;
   const resp = responseStatus(scored.filter(c => c.kind !== 'cist'), s);
+  const lastDaily = scored.filter(c => c.kind !== 'cist').at(-1);
   const night = getV ? nightSummary(person.id, today, s, getV) : { validNights: 0, badNights: 0, hrDelta: null, hrNow: null };
   const bad = night.badNights;
   const hrOff = night.hrDelta == null ? null : Math.abs(night.hrDelta);
@@ -284,6 +300,8 @@ export function personStatus(person, allCalls, s, today, getV) {
     levels: {
       // 인지: 표준편차 기준(z)과 점수 기준(개인 기저선) 중 높은 단계
       cognition: base.ready ? higher(cognitionLevel(zs.slice(s.baselineDays).map(x => x.z), s), pointLevel(drops, s)) : null,
+      // 기저선 형성 중: 마지막 매일 통화 하나로 임시 판정 (기저선이 생기면 쓰지 않는다)
+      earlyCog: !base.ready && lastDaily ? earlyLevel(lastDaily, s) : null,
       noAnswer: missedRun(calls, person) >= s.missedEscalateDays ? 'caution' : null,
       // 통화 응답: 응답 지연+휴지 증가
       response: resp.level,
@@ -488,7 +506,9 @@ export function riskOf(person, data, today, getV) {
   const knownHearing = hearingKnown(person);
   const signals = {
     emergency: !!openLevel('emergency'), // 통화 중 응급 표현 (열린 알림)
-    cognition: openLevel('cognition'),
+    // 인지: 기저선이 있으면 기저선 판정, 형성 중이면 첫 통화 임시 판정
+    cognition: st.base.ready ? openLevel('cognition') : openLevel('earlyCog'),
+    early: !st.base.ready && !!openLevel('earlyCog'),
     spo2: openLevel('spo2'),          // 'caution'(2밤) | 'refer'(3밤 이상) | null
     response: openLevel('response'),  // 통화 응답 지연·휴지 증가
     heart: openLevel('heart'),        // 안정 시 심박 변화
@@ -515,9 +535,10 @@ export function riskOf(person, data, today, getV) {
 
   const reasons = [];
   if (signals.emergency) reasons.push('응급 표현 · 즉시 확인');
-  if (signals.cognition === 'refer') reasons.push('인지 기저선 이탈 · 연계 검토');
+  if (signals.early) reasons.push(`기저선 형성 중 · 최근 통화 점수 ${Math.round(st.lastScore ?? 0)}%${signals.cognition === 'refer' ? ' · 연계 검토' : ''}`);
+  else if (signals.cognition === 'refer') reasons.push('인지 기저선 이탈 · 연계 검토');
   if (cr) reasons.push(cr.reason);
-  if (signals.cognition === 'caution') reasons.push('인지 저하 신호 · 연속 이탈');
+  if (signals.cognition === 'caution' && !signals.early) reasons.push('인지 저하 신호 · 연속 이탈');
   if (signals.cognition === 'watch') reasons.push('인지 경미한 저하');
   if (signals.missedRun >= 2) reasons.push(`최근 ${signals.missedRun}일 미응답`);
   if (signals.response) reasons.push(signals.response === 'refer' ? '통화 응답 지연·휴지 크게 증가' : '통화 응답 지연·휴지 증가');
@@ -1004,7 +1025,8 @@ export const confirmedCist = (data, personId) => cistSessionsOf(data, personId).
 export function cistDue(person, data) {
   if (person.info?.call?.cistNext) return person.info.call.cistNext;
   const last = cistSessionsOf(data, person.id).at(-1);
-  return last ? addDays(last.date, (data.settings.cistIntervalWeeks || 2) * 7) : person.enrolledAt;
+  // 첫 정기 검사는 등록일 + 주기 (등록 뒤 첫 통화들은 매일 문항으로 기저선을 만든다)
+  return addDays(last ? last.date : person.enrolledAt, (data.settings.cistIntervalWeeks || 2) * 7);
 }
 // 한 사람의 정기 검사 상태 (대시보드·목록·상세·알림·위험도가 같이 쓴다)
 export function cistStatus(person, data, today) {

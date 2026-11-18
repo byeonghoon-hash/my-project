@@ -847,4 +847,46 @@ assert.equal(isOffTopic(regItem, '잘 모르겠는데 기억이 하나도 안 �
   assert.equal(half.ringImports.length, 0);
 }
 
+// ======== 시연 시나리오 3명: 새로 등록 → 링 예시 자료 → 안부전화 한 번 → 유지 · 주의 · 주의 ========
+{
+  const M = await import('./metrics.js');
+  const V = await import('./vitals.js');
+  const I = await import('./items.js');
+  const day = '2026-11-18';
+  const plan = I.planForDate(day).items;
+  const scenario = (id, csv, role) => {
+    const person = { id, enrolledAt: day, active: true, info: { call: { days: [0, 1, 2, 3, 4, 5, 6], spo2Threshold: 90 }, device: { source: 'device', clockOffsetMin: 0, spo2OffsetPct: 0 } } };
+    const d = { settings: { ...M.DEFAULT_SETTINGS }, people: [person], calls: [], vitals: [], alerts: [], cistSessions: [], ringImports: [], ringNights: [] };
+    V.importRing(d, id, csv, readFileSync(new URL('../sample/' + csv, import.meta.url), 'utf8'));
+    assert.equal(M.cistStatus(person, d, day).isDueToday, false);              // 첫 통화는 매일 문항 (정기 검사는 2주 뒤)
+    const items = plan.map(it => ({ key: it.key, domain: it.domain, maxScore: it.maxScore, ...role(it) }));
+    const score = items.reduce((t, i) => t + i.score, 0);
+    d.calls.push({ id: id + 'c', personId: id, date: day, startedAt: day + 'T14:00', status: 'completed', source: 'real', kind: undefined, items, scorePct: (score / 10) * 100 });
+    const gv = (pid, dd) => V.pickVitals(d, pid, dd);
+    M.updateAlerts(d.alerts, id, M.personStatus(person, d.calls, d.settings, day, gv).levels, day + 'T14:10');
+    return M.riskOf(person, d, day, gv);
+  };
+  const ok = it => ({ score: it.maxScore, latencySec: 1.5, pauseSec: 0, repeatAsked: 0 });
+  // 1. 정옥희: 모두 바로·정확하게 → 유지
+  const r1 = scenario('s1', 'scenario1_jeongokhee.csv', ok);
+  assert.equal(r1.level, 'low');
+  assert.equal(M.RISK_LABEL[r1.level], '유지');
+  assert.equal(r1.signals.parts.spo2, 100);
+  // 2. 박영철: 날짜(때) 문항 틀림 · 세 단어 중 하나 못 떠올림 · 조금 늦게 → 주의
+  const r2 = scenario('s2', 'scenario2_parkyoungchul.csv', it => ({ ...ok(it), latencySec: 3.2,
+    score: it.key === 'orientation' ? 0 : it.key === 'recall' ? it.maxScore - 1 : it.maxScore }));
+  assert.equal(r2.level, 'mid');
+  assert.ok(r2.reasons[0].startsWith('기저선 형성 중 · 최근 통화 점수 80%'), r2.reasons[0]);
+  // 3. 이말순 (SpO2 97%로): 날짜 틀림 · 세 단어 모두 못 떠올림 · 질문을 두세 번 다시 물음 → 주의 (의뢰 아님)
+  const r3 = scenario('s3', 'scenario3_leemalsoon.csv', it => ({ ...ok(it), latencySec: 2.5, repeatAsked: it.key === 'recall' || it.key === 'orientation' ? 1 : 0,
+    score: it.key === 'orientation' || it.key === 'recall' ? 0 : it.maxScore }));
+  assert.equal(r3.level, 'mid');
+  assert.equal(r3.signals.spo2, null);                                       // SpO2 97%는 정상
+  assert.equal(r3.signals.cognition, 'caution');
+  assert.ok(r3.score >= 75, r3.score);                                       // 합계로는 의뢰·주의 아님 (첫 통화 판정으로 주의)
+  // 점수가 절반 아래면 의뢰
+  const r4 = scenario('s4', 'scenario3_leemalsoon.csv', it => ({ ...ok(it), score: it.key === 'repeat' ? it.maxScore : 0 }));
+  assert.equal(r4.level, 'high');
+}
+
 console.log('selftest 통과');

@@ -31,11 +31,11 @@ const app = document.getElementById('app');
 
 const LEVEL = { watch: '관찰', caution: '주의', refer: '의뢰' };
 const LEVEL_CHIP = { watch: 'info', caution: 'mid', refer: 'high' };
-const TYPE = { cistReview: '정기검사 채점 확인 대기', cistOverdue: '정기검사 지연', emergency: '응급 표현 (통화 중)', cognition: '인지 기저선 이탈', spo2: '야간 저산소 (수면무호흡 의심)', hearing: '재질문 잦음 (난청 의심)', noAnswer: '연속 무응답 (안부 확인)', response: '통화 응답 지연·휴지 증가', heart: '안정 시 심박 변화', selfReport: '통화 중 자기보고 (반복 호소·낙상)' };
+const TYPE = { cistReview: '정기검사 채점 확인 대기', cistOverdue: '정기검사 지연', emergency: '응급 표현 (통화 중)', cognition: '인지 기저선 이탈', spo2: '야간 저산소 (수면무호흡 의심)', hearing: '재질문 잦음 (난청 의심)', noAnswer: '연속 무응답 (안부 확인)', earlyCog: '인지 점수 낮음 (기저선 형성 중)', response: '통화 응답 지연·휴지 증가', heart: '안정 시 심박 변화', selfReport: '통화 중 자기보고 (반복 호소·낙상)' };
 const STATUS = { open: '처리 전', referred: '연계됨', closed: '종결' };
 const CALL_STATUS = { completed: '완료', missed: '무응답', partial: '일부 (시간 초과)' };
 const CHECKS = { acute: '최근 급성 질환', sleep: '수면 부족', meds: '약물 변경', mood: '우울감', hearing: '청력 저하' };
-const RISK = { high: '높음', mid: '주의', low: '낮음' };
+const RISK = { high: '의뢰', mid: '주의', low: '유지' };
 const TEST_KIND = { CIST: '인지선별검사(대면)', 'MMSE-DS': 'MMSE-DS', 기타: '기타' }; // 저장 값은 그대로, 화면에는 검사 이름으로
 const RISK_RANK = { high: 3, mid: 2, low: 1 };
 const JOBS = ['간호사', '사회복지사', '보건소 담당자', '기타'];
@@ -64,7 +64,11 @@ const SETTING_LABEL = {
   hrCaution: '안정 시 심박 주의: 평소 대비 변화 (bpm)',
   hrRefer: '안정 시 심박 의뢰: 평소 대비 변화 (bpm)',
   riskMid: '종합 케어 스코어 주의 기준 (점 미만)',
-  riskHigh: '종합 케어 스코어 높음(의뢰) 기준 (점 미만)',
+  riskHigh: '종합 케어 스코어 의뢰 기준 (점 미만)',
+  earlyCaution: '기저선 형성 중 주의: 통화 점수 (% 이하)',
+  earlyRefer: '기저선 형성 중 의뢰: 통화 점수 (% 미만)',
+  earlyResp: '기저선 형성 중 주의: 응답 지연+휴지 (초/문항)',
+  earlyRepeats: '기저선 형성 중 주의: 통화당 재질문 (회)',
   visitBufferMin: '방문 이동 여유 시간 (분)',
   visitDailyLimit: '방문자 하루 방문 한도 (건)',
   cistDropAlert: '정기검사 원형 유지 점수 하락 기준 (점)',
@@ -240,7 +244,10 @@ function evaluate(ids) {
   const d = getData();
   for (const p of d.people) {
     if (!p.active || (ids && !ids.includes(p.id))) continue;
-    updateAlerts(d.alerts, p.id, personStatus(p, d.calls, d.settings, todayStr(), getNightVitals).levels, nowStamp());
+    const st = personStatus(p, d.calls, d.settings, todayStr(), getNightVitals);
+    updateAlerts(d.alerts, p.id, st.levels, nowStamp());
+    // 기저선이 생기면 '기저선 형성 중' 임시 알림은 닫는다 (그 뒤는 기저선 판정)
+    if (st.base.ready) for (const a of d.alerts) if (a.personId === p.id && a.type === 'earlyCog' && a.status === 'open') { a.status = 'closed'; a.note = (a.note ? a.note + ' · ' : '') + '기저선 형성 완료'; }
   }
   syncCistAlerts(d, todayStr(), nowStamp()); // 정기검사 '채점 확인 대기' · '정기검사 지연'
   syncSelfReportAlerts(d, todayStr(), nowStamp()); // 통화에서 한 말 (낙상·잠 설침·통증 등)
@@ -1126,7 +1133,7 @@ function dashboardPage() {
   const aops = activityOps(d, today, period);
   const dl = comp.delta;
   const kpis = [
-    ['#/admin/people', '전체 대상자', `${people.length}<small>명</small>`, `높음 ${count('high')} · 주의 ${count('mid')}`],
+    ['#/admin/people', '전체 대상자', `${people.length}<small>명</small>`, `의뢰 ${count('high')} · 주의 ${count('mid')}`],
     ['#/admin/people?alerts=1', '미조치 알림', `${openAlerts.length}<small>건</small>`, `의뢰 단계 ${openAlerts.filter(a => a.level === 'refer').length}건 · 채점 대기 ${cops.pending}`],
     ['#/admin/people?sort=rate', '7일 완료율', comp.now == null ? '-' : `${fmtNum(comp.now, 1)}<small>%</small>`,
       dl == null ? '목표 80%' : `<span class="${dl >= 0 ? 'up' : 'down'}">${dl >= 0 ? '▲' : '▼'} ${fmtNum(Math.abs(dl), 1)}%p</span> 지난주 대비`],
@@ -1345,7 +1352,7 @@ function dashboardPage() {
       // 위험도 분포 도넛: 지름 150, 두께 16, 조각 간격 3
       charts.push(new Chart(document.getElementById('riskChart'), {
         type: 'doughnut',
-        data: { labels: ['낮음', '주의', '높음'], datasets: [{ data: [count('low'), count('mid'), count('high')], backgroundColor: ['low', 'mid', 'high'].map(riskColor), borderWidth: 0, spacing: 3 }] },
+        data: { labels: ['유지', '주의', '의뢰'], datasets: [{ data: [count('low'), count('mid'), count('high')], backgroundColor: ['low', 'mid', 'high'].map(riskColor), borderWidth: 0, spacing: 3 }] },
         options: {
           maintainAspectRatio: false, cutout: 75 - 16,
           onClick: (e, els) => { if (els.length) location.hash = '#/admin/people?risk=' + ['low', 'mid', 'high'][els[0].index]; },
@@ -1566,7 +1573,7 @@ function peoplePage(params) {
       <section class="card">
         <label class="bigsearch">${icon('search', 18)}<span class="sr-only">대상자 검색</span><input data-input="q" value="${esc(list.q)}" placeholder="이름 또는 담당자 검색"></label>
         <div class="filters" role="group" aria-label="목록 거르기">
-          ${[['all', '전체'], ['high', '높음'], ['mid', '주의'], ['low', '낮음']].map(([v, t]) => toggle('riskf', v === 'all' ? t : `<i class="dot dot-${v}"></i>${t}`, list.risk === v, v)).join('')}
+          ${[['all', '전체'], ['high', '의뢰'], ['mid', '주의'], ['low', '유지']].map(([v, t]) => toggle('riskf', v === 'all' ? t : `<i class="dot dot-${v}"></i>${t}`, list.risk === v, v)).join('')}
           <span class="sep" aria-hidden="true"></span>
           ${toggle('flag', '방문 예정만', list.visit, 'visit')}
           ${toggle('flag', '내 담당만', list.mine, 'mine')}
@@ -2144,7 +2151,7 @@ function summaryTab(p, ai, T) {
           return `<div class="part"><div class="row"><span>${label} ${lv ? levelChip(lv) : ''}</span><b class="num">${val == null ? `<span class="muted small">${why}</span>` : `${fmtNum((val * w) / 100, 1)}<small class="muted"> / ${w}점</small>`}</b></div>
             <div class="bar ${val == null ? '' : val >= 75 ? 'low' : val >= 55 ? 'mid' : 'bad'}"><i style="width:${val ?? 0}%"></i></div></div>`;
         }).join('')}
-        <p class="muted small">합계 ${getData().settings.riskMid ?? 75}점 이상 낮음 · ${getData().settings.riskHigh ?? 55}~${(getData().settings.riskMid ?? 75) - 1}점 주의 · ${getData().settings.riskHigh ?? 55}점 미만 높음(의뢰) · 지표별 주의·의뢰가 있으면 그 단계 · 측정 없는 지표는 빼고 환산</p>
+        <p class="muted small">합계 ${getData().settings.riskMid ?? 75}점 이상 유지 · ${getData().settings.riskHigh ?? 55}~${(getData().settings.riskMid ?? 75) - 1}점 주의 · ${getData().settings.riskHigh ?? 55}점 미만 의뢰 · 지표별 주의·의뢰가 있으면 그 단계 · 측정 없는 지표는 빼고 환산</p>
       </section>
     </div>
 
@@ -3033,7 +3040,7 @@ function alertCard(a, p) {
   const first = contacts.find(c => c.consent) || contacts[0];
   return `
     <div class="alert-card lvb-${a.level} ${closed ? 'closed' : ''}">
-      <div class="row"><b>${TYPE[a.type]}</b>${a.type === 'emergency' ? '<span class="chip chip-high">높음</span>' : levelChip(a.level)}<span class="chip">${STATUS[a.status]}</span></div>
+      <div class="row"><b>${TYPE[a.type]}</b>${a.type === 'emergency' ? '<span class="chip chip-high">의뢰</span>' : levelChip(a.level)}<span class="chip">${STATUS[a.status]}</span></div>
       ${a.type === 'selfReport' && a.reasons?.length ? `<p class="small">${a.reasons.map(esc).join(' · ')} · <a href="#/admin/p/${p.id}/self">자기보고 보기</a></p>` : ''}
       <div class="muted small">생성 ${stamp(a.createdAt)} · 보호자 통보 ${stamp(a.notifiedAt)}${a.notifiedTo ? ` (${esc(a.notifiedTo.name)}${a.notifiedTo.relation ? ' · ' + esc(a.notifiedTo.relation) : ''} ${esc(a.notifiedTo.phone)})` : ''} · 연계 ${stamp(a.referredAt)}</div>
       <div class="row">
